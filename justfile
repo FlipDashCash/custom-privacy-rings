@@ -387,6 +387,8 @@ ring-localnet: check-custom-ring-keys build-programs zolana::build-cli zolana::e
     export ZOLANA_PHOTON_BIN="$photon_bin"
     export ZOLANA_PROVER_KEYS_DIR="{{spp-keys-dir}}"
     export SURFPOOL_BIN="${SURFPOOL_BIN:-$PWD/zolana/target/tools/surfpool}"
+    # Surfpool gives empty slots synthetic hashes, only the fixture keeps ring blocks linked.
+    export ZOLANA_RING_SURFPOOL_FIXTURE=1
     for port in {{localnet-rpc-port}} {{localnet-photon-port}} {{localnet-prover-port}} {{localnet-ring-indexer-port}}; do
       lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     done
