@@ -374,7 +374,7 @@ ring-new *args:
     cargo run -q -p custom-ring-cli -- new {{args}}
 
 # Local validator and services for a ring, ring creation is permissionless.
-ring-localnet: check-custom-ring-keys build-programs zolana::build-cli build-photon build-ring-indexer
+ring-localnet: check-custom-ring-keys build-programs zolana::build-cli zolana::ensure-surfpool build-photon build-ring-indexer
     #!/usr/bin/env bash
     set -euo pipefail
     eval "$(cd zolana && tools/ci/xtask.sh program-ids)"
@@ -386,6 +386,7 @@ ring-localnet: check-custom-ring-keys build-programs zolana::build-cli build-pho
     [[ "$photon_bin" = /* ]] || photon_bin="$PWD/$photon_bin"
     export ZOLANA_PHOTON_BIN="$photon_bin"
     export ZOLANA_PROVER_KEYS_DIR="{{spp-keys-dir}}"
+    export SURFPOOL_BIN="${SURFPOOL_BIN:-$PWD/zolana/target/tools/surfpool}"
     for port in {{localnet-rpc-port}} {{localnet-photon-port}} {{localnet-prover-port}} {{localnet-ring-indexer-port}}; do
       lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     done
