@@ -11,7 +11,6 @@ import (
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/audit"
-	"github.com/helius-labs/zolana-custom-rings/prover/circuits/registry"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringaudit"
@@ -25,7 +24,6 @@ import (
 const (
 	OutputTreeID = 9
 	secret       = 19
-	zeroKeySeed  = 0x5eed
 	amount       = 12
 )
 
@@ -41,6 +39,9 @@ var RingData = big.NewInt(0xd0)
 // Payer is an identity no owner of the fixture holds.
 var Payer = big.NewInt(11)
 
+// OutputCiphertextSalt is the pad nonce of SPP's output ciphertext.
+var OutputCiphertextSalt = big.NewInt(0x5a17)
+
 type Statement struct {
 	Keys           ringaudit.Keys
 	Circuit        *circuits.MergeCircuit
@@ -52,13 +53,13 @@ type Statement struct {
 	Amount         *big.Int
 	OutputHash     *big.Int
 	OutputBlinding *big.Int
-	// Tracking holds the owner's row, nil under a zero key.
+	// Tracking holds the owner's row.
 	Tracking *ringregistry.Tracking
 	Record   []byte
 	// RecipientKey is the merged owner's viewing u the record is sealed to.
 	RecipientKey [32]byte
-	// PublishedOwner is what the program reads from the SPP body.
-	PublishedOwner *big.Int
+	// OutputCiphertext is what the program reads from the SPP body.
+	OutputCiphertext []*big.Int
 }
 
 // Build merges under an enrolled nonzero key, the seed is the nullifier secret.
@@ -78,29 +79,9 @@ func (s *Statement) TrackingEntry(member, nullifierPk *big.Int) ringregistry.Tra
 	return ringregistry.TrackingEntry{Member: member, NullifierPk: nullifierPk, CtHash: big.NewInt(0xc7), ListTag: big.NewInt(0xb7)}
 }
 
-// BuildZeroKey merges under ZeroNullifierPk with a private seed, the owner is published and no row is read.
-func BuildZeroKey(t testing.TB) *Statement {
-	t.Helper()
-	s := build(t, big.NewInt(zeroKeySeed), new(big.Int).Set(shared.ZeroNullifierPk))
-	s.PublishedOwner = s.OwnerPkHash
-	s.Circuit.TrackingRoot = 0
-	s.Circuit.Tracking = UnreadTracking()
-	s.Rebind(t)
-	return s
-}
-
-// UnreadTracking is the all zero opening a zero key carries.
-func UnreadTracking() registry.TrackingOpening {
-	zero := big.NewInt(0)
-	return ringregistry.TrackingOpening{
-		Record: ringregistry.TrackingRecord{Member: zero, Next: zero, NullifierPk: zero, CtHash: zero, ListTag: zero},
-		Path:   ringregistry.ZeroTrackingWrite().Slot,
-	}.Wires()
-}
-
 func build(t testing.TB, seed, nullifierPk *big.Int) *Statement {
 	t.Helper()
-	s := &Statement{Keys: ringaudit.DefaultKeys(t), Seed: seed, NullifierPk: nullifierPk, Amount: big.NewInt(amount), PublishedOwner: big.NewInt(0)}
+	s := &Statement{Keys: ringaudit.DefaultKeys(t), Seed: seed, NullifierPk: nullifierPk, Amount: big.NewInt(amount)}
 	for i := range s.Mint {
 		s.Mint[i] = byte(0xc0 + i)
 		s.OwnerKey[i] = byte(0xa0 + i)
@@ -120,10 +101,21 @@ func build(t testing.TB, seed, nullifierPk *big.Int) *Statement {
 	c.MintChunks = [2]frontend.Variable{new(big.Int).SetBytes(s.Mint[:31]), new(big.Int).SetBytes(s.Mint[31:])}
 	c.Amount, c.NullifierPk, c.Seed = s.Amount, nullifierPk, seed
 	c.OutputUtxoHash, c.FirstNullifier, c.RingProgramID, c.Payer = s.OutputHash, FirstNullifier, RingProgramID, Payer
-	c.OutputTreeID, c.OutputRingDataHash = OutputTreeID, RingData
+	c.OutputTreeID, c.OutputRingDataHash, c.OutputCiphertextSalt = OutputTreeID, RingData, OutputCiphertextSalt
 	s.Circuit = c
 	s.Record = s.PlainRecord(t)
+	s.OutputCiphertext = s.SealOutput(t)
 	return s
+}
+
+// SealOutput mirrors SPP's merge output ciphertext under the witness salt.
+func (s *Statement) SealOutput(t testing.TB) []*big.Int {
+	t.Helper()
+	ciphertext, err := protocol.MergeOutputCiphertext(s.Seed, FirstNullifier, ringtest.AsBigInt(s.Circuit.OutputCiphertextSalt), s.Amount, s.Mint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ciphertext
 }
 
 func (s *Statement) outputHash(t testing.TB, blinding *big.Int) *big.Int {
@@ -139,9 +131,6 @@ func (s *Statement) PlainRecord(t testing.TB) []byte {
 	t.Helper()
 	record := make([]byte, 9, circuits.MergeRecordLen)
 	record[0] = audit.KindRing
-	if s.NullifierPk.Cmp(shared.ZeroNullifierPk) == 0 {
-		record[0] |= audit.KindZeroKey
-	}
 	binary.BigEndian.PutUint64(record[1:], s.Amount.Uint64())
 	record = append(append(record, s.OwnerKey[:]...), s.Mint[:]...)
 	nullifierPk, blinding, seed := spptest.MustFieldBytes(t, s.NullifierPk), spptest.MustFieldBytes(t, s.OutputBlinding), spptest.MustFieldBytes(t, s.Seed)
@@ -170,11 +159,11 @@ func (s *Statement) Ciphertext(t testing.TB) []byte {
 func (s *Statement) Elements(t testing.TB) []*big.Int {
 	t.Helper()
 	sealed := s.Keys.Sealed(t, s.EnvelopeCiphertext(t))
-	return []*big.Int{
+	return append([]*big.Int{
 		big.NewInt(shared.MergeStatementDomain), ringtest.AsBigInt(s.Circuit.OutputUtxoHash), ringtest.AsBigInt(s.Circuit.FirstNullifier), ringtest.AsBigInt(s.Circuit.RingProgramID),
 		sealed.AuditorLo, sealed.AuditorHi, sealed.EphLo, sealed.EphHi, sealed.CiphertextHash, ringtest.HashBytes(t, s.Ciphertext(t)),
-		ringtest.AsBigInt(s.Circuit.Payer), s.PublishedOwner, ringtest.AsBigInt(s.Circuit.TrackingRoot),
-	}
+		ringtest.AsBigInt(s.Circuit.Payer), ringtest.AsBigInt(s.Circuit.TrackingRoot), ringtest.AsBigInt(s.Circuit.OutputCiphertextSalt),
+	}, s.OutputCiphertext...)
 }
 
 // Rebind rehashes the statement over the host values as set.

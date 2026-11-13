@@ -56,13 +56,11 @@ func TestMergeRefusals(t *testing.T) {
 		}},
 	}
 	for _, tt := range tests {
-		for _, build := range []func(testing.TB) *ringmerge.Statement{ringmerge.Build, ringmerge.BuildZeroKey} {
-			t.Run(tt.name, func(t *testing.T) {
-				s := build(t)
-				tt.tamper(s)
-				ringtest.RequireRefused(t, solved(t, s), define...)
-			})
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			s := ringmerge.Build(t)
+			tt.tamper(s)
+			ringtest.RequireRefused(t, solved(t, s), define...)
+		})
 	}
 }
 
@@ -183,7 +181,11 @@ func TestMergeTrackingRow(t *testing.T) {
 			s.Rebind(t)
 		}},
 		{"no row at all", func(t *testing.T, s *ringmerge.Statement) {
-			s.Circuit.Tracking = ringmerge.UnreadTracking()
+			zero := big.NewInt(0)
+			s.Circuit.Tracking = ringregistry.TrackingOpening{
+				Record: ringregistry.TrackingRecord{Member: zero, Next: zero, NullifierPk: zero, CtHash: zero, ListTag: zero},
+				Path:   ringregistry.ZeroTrackingWrite().Slot,
+			}.Wires()
 			s.Circuit.TrackingRoot = 0
 			s.Rebind(t)
 		}},
@@ -197,51 +199,137 @@ func TestMergeTrackingRow(t *testing.T) {
 	}
 }
 
-// A zero key reads no row and publishes its owner, any other key reads its row and hides its owner.
-func TestMergeModes(t *testing.T) {
-	t.Run("nonzero key with its row settles with no owner published", func(t *testing.T) {
-		s := ringmerge.Build(t)
-		if err := solved(t, s); err != nil {
-			t.Fatal(err)
-		}
-		if s.PublishedOwner.Sign() != 0 {
-			t.Fatal("a hidden owner was published")
-		}
-	})
-	t.Run("zero key with no row settles under its published owner", func(t *testing.T) {
-		s := ringmerge.BuildZeroKey(t)
-		if err := solved(t, s); err != nil {
-			t.Fatal(err)
-		}
-		if s.NullifierPk.Cmp(shared.ZeroNullifierPk) != 0 || s.PublishedOwner.Cmp(s.OwnerPkHash) != 0 {
-			t.Fatal("the zero key fixture left its mode")
-		}
-	})
-	t.Run("zero key hiding its owner refuses", func(t *testing.T) {
-		s := ringmerge.BuildZeroKey(t)
-		s.PublishedOwner = big.NewInt(0)
-		s.Rebind(t)
-		if solved(t, s) == nil {
-			t.Fatal("a zero key merge hid its owner, no signer binds it")
-		}
-	})
-	t.Run("nonzero key publishing an owner refuses", func(t *testing.T) {
-		s := ringmerge.Build(t)
-		s.PublishedOwner = s.OwnerPkHash
-		s.Rebind(t)
-		if solved(t, s) == nil {
-			t.Fatal("a hidden owner claimed the published rail")
-		}
-	})
+// rekey rebuilds the blinding, the record and SPP's ciphertext under seed and nullifierPk, the output hash stays SPP's.
+func rekey(t *testing.T, s *ringmerge.Statement, seed, nullifierPk *big.Int) {
+	t.Helper()
+	s.Seed, s.NullifierPk = seed, nullifierPk
+	s.Circuit.Seed, s.Circuit.NullifierPk = seed, nullifierPk
+	s.OutputBlinding = ringtest.MustPoseidonHash(t, big.NewInt(mergeshared.MergeOutputBlindingDomainV1), seed, ringmerge.FirstNullifier)
+	s.Record = s.PlainRecord(t)
+	s.OutputCiphertext = s.SealOutput(t)
 }
 
-// An enrolled wallet's old zero key note stays mergeable, no row can bar it.
-func TestMergeZeroKeyIgnoresEveryRow(t *testing.T) {
-	s := ringmerge.BuildZeroKey(t)
-	s.Circuit.TrackingRoot = big.NewInt(0x99)
+// SPP's output hash holds the seed to the nullifier secret, a witness rebuilt under another seed opens another output.
+func TestMergeSeedIsTheNullifierSecret(t *testing.T) {
+	s := ringmerge.Build(t)
+	rekey(t, s, big.NewInt(20), s.NullifierPk)
 	s.Rebind(t)
+	ringtest.RequireRefused(t, solved(t, s), "[assertIsEqual]", "circuits.(*MergeCircuit).Define")
+}
+
+// register_key.go enrolls no zero key, a zero key witness solves under a row and refuses without one.
+func TestMergeRefusesTheZeroKey(t *testing.T) {
+	s := ringmerge.Build(t)
+	rekey(t, s, big.NewInt(0), shared.ZeroNullifierPk)
+	s.Record[0] |= audit.KindZeroKey
+	s.OutputHash = ringmerge.Open(t, s).Hash(t)
+	s.Circuit.OutputUtxoHash = s.OutputHash
+	enroll := func(member *big.Int) {
+		s.Tracking = ringregistry.NewTracking(t)
+		s.Tracking.Apply(t, s.TrackingEntry(member, s.NullifierPk))
+		s.Circuit.Tracking = s.Tracking.Opening(s.OwnerPkHash).Wires()
+		s.Circuit.TrackingRoot = s.Tracking.Root()
+		s.Rebind(t)
+	}
+	enroll(s.OwnerPkHash)
 	if err := solved(t, s); err != nil {
 		t.Fatal(err)
+	}
+	enroll(big.NewInt(0x77))
+	ringtest.RequireRefused(t, solved(t, s), "[assertIsEqual]", "circuits.(*MergeCircuit).Define")
+}
+
+// SPP publishes its output ciphertext unproven, the statement holds it to the witness seed, amount, mint and salt.
+func TestMergeOutputCiphertext(t *testing.T) {
+	t.Run("the owner opens the amount and mint", func(t *testing.T) {
+		s := ringmerge.Build(t)
+		if err := solved(t, s); err != nil {
+			t.Fatal(err)
+		}
+		key, err := protocol.MergeOutputKey(s.Seed, ringmerge.FirstNullifier)
+		if err != nil {
+			t.Fatal(err)
+		}
+		chunks := protocol.MintChunks(s.Mint)
+		for element, want := range []*big.Int{s.Amount, chunks[0], chunks[1]} {
+			pad := ringtest.MustPoseidonHash(t, big.NewInt(protocol.MergeOutputCiphertextDomain), key, ringmerge.OutputCiphertextSalt, big.NewInt(int64(element)))
+			opened := new(big.Int).Sub(s.OutputCiphertext[element], pad)
+			if opened.Mod(opened, ecc.BN254.ScalarField()).Cmp(want) != 0 {
+				t.Fatalf("element %d opens to %s", element, opened)
+			}
+		}
+	})
+	t.Run("a fresh salt reseals the output", func(t *testing.T) {
+		s := ringmerge.Build(t)
+		s.Circuit.OutputCiphertextSalt = big.NewInt(0x5a18)
+		s.OutputCiphertext = s.SealOutput(t)
+		s.Rebind(t)
+		if err := solved(t, s); err != nil {
+			t.Fatal(err)
+		}
+	})
+	sealed := func(t *testing.T, s *ringmerge.Statement, amount *big.Int, mint [32]byte) []*big.Int {
+		t.Helper()
+		ciphertext, err := protocol.MergeOutputCiphertext(s.Seed, ringmerge.FirstNullifier, ringmerge.OutputCiphertextSalt, amount, mint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ciphertext
+	}
+	tests := []struct {
+		name   string
+		tamper func(*testing.T, *ringmerge.Statement)
+	}{
+		{"another amount element", func(t *testing.T, s *ringmerge.Statement) {
+			s.OutputCiphertext[0] = new(big.Int).Add(s.OutputCiphertext[0], big.NewInt(1))
+			s.Rebind(t)
+		}},
+		{"another first mint element", func(t *testing.T, s *ringmerge.Statement) {
+			s.OutputCiphertext[1] = new(big.Int).Add(s.OutputCiphertext[1], big.NewInt(1))
+			s.Rebind(t)
+		}},
+		{"another second mint element", func(t *testing.T, s *ringmerge.Statement) {
+			s.OutputCiphertext[2] = new(big.Int).Add(s.OutputCiphertext[2], big.NewInt(1))
+			s.Rebind(t)
+		}},
+		{"the encryption of another amount", func(t *testing.T, s *ringmerge.Statement) {
+			s.OutputCiphertext = sealed(t, s, big.NewInt(13), s.Mint)
+			s.Rebind(t)
+		}},
+		{"the encryption of another mint", func(t *testing.T, s *ringmerge.Statement) {
+			mint := s.Mint
+			mint[0] ^= 1
+			s.OutputCiphertext = sealed(t, s, s.Amount, mint)
+			s.Rebind(t)
+		}},
+		{"the encryption under another seed", func(t *testing.T, s *ringmerge.Statement) {
+			ciphertext, err := protocol.MergeOutputCiphertext(big.NewInt(20), ringmerge.FirstNullifier, ringmerge.OutputCiphertextSalt, s.Amount, s.Mint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.OutputCiphertext = ciphertext
+			s.Rebind(t)
+		}},
+		{"a witness salt off the statement", func(_ *testing.T, s *ringmerge.Statement) {
+			s.Circuit.OutputCiphertextSalt = big.NewInt(0x5a18)
+		}},
+		{"a statement salt off the witness", func(t *testing.T, s *ringmerge.Statement) {
+			s.Circuit.OutputCiphertextSalt = big.NewInt(0x5a18)
+			s.OutputCiphertext = s.SealOutput(t)
+			s.Rebind(t)
+			s.Circuit.OutputCiphertextSalt = ringmerge.OutputCiphertextSalt
+		}},
+		{"a ciphertext under another salt", func(t *testing.T, s *ringmerge.Statement) {
+			s.Circuit.OutputCiphertextSalt = big.NewInt(0x5a18)
+			s.Rebind(t)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := ringmerge.Build(t)
+			tt.tamper(t, s)
+			ringtest.RequireRefused(t, solved(t, s), "[assertIsEqual]", "circuits.(*MergeCircuit).Define")
+		})
 	}
 }
 
@@ -266,14 +354,6 @@ func TestMergePayer(t *testing.T) {
 		s.Rebind(t)
 		ringtest.RequireRefused(t, solved(t, s), "circuits.(*MergeCircuit).Define")
 	})
-	t.Run("a published owner pays", func(t *testing.T) {
-		s := ringmerge.BuildZeroKey(t)
-		s.Circuit.Payer = s.OwnerPkHash
-		s.Rebind(t)
-		if err := solved(t, s); err != nil {
-			t.Fatal(err)
-		}
-	})
 	t.Run("the payer is statement bound", func(t *testing.T) {
 		s := ringmerge.Build(t)
 		s.Circuit.Payer = big.NewInt(99)
@@ -283,32 +363,23 @@ func TestMergePayer(t *testing.T) {
 	})
 }
 
-// The record alone rebuilds the output, a zero key blinding never follows from secret zero.
+// The record alone rebuilds the output.
 func TestMergeRecordRebuildsTheOutput(t *testing.T) {
-	for name, build := range map[string]func(testing.TB) *ringmerge.Statement{"nonzero": ringmerge.Build, "zero": ringmerge.BuildZeroKey} {
-		t.Run(name, func(t *testing.T) {
-			s := build(t)
-			opened := ringmerge.Open(t, s)
-			if len(opened.Plain) != circuits.MergeRecordLen {
-				t.Fatalf("%d byte record", len(opened.Plain))
-			}
-			if opened.Hash(t).Cmp(s.OutputHash) != 0 {
-				t.Fatal("the record does not rebuild the published output")
-			}
-			if name == "zero" && ringtest.MustPoseidonHash(t, big.NewInt(mergeshared.MergeOutputBlindingDomainV1), big.NewInt(0), ringmerge.FirstNullifier).Cmp(s.OutputBlinding) == 0 {
-				t.Fatal("the zero key blinding follows from public data")
-			}
-		})
+	s := ringmerge.Build(t)
+	opened := ringmerge.Open(t, s)
+	if len(opened.Plain) != circuits.MergeRecordLen {
+		t.Fatalf("%d byte record", len(opened.Plain))
+	}
+	if opened.Hash(t).Cmp(s.OutputHash) != 0 {
+		t.Fatal("the record does not rebuild the published output")
 	}
 }
 
 func TestMergeCost(t *testing.T) {
 	cs := ringkey.Compile(t, &circuits.MergeCircuit{})
 	ringkey.RequirePinned(t, "custom_ring_merge", cs)
-	for _, s := range []*ringmerge.Statement{ringmerge.Build(t), ringmerge.BuildZeroKey(t)} {
-		if err := solveCS(t, cs, s.Circuit); err != nil {
-			t.Fatal(err)
-		}
+	if err := solveCS(t, cs, ringmerge.Build(t).Circuit); err != nil {
+		t.Fatal(err)
 	}
 }
 
