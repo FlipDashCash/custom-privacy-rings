@@ -3,16 +3,14 @@
 use bytemuck::Zeroable;
 use custom_ring_interface::{
     tag, CoSignScope, CustomRingError, CustomRingMergeIxData, RootRead, SealedMergeRecord,
-    MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, RING_MERGE_OWNER_INDEX, RING_MERGE_PAYER_INDEX,
-    RING_MERGE_RING_CONFIG_INDEX,
+    MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, RING_MERGE_PAYER_INDEX, RING_MERGE_RING_CONFIG_INDEX,
 };
 use solana_address::Address;
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_keypair::{Keypair, Signer};
-use spr_interface::instruction::instruction_data::{
-    merge_ring::MergeRingAuthority,
-    merge_transact::{MergeOutputEncryption, MergeProof, MergeTransactIxData},
+use spr_interface::instruction::instruction_data::merge_transact::{
+    MergeOutputEncryption, MergeProof, MergeTransactIxData,
 };
 
 use crate::{
@@ -27,11 +25,10 @@ const RINGS: [Setup; 3] = [Setup::AuditOnly, Setup::Policy, Setup::Anonymous];
 /// The ring account and the tracking registry lead the forwarded list.
 const MERGE_SPP: usize = 2;
 
-pub(crate) fn merge_data(authority: MergeRingAuthority) -> CustomRingMergeIxData {
+pub(crate) fn merge_data() -> CustomRingMergeIxData {
     CustomRingMergeIxData {
         tracking_revision: 0.into(),
         output_ring_data_hash: [8; 32],
-        authority,
         sealed: SealedMergeRecord {
             proof: Zeroable::zeroed(),
             eph_pk: auditor_pubkey(),
@@ -58,24 +55,12 @@ pub(crate) fn merge_data(authority: MergeRingAuthority) -> CustomRingMergeIxData
     }
 }
 
-/// `owner` fills the SPP slot `OwnerSigned` reads.
-pub(crate) fn merge_instruction(
-    ring: &Ring,
-    data: &CustomRingMergeIxData,
-    owner: Option<&Keypair>,
-) -> Instruction {
+pub(crate) fn merge_instruction(ring: &Ring, data: &CustomRingMergeIxData) -> Instruction {
     let mut spp: Vec<AccountMeta> = (0..RING_MERGE_PAYER_INDEX)
         .map(|_| AccountMeta::new(Address::new_unique(), false))
         .collect();
     spp[RING_MERGE_RING_CONFIG_INDEX] = AccountMeta::new(ring_auth(), false);
     spp.push(AccountMeta::new(ring.payer.pubkey(), true));
-    if let Some(owner) = owner {
-        spp.resize(
-            RING_MERGE_OWNER_INDEX,
-            AccountMeta::new_readonly(Address::new_unique(), false),
-        );
-        spp.push(AccountMeta::new_readonly(owner.pubkey(), true));
-    }
     let mut accounts = vec![AccountMeta::new_readonly(policy_pda(), false)];
     accounts.extend(ring.registries(RootRead::merge()));
     accounts.extend(spp);
@@ -87,16 +72,16 @@ pub(crate) fn merge_instruction(
 }
 
 fn ring_merge(ring: &Ring) -> Instruction {
-    merge_instruction(ring, &merge_data(MergeRingAuthority::Ring), None)
+    merge_instruction(ring, &merge_data())
 }
 
 #[test]
 fn a_nonzero_merge_binds_a_served_tracking_root_on_every_ring() {
     for setup in RINGS {
         let mut ring = Ring::new(setup);
-        let mut data = merge_data(MergeRingAuthority::Ring);
+        let mut data = merge_data();
         data.tracking_revision = 1.into();
-        let stale = merge_instruction(&ring, &data, None);
+        let stale = merge_instruction(&ring, &data);
         refused(ring.send(stale, &[]), CustomRingError::RootNotServed);
         let served = ring_merge(&ring);
         reaches_verification(ring.send(served, &[]));
@@ -104,26 +89,15 @@ fn a_nonzero_merge_binds_a_served_tracking_root_on_every_ring() {
 }
 
 #[test]
-fn a_zero_key_merge_reads_no_tracking_root() {
-    for setup in RINGS {
-        let mut ring = Ring::new(setup);
-        let owner = Keypair::new();
-        let mut data = merge_data(MergeRingAuthority::OwnerSigned);
-        data.tracking_revision = 1.into();
-        let instruction = merge_instruction(&ring, &data, Some(&owner));
-        reaches_verification(ring.send(instruction, &[&owner]));
-    }
-}
-
-#[test]
-fn a_zero_key_merge_without_its_owner_account_is_refused() {
+fn a_ciphertext_element_past_the_field_is_refused() {
     let mut ring = Ring::new(Setup::AuditOnly);
-    let instruction = merge_instruction(&ring, &merge_data(MergeRingAuthority::OwnerSigned), None);
-    let sent = ring.send(instruction, &[]);
-    assert!(
-        format!("{sent:?}").contains("NotEnoughAccountKeys"),
-        "{sent:?}"
-    );
+    let mut data = merge_data();
+    data.merge.output_encryption = MergeOutputEncryption::PoseidonCtrV1 {
+        salt: [2; 16],
+        ciphertext: [[3; 32], [0xff; 32], [3; 32]],
+    };
+    let instruction = merge_instruction(&ring, &data);
+    refused(ring.send(instruction, &[]), CustomRingError::HashingFailed);
 }
 
 #[test]
@@ -160,9 +134,9 @@ fn an_anonymous_ring_merge_may_carry_ring_data() {
 #[test]
 fn an_ephemeral_key_off_its_tag_is_refused() {
     let mut ring = Ring::new(Setup::AuditOnly);
-    let mut data = merge_data(MergeRingAuthority::Ring);
+    let mut data = merge_data();
     data.sealed.eph_pk[0] = 0;
-    let instruction = merge_instruction(&ring, &data, None);
+    let instruction = merge_instruction(&ring, &data);
     refused(
         ring.send(instruction, &[]),
         CustomRingError::InvalidMergeDisclosure,

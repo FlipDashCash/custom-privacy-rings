@@ -24,7 +24,6 @@ use solana_message::v1::{MAX_ADDRESSES, MAX_SIGNATURES, MAX_TRANSACTION_SIZE};
 use spr_client::{transaction_size, ComputeBudgetConfig};
 use spr_interface::{
     instruction::{
-        instruction_data::merge_ring::MergeRingAuthority,
         instruction_data::merge_transact::{
             MergeOutputEncryption, MergeProof, MergeTransactIxData, MERGE_SUPPORTED_INPUT_COUNTS,
         },
@@ -708,7 +707,7 @@ impl RingPrefix<'_> {
     }
 }
 
-fn merge_fit(width: usize, authority: MergeRingAuthority) -> Result<Fit> {
+fn merge_fit(width: usize) -> Result<Fit> {
     let merge = MergeTransactIxData {
         expiry_unix_ts: u64::MAX,
         proof: MergeProof::zeroed(),
@@ -728,7 +727,6 @@ fn merge_fit(width: usize, authority: MergeRingAuthority) -> Result<Fit> {
     let encoded = CustomRingMergeIxData {
         tracking_revision: Revision::from(1),
         output_ring_data_hash: [8; 32],
-        authority,
         sealed: SealedMergeRecord {
             proof: bytemuck::Zeroable::zeroed(),
             eph_pk: [9; TAGGED_X25519_KEY_LEN],
@@ -743,7 +741,6 @@ fn merge_fit(width: usize, authority: MergeRingAuthority) -> Result<Fit> {
         output_tree: tree(),
         ring_program_id: RING_PROGRAM,
         payer: PAYER,
-        owner: matches!(authority, MergeRingAuthority::OwnerSigned).then_some(indexed(0xc0, 0)),
         data: merge,
         output_ring_data_hash: [8; 32],
         cache: None,
@@ -838,21 +835,16 @@ fn table() -> Result<String> {
         }
     }
     for width in MERGE_SUPPORTED_INPUT_COUNTS {
-        for (name, authority) in [
-            ("ring", MergeRingAuthority::Ring),
-            ("owner signed", MergeRingAuthority::OwnerSigned),
-        ] {
-            let fit = merge_fit(width, authority)?;
-            writeln!(
-                table,
-                "| {width}x1 | merge | {name} | yes | {} | {} | {} | - | - | - | {} | {} |",
-                fit.bytes,
-                fit.addresses,
-                fit.signatures,
-                fits_column(fit.fits()),
-                fit.over(),
-            )?;
-        }
+        let fit = merge_fit(width)?;
+        writeln!(
+            table,
+            "| {width}x1 | merge | ring | yes | {} | {} | {} | - | - | - | {} | {} |",
+            fit.bytes,
+            fit.addresses,
+            fit.signatures,
+            fits_column(fit.fits()),
+            fit.over(),
+        )?;
     }
     entry_capacities(&mut table)?;
     maxima(&mut table)?;

@@ -327,10 +327,20 @@ impl RecordHead {
 }
 
 /// A merge output's record, its seed rebuilds the blinding with no viewing secret.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct MergeRecord {
     pub record: OutputRecord,
     pub seed: [u8; 32],
+}
+
+/// The seed is the owner's nullifier secret, never printed.
+impl core::fmt::Debug for MergeRecord {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self { record, seed: _ } = self;
+        f.debug_struct("MergeRecord")
+            .field("record", record)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MergeRecord {
@@ -355,10 +365,23 @@ impl MergeRecord {
 }
 
 /// What the auditor reads first of a merge, the key pair that opens its record.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct MergeEnvelope {
     pub eph_sk: [u8; 32],
     pub recipient_u: [u8; 32],
+}
+
+/// The ephemeral secret opens the record, never printed.
+impl core::fmt::Debug for MergeEnvelope {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Self {
+            eph_sk: _,
+            recipient_u,
+        } = self;
+        f.debug_struct("MergeEnvelope")
+            .field("recipient_u", recipient_u)
+            .finish_non_exhaustive()
+    }
 }
 
 impl MergeEnvelope {

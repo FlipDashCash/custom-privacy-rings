@@ -1191,18 +1191,13 @@ impl<'a> RingTransactData<'a> {
                     .circuit(self.n_in, self.n_out, proof_data)
             }
         };
-        // 2. Cached access and a delegate's exit each pick SPP's variant of that rail.
+        // 2. Cached access picks SPP's variant of that rail.
         match (circuit, self.extensions.cache) {
             (CircuitId::ConfidentialRingEddsa(n_in, n_out, slots), Some(access)) => {
                 CircuitId::ConfidentialRingEddsaCached(n_in, n_out, slots, access)
             }
             (CircuitId::AnonymousRingEddsa(n_in, n_out, slots, proof_data), Some(access)) => {
                 CircuitId::AnonymousRingEddsaCached(n_in, n_out, slots, proof_data, access)
-            }
-            (CircuitId::RingAuthority(n_in, n_out, slots), None)
-                if self.outputs.iter().any(RingOutput::is_exit) =>
-            {
-                CircuitId::RingAuthorityExit(n_in, n_out, slots)
             }
             (circuit, _) => circuit,
         }
