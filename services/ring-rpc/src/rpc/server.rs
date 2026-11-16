@@ -570,6 +570,14 @@ mod tests {
     }
 
     impl TransactionSource for TestSource {
+        async fn is_mint_delegate(
+            &self,
+            _mint: Address,
+            _signer: Address,
+        ) -> Result<bool, ClientError> {
+            Ok(false)
+        }
+
         async fn transactions_by_tag(
             &self,
             _request: TransactionPage,

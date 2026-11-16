@@ -272,6 +272,7 @@ export {
   encodeRelayTransferTerms,
   type ApprovalLimit,
   type CoSignerRule,
+  type DelegateRequester,
   type DelegateRingConfig,
   type ExactApproval,
   type FundedLeg,
