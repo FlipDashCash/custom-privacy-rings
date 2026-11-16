@@ -230,7 +230,7 @@ pub enum RingError {
     ExternalDataMismatch,
     #[error("a ring merge of {width} slots is no width SPP keys")]
     MergeTooWide { width: usize },
-    #[error("a zero-key merge names its owner as a shielded address under the zero key")]
+    #[error("a ring merge needs an owner under a nonzero nullifier key")]
     MergeOwnerKey,
     #[error("the pinned SPP client proves no delegate exit until the exit keys are pinned")]
     ExitProofUnavailable,
