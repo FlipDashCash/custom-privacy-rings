@@ -35,6 +35,8 @@ pub enum RingRailError {
     SenderBundleFraming,
     #[error("a sender bundle of {len} bytes does not match the frame's output count")]
     SenderBundleLength { len: usize },
+    #[error("merge seed is not a nonzero nullifier secret")]
+    MergeSeed,
     #[error("reply length {reply_len} is below the reply's encoding or the minimum")]
     ReplyMetadataLength { reply_len: usize },
 }
