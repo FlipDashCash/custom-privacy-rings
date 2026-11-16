@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_hasher::primitives::hash_bytes;
-use spr_transaction::instructions::merge::MergeSeed;
 
 use crate::{
     types::{CreatedUtxo, KnownUtxo, UtxoOwner},
@@ -36,7 +35,8 @@ pub struct MergeRecordOutput {
     pub nullifier_pk: [u8; 32],
     pub mint: Address,
     pub amount: u64,
-    pub seed: [u8; 32],
+    /// The output's blinding, the record's seed is dropped once it derives.
+    pub blinding: [u8; 32],
     /// Published nullifiers no seed derivation names as padding.
     pub real_nullifiers: Vec<[u8; 32]>,
 }
@@ -48,7 +48,7 @@ impl core::fmt::Debug for MergeRecordOutput {
             nullifier_pk,
             mint,
             amount,
-            seed: _,
+            blinding: _,
             real_nullifiers,
         } = self;
         f.debug_struct("MergeRecordOutput")
@@ -56,7 +56,7 @@ impl core::fmt::Debug for MergeRecordOutput {
             .field("nullifier_pk", nullifier_pk)
             .field("mint", mint)
             .field("amount", amount)
-            .field("seed", &REDACTED)
+            .field("blinding", &REDACTED)
             .field("real_nullifiers", real_nullifiers)
             .finish()
     }
@@ -79,7 +79,7 @@ pub struct AuditedMergeOutput {
     pub(crate) mint: Address,
     pub(crate) amount: u64,
     pub(crate) real_nullifiers: Vec<[u8; 32]>,
-    pub(crate) seed: [u8; 32],
+    pub(crate) blinding: [u8; 32],
 }
 
 impl core::fmt::Debug for AuditedMergeOutput {
@@ -99,7 +99,7 @@ impl core::fmt::Debug for AuditedMergeOutput {
             mint,
             amount,
             real_nullifiers,
-            seed: _,
+            blinding: _,
         } = self;
         f.debug_struct("AuditedMergeOutput")
             .field("commitment", commitment)
@@ -116,7 +116,7 @@ impl core::fmt::Debug for AuditedMergeOutput {
             .field("mint", mint)
             .field("amount", amount)
             .field("real_nullifiers", real_nullifiers)
-            .field("seed", &REDACTED)
+            .field("blinding", &REDACTED)
             .finish()
     }
 }
@@ -129,14 +129,19 @@ pub struct MergeLedger {
 }
 
 impl MergeLedger {
-    /// A repeated merge changes nothing and returns `None`.
-    pub fn apply(&mut self, merge: ConfirmedMerge) -> Option<AuditedMergeOutput> {
-        if !self.applied.insert((merge.tx_signature, merge.event_index)) {
-            return None;
+    /// A repeated merge changes nothing and returns `None`, a failed one stays unapplied.
+    pub fn apply(
+        &mut self,
+        merge: ConfirmedMerge,
+    ) -> Result<Option<AuditedMergeOutput>, AuditError> {
+        let id = (merge.tx_signature, merge.event_index);
+        if self.applied.contains(&id) {
+            return Ok(None);
         }
-        let output = merge.output().ok()?;
+        let output = merge.output()?;
+        self.applied.insert(id);
         self.outputs.insert(output.commitment, output.clone());
-        Some(output)
+        Ok(Some(output))
     }
 
     pub fn output(&self, commitment: &[u8; 32]) -> Option<&AuditedMergeOutput> {
@@ -161,7 +166,7 @@ impl AuditedMergeOutput {
             asset: self.asset,
             mint: Some(self.mint),
             amount: self.amount,
-            blinding: MergeSeed::from_bytes(self.seed)?.output_blinding(&self.first_nullifier)?,
+            blinding: self.blinding,
             data_hash: Some([0; 32]),
             ring_data_hash: Some(self.ring_data_hash),
             tree_id: self.tree_id,
@@ -207,7 +212,7 @@ impl ConfirmedMerge {
             mint: record.mint,
             amount: record.amount,
             real_nullifiers: record.real_nullifiers.clone(),
-            seed: record.seed,
+            blinding: record.blinding,
         })
     }
 }
@@ -233,13 +238,13 @@ mod tests {
                 nullifier_pk: [2; 32],
                 mint,
                 amount: 9,
-                seed: [0; 32],
+                blinding: [0; 32],
                 real_nullifiers: vec![[8; 32]],
             },
         };
         let mut ledger = MergeLedger::default();
-        assert!(ledger.apply(merge.clone()).is_some());
-        assert!(ledger.apply(merge).is_none());
+        assert!(ledger.apply(merge.clone()).expect("applied").is_some());
+        assert!(ledger.apply(merge).expect("repeated").is_none());
         let output = ledger.output(&[20; 32]).expect("resolved");
         assert_eq!((output.amount, output.mint), (9, mint));
         assert_eq!(output.asset, hash_bytes(mint.as_array()).unwrap());

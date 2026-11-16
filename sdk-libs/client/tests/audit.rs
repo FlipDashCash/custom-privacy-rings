@@ -29,7 +29,6 @@ use spr_event::{encode_merge_output_data, MergeOutputDataRef, MessageData};
 use spr_hasher::primitives::hash_bytes;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
 use spr_keypair::{ViewingKey, X25519Keypair, X25519Pubkey};
-use spr_transaction::instructions::merge::MergeSeed;
 use spr_transaction::{OutputContext, OutputSlot};
 use zolana_ring_client::{
     auditor_view_tag, confirmed_merge,
@@ -39,6 +38,7 @@ use zolana_ring_client::{
     OutputOpening, OutputPayloadError, OutputPayloadErrorKind, RingOrigin, RingOwnerTag, RingScan,
     TransactionAudit, TransactionOrigin, UtxoOwner,
 };
+use zolana_ring_transaction::MergeSeed;
 
 use history_page::{position, EventsPage};
 use transfer::{
@@ -691,10 +691,9 @@ fn a_merge_record_resolves_alone_in_the_ledger() {
     let record = confirmed_merge.disclosed();
     assert_eq!(record.amount, spent[1].utxo.amount);
     assert_eq!(record.real_nullifiers, [field(0x74)]);
-    assert_eq!(record.seed, MERGE_SEED);
     let mut ledger = MergeLedger::default();
     let hash = confirmed_merge.output_commitment();
-    assert!(ledger.apply(confirmed_merge).is_some());
+    assert!(ledger.apply(confirmed_merge).expect("applied").is_some());
     let opened = ledger
         .output(&hash)
         .expect("resolved with no input")
