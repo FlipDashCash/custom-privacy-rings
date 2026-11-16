@@ -247,7 +247,7 @@ fn a_relayed_authority_transfer_moves_the_enrolled_members_note() -> Result<()> 
             request,
             quote: &quote,
             config: &config,
-            allowed: allowed.clone(),
+            requester: custom_ring_sdk::DelegateRequester::Ring(allowed.clone()),
             output_tree_id: env.tree_id(env.tree)?,
         }
         .prepare()?;
