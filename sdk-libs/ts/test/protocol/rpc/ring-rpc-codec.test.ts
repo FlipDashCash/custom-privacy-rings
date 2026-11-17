@@ -23,7 +23,13 @@ import { addressBytes, type indexerTypes } from "@heliuslabs/spr/internal";
 import { SOL_MINT } from "@heliuslabs/spr/transaction";
 import { ShieldedKeypair, SigningKey, ViewingKey } from "@heliuslabs/spr/keypair";
 import {
+  decodeCoSignListEntry,
+  decodeCoSignListsPage,
+  decodeCoSignTransactionResponse,
+  encodeCoSignTransactionRequest,
   encodeCreateRecordsRegistryRequest,
+  encodeEditCoSignListRequest,
+  encodeGetCoSignListsRequest,
   encodeGetPendingListApprovalsRequest,
   encodePrepareAuthorityTransferRequest,
   encodePrepareRelayRequest,
@@ -44,7 +50,9 @@ import {
   policyAuthorityAttestation,
   readerGrantAttestation,
   ringReadAttestation,
+  signCoSignListsRequest,
   signCreateRecordsRegistryRequest,
+  signEditCoSignListRequest,
   signPendingListApprovalsRequest,
   signRefuseListApprovalRequest,
   signRegisterEnrollmentRingRequest,
@@ -543,7 +551,243 @@ function base58Bytes(text: string): Uint8Array {
   return getBase58Encoder().encode(text) as Uint8Array;
 }
 
+describe("co-sign", () => {
+  const ring = filled(7, 32) as Address;
+  const subject = filled(5, 32) as indexerTypes.Hash;
+  const entry = { list: "block", kind: "owner", subject } as const;
+  const target = {
+    cluster: new Uint8Array(32).fill(1) as Bytes32,
+    service: filled(2, 32) as Address,
+    ringProgramId: ring,
+  };
+  const auth = {
+    authority: filled(3, 32) as Address,
+    timestamp: 1_700_000_000n,
+    nonce: "BAQE" as indexerTypes.Base64String,
+    signature: filled(6, 64) as Signature,
+  };
+  const authWire = `{"authority":"${auth.authority}","timestamp":1700000000,"nonce":"BAQE","signature":"${auth.signature}"}`;
+  const answering = (body: unknown, sent: unknown[] = []) =>
+    new RingRpc("http://ring.example", {
+      allowInsecureHttp: true,
+      fetch: (async (_url: unknown, init?: RequestInit) => {
+        sent.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, ...(body as object) }), {
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof globalThis.fetch,
+    });
+
+  it("encodes each request in the Rust field order", () => {
+    expect(
+      JSON.stringify(
+        encodeCoSignTransactionRequest({ ring, message: "AwQF" as indexerTypes.Base64String }),
+      ),
+    ).toBe(`{"ring":"${ring}","message":"AwQF"}`);
+    expect(
+      JSON.stringify(
+        encodeEditCoSignListRequest({
+          ring,
+          edit: "set",
+          list: "freeze",
+          kind: "destination",
+          address: filled(9, 32) as Address,
+          auth,
+        }),
+      ),
+    ).toBe(
+      `{"ring":"${ring}","edit":"set","list":"freeze","kind":"destination","address":"${filled(9, 32)}","auth":${authWire}}`,
+    );
+    expect(JSON.stringify(encodeGetCoSignListsRequest({ ring, auth }))).toBe(
+      `{"ring":"${ring}","auth":${authWire}}`,
+    );
+    expect(JSON.stringify(encodeGetCoSignListsRequest({ ring, cursor: entry, auth }))).toBe(
+      `{"ring":"${ring}","cursor":{"list":"block","kind":"owner","subject":"${subject}"},"auth":${authWire}}`,
+    );
+  });
+
+  it("refuses a request the Rust enums cannot carry", () => {
+    const edit = { ring, edit: "set", list: "allow", kind: "asset", address: ring, auth } as const;
+    expect(() => encodeEditCoSignListRequest({ ...edit, edit: "clear" as "set" })).toThrow();
+    expect(() => encodeEditCoSignListRequest({ ...edit, list: "deny" as "allow" })).toThrow();
+    expect(() => encodeEditCoSignListRequest({ ...edit, kind: "mint" as "asset" })).toThrow();
+    expect(() => encodeEditCoSignListRequest({ ...edit, address: "x" as Address })).toThrow();
+    expect(() =>
+      encodeGetCoSignListsRequest({
+        ring,
+        cursor: { ...entry, subject: "x" as indexerTypes.Hash },
+        auth,
+      }),
+    ).toThrow();
+    expect(() =>
+      encodeCoSignTransactionRequest({ ring, message: "*" as indexerTypes.Base64String }),
+    ).toThrow();
+  });
+
+  it("decodes each response and refuses an unknown or missing field", () => {
+    const signer = filled(8, 32) as Address;
+    const signature = filled(6, 64) as Signature;
+    expect(decodeCoSignTransactionResponse({ signer, signature })).toEqual({ signer, signature });
+    expect(() => decodeCoSignTransactionResponse({ signer })).toThrow();
+    expect(() => decodeCoSignTransactionResponse({ signer, signature, slot: 1 })).toThrow();
+    expect(decodeCoSignListEntry({ ...entry })).toEqual(entry);
+    expect(() => decodeCoSignListEntry({ ...entry, list: "deny" })).toThrow();
+    expect(() => decodeCoSignListEntry({ ...entry, kind: "mint" })).toThrow();
+    expect(() => decodeCoSignListEntry({ ...entry, subject: signature })).toThrow();
+    expect(() => decodeCoSignListEntry({ ...entry, address: signer })).toThrow();
+    expect(decodeCoSignListsPage({ entries: [] })).toEqual({ entries: [] });
+    expect(decodeCoSignListsPage({ entries: [entry], nextCursor: entry })).toEqual({
+      entries: [entry],
+      nextCursor: entry,
+    });
+    expect(() => decodeCoSignListsPage({})).toThrow();
+    expect(() => decodeCoSignListsPage({ entries: [entry], cursor: entry })).toThrow();
+    expect(() => decodeCoSignListsPage({ entries: [{ list: "block", kind: "owner" }] })).toThrow();
+  });
+
+  it("signs the policy authority's edit and read over the Rust action lines", async () => {
+    const authority = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(8));
+    const address = filled(9, 32) as Address;
+    const actionLine = (action: PolicyAuthorityAction) =>
+      new TextDecoder()
+        .decode(
+          policyAuthorityAttestation({
+            target,
+            authority: authority.address,
+            action,
+            timestamp: 1_700_000_000n,
+            nonce: new Uint8Array(32).fill(4) as Bytes32,
+          }),
+        )
+        .split("\n")
+        .find((line) => line.startsWith("action: "));
+    expect(
+      actionLine({
+        kind: "editCoSignList",
+        edit: "set",
+        list: "allow",
+        subjectKind: "owner",
+        address,
+      }),
+    ).toBe(`action: set co-sign allow owner ${address}`);
+    expect(
+      actionLine({
+        kind: "editCoSignList",
+        edit: "remove",
+        list: "freeze",
+        subjectKind: "destination",
+        address,
+      }),
+    ).toBe(`action: remove co-sign freeze destination ${address}`);
+    expect(
+      actionLine({
+        kind: "editCoSignList",
+        edit: "set",
+        list: "block",
+        subjectKind: "asset",
+        address,
+      }),
+    ).toBe(`action: set co-sign block asset ${address}`);
+    expect(actionLine({ kind: "readCoSignLists" })).toBe("action: read co-sign lists");
+    expect(actionLine({ kind: "readCoSignLists", cursor: entry })).toBe(
+      `action: read co-sign lists after block owner ${subject}`,
+    );
+
+    const nonce = vi.spyOn(globalThis.crypto, "getRandomValues").mockImplementation((array) => {
+      (array as Uint8Array).fill(4);
+      return array;
+    });
+    try {
+      const signedBy = (request: { auth: typeof auth }, action: PolicyAuthorityAction) =>
+        ed25519.verify(
+          new Uint8Array(getBase58Encoder().encode(request.auth.signature)),
+          policyAuthorityAttestation({
+            target,
+            authority: authority.address,
+            action,
+            timestamp: 1_700_000_000n,
+            nonce: new Uint8Array(32).fill(4) as Bytes32,
+          }),
+          addressBytes(authority.address, "authority"),
+        );
+      const edit = await signEditCoSignListRequest(
+        target,
+        authority,
+        { edit: "remove", list: "block", kind: "asset", address },
+        1_700_000_000n,
+      );
+      expect(edit).toMatchObject({ ring, edit: "remove", list: "block", kind: "asset", address });
+      expect(
+        signedBy(edit, {
+          kind: "editCoSignList",
+          edit: "remove",
+          list: "block",
+          subjectKind: "asset",
+          address,
+        }),
+      ).toBe(true);
+      const first = await signCoSignListsRequest(target, authority, undefined, 1_700_000_000n);
+      expect("cursor" in first).toBe(false);
+      expect(signedBy(first, { kind: "readCoSignLists" })).toBe(true);
+      const after = await signCoSignListsRequest(target, authority, entry, 1_700_000_000n);
+      expect(after.cursor).toEqual(entry);
+      expect(signedBy(after, { kind: "readCoSignLists", cursor: entry })).toBe(true);
+    } finally {
+      nonce.mockRestore();
+    }
+  });
+
+  it("sends each method and names a refusal", async () => {
+    const sent: unknown[] = [];
+    const signer = filled(8, 32) as Address;
+    const signature = filled(6, 64) as Signature;
+    const message = "AwQF" as indexerTypes.Base64String;
+    await expect(
+      answering({ result: { signer, signature } }, sent).coSignTransaction({ ring, message }),
+    ).resolves.toEqual({ signer, signature });
+    const edit = {
+      ring,
+      edit: "set",
+      list: "allow",
+      kind: "asset",
+      address: signer,
+      auth,
+    } as const;
+    await expect(answering({ result: entry }, sent).editCoSignList(edit)).resolves.toEqual(entry);
+    await expect(
+      answering({ result: { entries: [entry], nextCursor: entry } }, sent).getCoSignLists({
+        ring,
+        auth,
+      }),
+    ).resolves.toEqual({ entries: [entry], nextCursor: entry });
+    expect(sent).toMatchObject([
+      { method: "coSignTransaction", params: { ring, message } },
+      { method: "editCoSignList", params: { ring, edit: "set", list: "allow", kind: "asset" } },
+      { method: "getCoSignLists", params: { ring } },
+    ]);
+    await expect(
+      answering({ error: { code: -32168, message: "blocked" } }).coSignTransaction({
+        ring,
+        message,
+      }),
+    ).rejects.toMatchObject({
+      code: "RING_RPC_REFUSED",
+      details: { method: "coSignTransaction", refusal: "blocked" },
+    });
+  });
+});
+
 describe("ring rpc refusals", () => {
+  it("names -32167 to -32169, -32174 and -32175 as the co-sign list refusals", () => {
+    expect([-32167, -32168, -32169, -32174, -32175].map(ringRpcRefusalName)).toEqual([
+      "frozen",
+      "blocked",
+      "notAllowed",
+      "customRefused",
+      "listSubject",
+    ]);
+  });
+
   it("names -32227 and -32228 as delegate notes outside the requested sources", () => {
     expect(ringRpcRefusalName(-32227)).toBe("sourceNote");
     expect(ringRpcRefusalName(-32228)).toBe("unrequestedInput");

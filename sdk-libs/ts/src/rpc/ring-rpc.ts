@@ -65,6 +65,9 @@ import {
 } from "../operations/management/reader-access.js";
 import { verifyRecordUpdate } from "../protocol/ring-rpc/record-update.js";
 import {
+  decodeCoSignListEntry,
+  decodeCoSignListsPage,
+  decodeCoSignTransactionResponse,
   decodeMergeSettings,
   decodeSubmitEnrollmentResponse,
   decodePendingListApprovalsPage,
@@ -76,7 +79,10 @@ import {
   decodeReaderGrantAction,
   decodeRelayStep,
   decodeSubmitRecordUpdate,
+  encodeCoSignTransactionRequest,
   encodeCreateRecordsRegistryRequest,
+  encodeEditCoSignListRequest,
+  encodeGetCoSignListsRequest,
   encodeGetPendingListApprovalsRequest,
   encodeGetListSaltRequest,
   encodeMergeSettings,
@@ -98,7 +104,16 @@ import {
   RingRpcMethod,
   type AuthorityTransfer,
   type PolicyAuthorityAuth,
+  type CoSignList,
+  type CoSignListEdit,
+  type CoSignListEntry,
+  type CoSignListsPage,
+  type CoSignSubjectKind,
+  type CoSignTransactionRequest,
+  type CoSignTransactionResponse,
   type CreateRecordsRegistryRequest,
+  type EditCoSignListRequest,
+  type GetCoSignListsRequest,
   type GetPendingListApprovalsRequest,
   type PendingListApprovalsPage,
   type GetListSaltRequest,
@@ -593,7 +608,17 @@ export type PolicyAuthorityAction =
   | Readonly<{ kind: "list"; registry: Address; cursor?: Hash }>
   | Readonly<{ kind: "refuse"; registry: Address; updateId: Hash }>
   | Readonly<{ kind: "createRecords" }>
-  | Readonly<{ kind: "registerEnrollment"; writer: Address }>;
+  | Readonly<{ kind: "registerEnrollment"; writer: Address }>
+  /** Rust `EditCoSignList`. */
+  | Readonly<{
+      kind: "editCoSignList";
+      edit: CoSignListEdit;
+      list: CoSignList;
+      subjectKind: CoSignSubjectKind;
+      address: Address;
+    }>
+  /** Rust `ReadCoSignLists`. */
+  | Readonly<{ kind: "readCoSignLists"; cursor?: CoSignListEntry }>;
 
 export type ListApprovalTarget = RingReadTarget & Readonly<{ registry: Address }>;
 
@@ -632,6 +657,12 @@ function policyAuthorityActionLine(action: PolicyAuthorityAction): string {
       return action.cursor === undefined
         ? `list ${address(action.registry, "registry")}`
         : `list ${address(action.registry, "registry")} after ${indexerScalars.checkedHash(action.cursor, "cursor")}`;
+    case "editCoSignList":
+      return `${action.edit} co-sign ${action.list} ${action.subjectKind} ${address(action.address, "address")}`;
+    case "readCoSignLists":
+      return action.cursor === undefined
+        ? "read co-sign lists"
+        : `read co-sign lists after ${action.cursor.list} ${action.cursor.kind} ${indexerScalars.checkedHash(action.cursor.subject, "cursor.subject")}`;
   }
 }
 
@@ -702,6 +733,57 @@ export async function signRegisterEnrollmentRingRequest(
       checked,
       authority,
       { kind: "registerEnrollment", writer: address(writer, "writer") },
+      timestamp,
+    ),
+  });
+}
+
+/** Rust `EditCoSignListRequest::edit` signed by the policy authority. */
+export async function signEditCoSignListRequest(
+  target: RingReadTarget,
+  authority: MessagePartialSigner,
+  edit: Pick<EditCoSignListRequest, "edit" | "list" | "kind" | "address">,
+  timestamp?: bigint,
+): Promise<EditCoSignListRequest> {
+  const checked = checkedReadTarget(target);
+  const subject = address(edit.address, "address");
+  return Object.freeze({
+    ring: checked.ringProgramId,
+    edit: edit.edit,
+    list: edit.list,
+    kind: edit.kind,
+    address: subject,
+    auth: await policyAuthorityAuth(
+      checked,
+      authority,
+      {
+        kind: "editCoSignList",
+        edit: edit.edit,
+        list: edit.list,
+        subjectKind: edit.kind,
+        address: subject,
+      },
+      timestamp,
+    ),
+  });
+}
+
+/** Rust `GetCoSignListsRequest::read` signed by the policy authority, the page after `cursor`. */
+export async function signCoSignListsRequest(
+  target: RingReadTarget,
+  authority: MessagePartialSigner,
+  cursor?: CoSignListEntry,
+  timestamp?: bigint,
+): Promise<GetCoSignListsRequest> {
+  const checked = checkedReadTarget(target);
+  const page = cursor === undefined ? {} : { cursor: decodeCoSignListEntry(cursor) };
+  return Object.freeze({
+    ring: checked.ringProgramId,
+    ...page,
+    auth: await policyAuthorityAuth(
+      checked,
+      authority,
+      { kind: "readCoSignLists", ...page },
       timestamp,
     ),
   });
@@ -1684,6 +1766,40 @@ export class RingRpc {
         encodeRefuseListApprovalRequest(request),
         context,
       ),
+    );
+  }
+
+  /** The service's signature over `message`, for a wallet sending the transaction itself. */
+  async coSignTransaction(
+    request: CoSignTransactionRequest,
+    context?: RequestContext,
+  ): Promise<CoSignTransactionResponse> {
+    return decodeCoSignTransactionResponse(
+      await this.#call(
+        RingRpcMethod.coSignTransaction,
+        encodeCoSignTransactionRequest(request),
+        context,
+      ),
+    );
+  }
+
+  /** Answered with the entry the edit set or removed. */
+  async editCoSignList(
+    request: EditCoSignListRequest,
+    context?: RequestContext,
+  ): Promise<CoSignListEntry> {
+    return decodeCoSignListEntry(
+      await this.#call(RingRpcMethod.editCoSignList, encodeEditCoSignListRequest(request), context),
+    );
+  }
+
+  /** One page of the lists the ring's co-signer screens against. */
+  async getCoSignLists(
+    request: GetCoSignListsRequest,
+    context?: RequestContext,
+  ): Promise<CoSignListsPage> {
+    return decodeCoSignListsPage(
+      await this.#call(RingRpcMethod.getCoSignLists, encodeGetCoSignListsRequest(request), context),
     );
   }
 

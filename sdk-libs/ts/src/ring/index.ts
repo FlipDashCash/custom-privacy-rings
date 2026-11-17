@@ -191,7 +191,6 @@ export { openRingNotes, syncRingWallet } from "../state/ring-sync.js";
 export type { RingNotes, RingSyncClient, RingSyncInput } from "../state/ring-sync.js";
 export { LocalRingKeys, isRingKeys, ringWalletKeys } from "../state/ring-keys.js";
 export type {
-  MergeSeedRequest,
   RingDeliveryRequest,
   RingKeys,
   RingTagFrame,
@@ -287,7 +286,16 @@ export type {
   AuthorityWithdrawal,
   AuthorityTransfer,
   PolicyAuthorityAuth,
+  CoSignList,
+  CoSignListEdit,
+  CoSignListEntry,
+  CoSignListsPage,
+  CoSignSubjectKind,
+  CoSignTransactionRequest,
+  CoSignTransactionResponse,
   CreateRecordsRegistryRequest,
+  EditCoSignListRequest,
+  GetCoSignListsRequest,
   RegisterEnrollmentRingRequest,
   GetPendingListApprovalsRequest,
   PendingListApproval,
@@ -445,7 +453,6 @@ export type {
   RingMergeAuditReader,
 } from "../operations/audit/audit-merge.js";
 export {
-  MergeRingAuthority,
   decodeRingMergeRequest,
   encodeRingMergeRequest,
   forwardedMergeData,
@@ -514,11 +521,15 @@ export {
   delegateNoteKey,
   delegateNotesAttestation,
   delegateSnapshotReleaseAttestation,
+  signCoSignListsRequest,
   signCreateRecordsRegistryRequest,
+  signEditCoSignListRequest,
   signRegisterEnrollmentRingRequest,
   signPendingListApprovalsRequest,
   signRefuseListApprovalRequest,
 } from "../rpc/ring-rpc.js";
+export { ringRpcCoSigner } from "../rpc/ring-rpc-co-signer.js";
+export type { RingRpcCoSignerInput } from "../rpc/ring-rpc-co-signer.js";
 export type {
   DelegateNotesAttestationInput,
   ListApprovalTarget,
@@ -656,7 +667,6 @@ export {
   type Fit,
   type FitBudget,
   type FitSigners,
-  type MergeCapacity,
   type MergeGroup,
   type SetupEffect,
   type SpentInput,
@@ -664,7 +674,6 @@ export {
 export type { RingListSalt } from "../proof/policy-proof.js";
 export type { RingPublicSpend } from "../operations/payments/transfer.js";
 export type { RingMergeSealer } from "../crypto/audit/merge-disclosure.js";
-export { openZeroKeyMerges, type OpenedZeroKeyMerge } from "../state/zero-key-merge.js";
 export {
   isZeroKeyNote,
   mintBalances,
