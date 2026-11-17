@@ -77,12 +77,6 @@ export interface SpentInput {
   readonly nullifierPda: Address;
 }
 
-/** `FittedMerge`'s published inputs per kind of merge, a zero-key merge adds its signer. */
-export interface MergeCapacity {
-  readonly keyed: number;
-  readonly zeroKey: number;
-}
-
 export interface MergeGroup {
   readonly owner: ShieldedPublicKey;
   readonly asset: Address;
@@ -96,7 +90,11 @@ export interface MergeGroup {
 export type CeilingDecision =
   | Readonly<{ kind: "inline"; size: TransactionSize }>
   /** `addresses` counts one nullifier PDA left per merged note. */
-  | Readonly<{ kind: "mergeFirst"; groups: readonly MergeGroup[]; addresses: number }>;
+  | Readonly<{
+      kind: "mergeFirst";
+      groups: readonly MergeGroup[];
+      addresses: number;
+    }>;
 
 export async function spentInputOf(input: ProofInputUtxo, tree: Address): Promise<SpentInput> {
   const { utxo } = input;
@@ -129,7 +127,8 @@ export function decideAddressCeiling(
     priorityFeeLamports?: bigint;
     setupInstructions?: readonly Instruction[];
     inputs: readonly SpentInput[];
-    mergeCapacity: MergeCapacity;
+    /** `FittedMerge`'s published inputs. */
+    mergeCapacity: number;
   }>,
 ): CeilingDecision {
   const { inputs, instruction, payer } = input;
@@ -273,7 +272,12 @@ function setupEffect(
   const { form, signers, budget, size, signatures } = input;
   const instructions = signers.setupInstructions?.length ?? 0;
   if (instructions === 0)
-    return Object.freeze({ instructions: 0, signatures: 0, bytes: 0, addresses: 0 });
+    return Object.freeze({
+      instructions: 0,
+      signatures: 0,
+      bytes: 0,
+      addresses: 0,
+    });
   const alone = compiled(form, { payer: signers.payer }, budget);
   return Object.freeze({
     instructions,
@@ -314,22 +318,17 @@ function sppCpiBytes(instruction: Instruction): number | undefined {
   return bytes;
 }
 
-function mergeGroups(
-  inputs: readonly SpentInput[],
-  capacity: MergeCapacity,
-): readonly MergeGroup[] {
+function mergeGroups(inputs: readonly SpentInput[], capacity: number): readonly MergeGroup[] {
   const groups: { head: SpentInput; positions: number[] }[] = [];
   inputs.forEach((input, position) => {
-    if (carriesData(input)) return;
+    // A zero key has no merge.
+    if (carriesData(input) || equalBytes(input.nullifierPublicKey, ZERO_NULLIFIER_PK)) return;
     const held = groups.find((group) => mergesWith(input, group.head));
     if (held === undefined) groups.push({ head: input, positions: [position] });
     else held.positions.push(position);
   });
   const merges = groups.flatMap(({ head, positions }) => {
-    const width = Math.max(
-      1,
-      equalBytes(head.nullifierPublicKey, ZERO_NULLIFIER_PK) ? capacity.zeroKey : capacity.keyed,
-    );
+    const width = Math.max(1, capacity);
     return Array.from({ length: Math.ceil(positions.length / width) }, (_, run) =>
       positions.slice(run * width, (run + 1) * width),
     )

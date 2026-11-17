@@ -205,8 +205,7 @@ function pinnedRail(
   proven: Omit<ProvenRingTransact, "data"> & Readonly<{ data: RingTransactInstructionData }>,
 ): ProvenRingTransact {
   const { circuit } = proven.data;
-  if (circuit.kind === "anonymousRingEddsa" || circuit.kind === "ringAuthorityExit")
-    throw new Error("ring selector on a pinned rail");
+  if (circuit.kind === "anonymousRingEddsa") throw new Error("ring selector on a pinned rail");
   return { ...proven, data: { ...proven.data, circuit } };
 }
 

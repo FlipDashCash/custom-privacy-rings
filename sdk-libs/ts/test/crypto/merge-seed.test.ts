@@ -1,50 +1,54 @@
-import { readFileSync } from "node:fs";
+import { beforeAll, describe, expect, it } from "vitest";
+import { initializePoseidon, type Bytes32 } from "@heliuslabs/spr";
+import { mergeDummyNullifier, mergeOutputBlinding } from "@heliuslabs/spr/internal";
+import { NullifierKey, type Bytes31 } from "@heliuslabs/spr/keypair";
 
-import { describe, expect, it } from "vitest";
-import type { Bytes32 } from "@heliuslabs/spr";
-
+import vector from "../../../../test-vectors/merge/merge.json" with { type: "json" };
 import {
   seededMergeDummyNullifier,
   seededMergeOutputBlinding,
-  seededMergeOutputKey,
-  seededMergePrivateTxBlinding,
 } from "../../src/crypto/derivation/merge-seed.js";
 
-const vector = JSON.parse(
-  readFileSync(new URL("../../../../zolana/test-vectors/merge_ring.json", import.meta.url), "utf8"),
-) as Readonly<{
-  merge_seed: string;
-  first_nullifier: string;
-  output_blinding: string;
-  output_key: string;
-  private_tx_blinding: string;
-  dummy_nullifier: string;
-  dummy_slot_index: number;
-}>;
-
 function bytes(value: string): Bytes32 {
-  return Uint8Array.from(Buffer.from(value, "hex")) as Bytes32;
+  return Uint8Array.from(Buffer.from(value.replace(/^0x/, ""), "hex")) as Bytes32;
 }
 
 function hex(value: Uint8Array): string {
-  return Buffer.from(value).toString("hex");
+  return `0x${Buffer.from(value).toString("hex")}`;
 }
 
 describe("seeded merge derivations", () => {
-  it("match the Rust and Go derivations on the shared vector", () => {
-    const seed = bytes(vector.merge_seed);
-    const first = bytes(vector.first_nullifier);
-    expect(hex(seededMergeOutputBlinding(seed, first))).toBe(vector.output_blinding);
-    expect(hex(seededMergeOutputKey(seed, first))).toBe(vector.output_key);
-    expect(hex(seededMergePrivateTxBlinding(seed, first))).toBe(vector.private_tx_blinding);
-    expect(hex(seededMergeDummyNullifier(seed, first, vector.dummy_slot_index))).toBe(
-      vector.dummy_nullifier,
-    );
-  });
+  beforeAll(initializePoseidon);
+
+  for (const testCase of vector.cases) {
+    const seed = bytes(testCase.request.seed);
+    const first = bytes(testCase.request.firstNullifier);
+    const nullifierKey = (): NullifierKey => NullifierKey.fromSecret(seed.slice(1) as Bytes31);
+
+    it(`${testCase.name} derives the output blinding of the shared vector`, () => {
+      expect(seed[0]).toBe(0);
+      expect(hex(seededMergeOutputBlinding(seed, first))).toBe(testCase.output_blinding);
+      expect(seededMergeOutputBlinding(seed, first)).toEqual(
+        mergeOutputBlinding(nullifierKey(), first),
+      );
+    });
+
+    it(`${testCase.name} derives the padding nullifiers of the seed's nullifier key`, () => {
+      for (const slot of [0, 7, 255])
+        expect(seededMergeDummyNullifier(seed, first, slot)).toEqual(
+          mergeDummyNullifier(nullifierKey(), first, slot),
+        );
+    });
+  }
 
   it("refuses a dummy slot past a u8", () => {
+    const [testCase] = vector.cases;
     expect(() =>
-      seededMergeDummyNullifier(bytes(vector.merge_seed), bytes(vector.first_nullifier), 256),
+      seededMergeDummyNullifier(
+        bytes(testCase?.request.seed ?? ""),
+        bytes(testCase?.request.firstNullifier ?? ""),
+        256,
+      ),
     ).toThrow(RangeError);
   });
 });

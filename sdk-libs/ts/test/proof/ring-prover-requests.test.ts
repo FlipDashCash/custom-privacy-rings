@@ -536,9 +536,8 @@ function request(item: Json): RingProofRequest {
       seed: field(item["seed"]),
       outputTreeId: field(item["outputTreeId"]),
       outputRingDataHash: field(item["outputRingDataHash"]),
-      ...(item["tracking"] === null
-        ? {}
-        : { tracking: trackingOpening(item["tracking"]) as TrackingOpening }),
+      outputCiphertextSalt: field(item["outputCiphertextSalt"]),
+      tracking: trackingOpening(item["tracking"]) as TrackingOpening,
     };
   throw new Error(`no request for ${circuitType}`);
 }

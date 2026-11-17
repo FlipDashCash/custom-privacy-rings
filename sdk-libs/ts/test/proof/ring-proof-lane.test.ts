@@ -42,11 +42,7 @@ import {
   RING_COSIGN_TRANSFERS,
 } from "../../src/protocol/codec/ring-codecs.js";
 import { RingError } from "../../src/protocol/error.js";
-import {
-  RING_KEYS,
-  ringAuthorityExitKeyName,
-  ringProvingKey,
-} from "../../src/protocol/proof/proving-keys.js";
+import { RING_KEYS, ringProvingKey } from "../../src/protocol/proof/proving-keys.js";
 import { ownerSignerCapacity } from "../../src/protocol/proof/transfer-shapes.js";
 import { ApprovalMask } from "../../src/protocol/transaction/transact.js";
 import { RING_SOURCE_SLOTS } from "../../src/rpc/prover/types.js";
@@ -232,15 +228,6 @@ describe("the key table", () => {
     ).toEqual(["custom-ring-merge"]);
     expect(ringProvingKey({ family: "merge" }).name).toBe("custom_ring_merge.key");
   });
-
-  it("keys the authority exit at two shapes", () => {
-    expect(ringAuthorityExitKeyName({ nInputs: 4, nOutputs: 4 })).toBe(
-      "transfer_ring_authority_exit_4_4.key",
-    );
-    expect(refusal(() => ringAuthorityExitKeyName({ nInputs: 2, nOutputs: 4 })).code).toBe(
-      "RING_PROVING_KEYS_MISSING",
-    );
-  });
 });
 
 describe("co-sign", () => {
@@ -329,7 +316,7 @@ describe("merge.json", () => {
         present: boolean;
         record: Readonly<Record<string, string>>;
         path: Readonly<{ index: number; siblings: readonly (readonly string[])[] }>;
-      }> | null;
+      }>;
     }>;
   const { cases } = vector("merge/merge.json") as Readonly<{
     cases: readonly Readonly<{ name: string; request: Request }>[];
@@ -339,9 +326,7 @@ describe("merge.json", () => {
     const { request } = entry;
     const text = (key: string): Bytes32 => field(request[key] as string);
     const opening = (): MergeProofRequest["tracking"] => {
-      const { tracking } = request;
-      if (tracking === null) return undefined;
-      const { record: row, path } = tracking;
+      const { record: row, path } = request.tracking;
       const record = {
         member: field(row["member"] ?? ""),
         next: field(row["next"] ?? ""),
@@ -351,35 +336,35 @@ describe("merge.json", () => {
         viewingHash: field(row["viewingHash"] ?? ""),
       };
       const quad = { index: path.index, siblings: path.siblings.map((level) => level.map(field)) };
-      return tracking.present
+      return request.tracking.present
         ? { kind: "present", record, path: quad }
         : { kind: "absent", low: record, path: quad };
     };
-    const tracking = opening();
-    expect(
-      ringProofRequestBody({
-        kind: "merge",
-        publicInputHash: text("publicInputHash"),
-        outputUtxoHash: text("outputUtxoHash"),
-        firstNullifier: text("firstNullifier"),
-        ringProgramId: text("ringProgramId"),
-        auditorPk: text("auditorPk"),
-        payer: text("payer"),
-        trackingRoot: text("trackingRoot"),
-        ephSk: text("ephSk"),
-        recipientKey: text("recipientKey"),
-        ownerKey: text("ownerKey"),
-        ownerPkHash: text("ownerPkHash"),
-        mintChunks: (request["mintChunks"] as readonly string[]).map(field),
-        asset: text("asset"),
-        amount: text("amount"),
-        nullifierPk: text("nullifierPk"),
-        seed: text("seed"),
-        outputTreeId: text("outputTreeId"),
-        outputRingDataHash: text("outputRingDataHash"),
-        ...(tracking === undefined ? {} : { tracking }),
-      }),
-    ).toEqual(request);
+    const body = ringProofRequestBody({
+      kind: "merge",
+      publicInputHash: text("publicInputHash"),
+      outputUtxoHash: text("outputUtxoHash"),
+      firstNullifier: text("firstNullifier"),
+      ringProgramId: text("ringProgramId"),
+      auditorPk: text("auditorPk"),
+      payer: text("payer"),
+      trackingRoot: text("trackingRoot"),
+      ephSk: text("ephSk"),
+      recipientKey: text("recipientKey"),
+      ownerKey: text("ownerKey"),
+      ownerPkHash: text("ownerPkHash"),
+      mintChunks: (request["mintChunks"] as readonly string[]).map(field),
+      asset: text("asset"),
+      amount: text("amount"),
+      nullifierPk: text("nullifierPk"),
+      seed: text("seed"),
+      outputTreeId: text("outputTreeId"),
+      outputRingDataHash: text("outputRingDataHash"),
+      outputCiphertextSalt: text("outputCiphertextSalt"),
+      tracking: opening(),
+    });
+    expect(body).toEqual(request);
+    expect(Object.keys(body)).toEqual(Object.keys(request));
   });
 });
 

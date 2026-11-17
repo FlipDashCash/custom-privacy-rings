@@ -31,7 +31,6 @@ import { readFileSync } from "node:fs";
 
 import { saltedAuditorSchedule } from "../../../src/crypto/audit/audit.js";
 import {
-  MergeRingAuthority,
   decodeRingMergeRequest,
   forwardedMergeData,
   openMergeRecord,
@@ -74,11 +73,7 @@ import {
   encodeRingOutput,
   RingScheme,
 } from "../../../src/protocol/transaction/output.js";
-import {
-  RpcTransactionOrigin,
-  ringWithdrawalsOf,
-} from "../../../src/protocol/transaction/origin.js";
-import { encodeRingTransactInstructionData } from "../../../src/protocol/proof/circuit.js";
+import { RpcTransactionOrigin } from "../../../src/protocol/transaction/origin.js";
 import { RingInstructionTag } from "../../../src/protocol/transaction/instruction-tag.js";
 
 /** The commitment of a test opening, every fixture carries its data hashes. */
@@ -531,7 +526,6 @@ describe("the merge reader", () => {
       kind: "merge" as const,
       transaction,
       sealedRecord: sealed,
-      authority: MergeRingAuthority.ownerSigned,
     };
   }
 
@@ -588,31 +582,6 @@ describe("the merge reader", () => {
 });
 
 describe("the origin", () => {
-  it("parses SPP's delegate exit circuit", () => {
-    const data = encodeRingTransactInstructionData({
-      expiryUnixTs: 0n,
-      txViewingPk: new Uint8Array(33) as Bytes33,
-      salt: new Uint8Array(16) as Bytes16,
-      interfaceTransfers: [],
-      outputs: [],
-      messages: [],
-      privateTxHash: ZERO_32,
-      circuit: { kind: "ringAuthorityExit", inputs: 1, outputs: 2, publicAssetSlots: 2 },
-      proof: { a: ZERO_32, b: new Uint8Array(128) as never, c: ZERO_32 },
-      inputs: [{ nullifierHash: ZERO_32, treeIndex: 0 }],
-      treeContexts: [{ utxoTreeRootIndex: 0, nullifierTreeRootIndex: 0 }],
-    });
-    expect(
-      ringWithdrawalsOf([
-        {
-          programId: SHIELDED_POOL_PROGRAM_ID,
-          accounts: [],
-          data: Uint8Array.of(InstructionTag.ringAuthorityTransact, ...data),
-        },
-      ]),
-    ).toEqual([]);
-  });
-
   it("binds a tag 57 merge to its forwarded data and refuses another record", async () => {
     const frame = hex(
       readFileSync(
@@ -699,7 +668,6 @@ describe("the origin", () => {
     const wrapper = Uint8Array.of(RingInstructionTag.merge, ...frame);
     const bound = await originOver(wrapper).confirmedTransaction(indexed, ring);
     if (bound?.kind !== "merge") throw new Error(bound?.kind);
-    expect(bound.authority).toBe(request.authority);
     expect(bound.sealedRecord.record).toEqual(request.sealed.record);
     expect(bound.sealedRecord.envelope).toEqual(request.sealed.envelope);
     const forged = wrapper.slice();

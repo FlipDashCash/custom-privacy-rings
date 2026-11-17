@@ -40,7 +40,6 @@ import {
   sealRingDisclosure as sealStream,
 } from "../../../src/crypto/audit/ring-disclosure.js";
 import {
-  MergeRingAuthority,
   sealMergeRecord,
   type SealedMergeRecord,
 } from "../../../src/crypto/audit/merge-disclosure.js";
@@ -806,7 +805,6 @@ describe("auditRing", () => {
               kind: "merge",
               transaction,
               sealedRecord: sealed,
-              authority: MergeRingAuthority.ownerSigned,
             }
           : transferRows("anonymous").confirmedTransaction(transaction, read),
     };
@@ -1208,7 +1206,6 @@ describe("recoverRingMemberNotes", () => {
       kind: "merge",
       transaction: indexed,
       sealedRecord: sealed,
-      authority: MergeRingAuthority.ownerSigned,
     });
     return { transaction, unreadable, commitment, row };
   }
@@ -1393,7 +1390,6 @@ describe("recoverRingMemberNotes", () => {
               kind: "merge",
               transaction: indexed,
               sealedRecord: sealed,
-              authority: MergeRingAuthority.ownerSigned,
             }
           : TRANSFERS.confirmedTransaction(indexed, ring),
     };
