@@ -23,6 +23,7 @@ use zolana_secret_file::{
 };
 
 mod authority_transfer;
+mod co_sign;
 mod delegate_read;
 mod enrollment;
 mod list_salt_read;
@@ -38,6 +39,7 @@ mod wallet_snapshot;
 mod wallet_status;
 
 pub use authority_transfer::*;
+pub use co_sign::*;
 pub use delegate_read::*;
 pub use enrollment::*;
 pub use list_salt_read::*;
