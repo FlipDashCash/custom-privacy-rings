@@ -306,27 +306,28 @@ type TrackingOpening struct {
 	Path    SharedRegistryPath   `json:"path"`
 }
 
-// MergeParams seals a ring's SPP merge output to its auditor, Tracking is nil under a zero key.
+// MergeParams seals a ring's SPP merge output to its auditor and binds SPP's output ciphertext.
 type MergeParams struct {
 	RequestHead
-	OutputUtxoHash     Field            `json:"outputUtxoHash"`
-	FirstNullifier     Field            `json:"firstNullifier"`
-	RingProgramID      Field            `json:"ringProgramId"`
-	AuditorPk          Bytes            `json:"auditorPk"`
-	Payer              Field            `json:"payer"`
-	TrackingRoot       Field            `json:"trackingRoot"`
-	EphSk              Bytes            `json:"ephSk"`
-	RecipientKey       Bytes            `json:"recipientKey"`
-	OwnerKey           Bytes            `json:"ownerKey"`
-	OwnerPkHash        Field            `json:"ownerPkHash"`
-	MintChunks         []Field          `json:"mintChunks"`
-	Asset              Field            `json:"asset"`
-	Amount             Field            `json:"amount"`
-	NullifierPk        Field            `json:"nullifierPk"`
-	Seed               Field            `json:"seed"`
-	OutputTreeID       Field            `json:"outputTreeId"`
-	OutputRingDataHash Field            `json:"outputRingDataHash"`
-	Tracking           *TrackingOpening `json:"tracking"`
+	OutputUtxoHash       Field           `json:"outputUtxoHash"`
+	FirstNullifier       Field           `json:"firstNullifier"`
+	RingProgramID        Field           `json:"ringProgramId"`
+	AuditorPk            Bytes           `json:"auditorPk"`
+	Payer                Field           `json:"payer"`
+	TrackingRoot         Field           `json:"trackingRoot"`
+	EphSk                Bytes           `json:"ephSk"`
+	RecipientKey         Bytes           `json:"recipientKey"`
+	OwnerKey             Bytes           `json:"ownerKey"`
+	OwnerPkHash          Field           `json:"ownerPkHash"`
+	MintChunks           []Field         `json:"mintChunks"`
+	Asset                Field           `json:"asset"`
+	Amount               Field           `json:"amount"`
+	NullifierPk          Field           `json:"nullifierPk"`
+	Seed                 Field           `json:"seed"`
+	OutputTreeID         Field           `json:"outputTreeId"`
+	OutputRingDataHash   Field           `json:"outputRingDataHash"`
+	OutputCiphertextSalt Field           `json:"outputCiphertextSalt"`
+	Tracking             TrackingOpening `json:"tracking"`
 }
 
 // Unmarshal refuses an unknown or repeated key, a missing key without omitempty and trailing data.

@@ -140,6 +140,8 @@ mod sealed {
     impl Sealed for super::RefuseListApproval {}
     impl Sealed for super::CreateRecords {}
     impl Sealed for super::RegisterEnrollment {}
+    impl Sealed for crate::rpc::EditCoSignList {}
+    impl Sealed for crate::rpc::ReadCoSignLists {}
 }
 
 impl PolicyAuthorityAction for ListPendingApprovals {

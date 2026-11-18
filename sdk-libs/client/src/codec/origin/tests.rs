@@ -986,7 +986,7 @@ fn check_event_wire_fixture(name: &str, group: InstructionGroup, mut indexed: Sh
 fn confirmed_merge_fixture() -> (InstructionGroup, ShieldedTransaction) {
     use spr_event::{encode_event_instruction, EventKind, InputTreeSequence, MergeEvent};
     use spr_interface::instruction::instruction_data::{
-        merge_ring::{MergeRingAuthority, MergeRingIxData},
+        merge_ring::MergeRingIxData,
         merge_transact::{MergeOutputEncryption, MergeProof, MergeTransactIxData},
     };
     let (mut group, mut indexed) = confirmed_transfer_fixture();
@@ -1003,7 +1003,6 @@ fn confirmed_merge_fixture() -> (InstructionGroup, ShieldedTransaction) {
         });
     let data = MergeRingIxData {
         output_ring_data_hash: [13; 32],
-        authority: MergeRingAuthority::Ring,
         merge: MergeTransactIxData {
             expiry_unix_ts: u64::MAX,
             proof: MergeProof::zeroed(),
@@ -1057,7 +1056,6 @@ fn record_merge_group() -> (
     let request = CustomRingMergeIxData {
         tracking_revision: Default::default(),
         output_ring_data_hash: spp.output_ring_data_hash,
-        authority: spp.authority,
         sealed: SealedMergeRecord {
             proof: merge_proof(),
             eph_pk: [4; 33],

@@ -18,6 +18,8 @@ mod cosign;
 mod cosign_limits;
 #[path = "storage/cosign_usage.rs"]
 mod cosign_usage;
+#[path = "cosigner/mod.rs"]
+mod cosigner;
 #[path = "storage/database.rs"]
 mod database;
 #[path = "operations/enrollment_applier.rs"]
@@ -125,7 +127,11 @@ pub use cosign::{
     CoSignRequest, CoSignSettlement, CoSignerApproval, OwnerFlow, RefusingCoSigner,
 };
 pub use cosign_limits::{
-    AssetLimitSource, FrameRead, LimitedCoSigner, LimitedCoSignerInit, TransferRead,
+    AssetLimitSource, FrameRead, LimitedCoSigner, LimitedCoSignerInit, TransferRead, WindowRule,
+};
+pub use cosigner::{
+    Chain, CoSignRule, CoSigner, FrameParties, List, ListDecision, ListEntry, ListRule, ListStore,
+    Lists, Operation, Parties, PartySource, StoredLists, Subject, SubjectKind, Verdict,
 };
 pub use database::{Store, STORE_CONNECTIONS};
 pub use enrollment_applier::{EnrollmentApplier, EnrollmentApplierParts};

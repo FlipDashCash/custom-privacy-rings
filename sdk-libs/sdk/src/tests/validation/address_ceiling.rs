@@ -35,20 +35,13 @@ fn note(owner: u8, seed: u32) -> SpentInput {
 
 /// Payer, program, one nullifier PDA per input and `other` accounts.
 fn decide(inputs: &[SpentInput], other: u32) -> Result<CeilingDecision, AddressCeilingError> {
-    decide_under(
-        inputs,
-        other,
-        MergeCapacity {
-            keyed: 45,
-            zero_key: 45,
-        },
-    )
+    decide_under(inputs, other, 45)
 }
 
 fn decide_under(
     inputs: &[SpentInput],
     other: u32,
-    merge_capacity: MergeCapacity,
+    merge_capacity: usize,
 ) -> Result<CeilingDecision, AddressCeilingError> {
     let accounts = inputs
         .iter()
@@ -205,10 +198,7 @@ async fn an_oversized_group_splits_and_the_count_keeps_every_note_left() {
     .unwrap()
     .published_inputs();
     assert!(keyed < 49);
-    let capacity = MergeCapacity {
-        keyed,
-        zero_key: keyed,
-    };
+    let capacity = keyed;
 
     let inputs: Vec<_> = (0..49).map(|seed| note(1, seed)).collect();
     // Past the first merge alone, two notes left reach the ceiling exactly.
@@ -236,10 +226,7 @@ async fn an_oversized_group_splits_and_the_count_keeps_every_note_left() {
 #[test]
 fn a_lone_note_past_the_capacity_is_named_by_no_merge() {
     let inputs: Vec<_> = (0..4).map(|seed| note(1, seed)).collect();
-    let capacity = MergeCapacity {
-        keyed: 3,
-        zero_key: 3,
-    };
+    let capacity = 3;
     let Ok(CeilingDecision::MergeFirst { groups, addresses }) =
         decide_under(&inputs, LIMIT as u32 - 2 - 4 + 1, capacity)
     else {
@@ -250,58 +237,20 @@ fn a_lone_note_past_the_capacity_is_named_by_no_merge() {
     assert_eq!(addresses, LIMIT - 1);
 }
 
-/// The owner's signature and account leave a zero-key merge narrower, pinned from its own selection.
-#[tokio::test]
-async fn a_zero_key_group_splits_at_the_zero_key_capacity() {
-    use crate::{
-        tests::support::{ring, ring_utxo, zero_key, Chain, RingSettings, TREE_ID},
-        FittedMerge, MergeProofInput,
-    };
-    use custom_ring_interface::RingMode;
-    use spr_interface::{pda, ZERO_NULLIFIER_PUBKEY};
-
-    let owner = keypair(1);
-    let notes: Vec<_> = (0..52)
-        .map(|leaf| zero_key(ring_utxo(&owner, Mint::SOL, 5, leaf)))
-        .collect();
-    let carried = FittedMerge {
-        ring: ring(),
-        inputs: notes,
-        output_tree_id: TREE_ID,
-        keys: &owner,
-        proof_input: &MergeProofInput {
-            nullifier_key: owner.nullifier_key.clone(),
-            input_tree: pda::tree(TREE_ID),
-            output_tree: pda::tree(TREE_ID),
-        },
-        payer: address(1),
-    }
-    .prepare(&Chain::ring(RingSettings::new(RingMode::Confidential)))
-    .await
-    .unwrap()
-    .published_inputs();
-    assert_eq!(carried, WIDEST_ZERO_KEY_MERGE);
-
+#[test]
+fn zero_key_notes_are_named_by_no_merge() {
+    use spr_interface::ZERO_NULLIFIER_PUBKEY;
     let inputs: Vec<_> = (0..4)
         .map(|seed| SpentInput {
             nullifier_pubkey: ZERO_NULLIFIER_PUBKEY,
             ..note(1, seed)
         })
         .collect();
-    let capacity = MergeCapacity {
-        keyed: 45,
-        zero_key: 2,
-    };
-    let Ok(CeilingDecision::MergeFirst { groups, .. }) =
-        decide_under(&inputs, LIMIT as u32 - 2 - 4 + 1, capacity)
-    else {
-        panic!("merge first");
-    };
-    assert_eq!(groups[0].inputs, [0, 1]);
+    assert!(matches!(
+        decide_under(&inputs, LIMIT as u32 - 2 - 4 + 1, 45),
+        Err(AddressCeilingError::Unsupported { .. })
+    ));
 }
-
-/// Inputs a zero-key merge carries in one v1 transaction, measured here.
-const WIDEST_ZERO_KEY_MERGE: usize = 43;
 
 /// An anonymous transfer of `inputs` x `outputs`, slot 0 change, each other slot a body and a reply.
 fn anonymous_transfer(inputs: usize, outputs: usize, reply_len: Option<usize>) -> Instruction {
@@ -436,10 +385,7 @@ fn decide_transfer(instruction: &Instruction) -> Result<CeilingDecision, Address
         instruction,
         budget: budget(),
         inputs: &[],
-        merge_capacity: MergeCapacity {
-            keyed: 45,
-            zero_key: 45,
-        },
+        merge_capacity: 45,
     }
     .decide()
 }

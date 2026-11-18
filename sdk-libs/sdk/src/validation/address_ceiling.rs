@@ -324,14 +324,8 @@ pub struct AddressCeiling<'a> {
     pub instruction: &'a Instruction,
     pub budget: ComputeBudgetConfig,
     pub inputs: &'a [SpentInput],
-    pub merge_capacity: MergeCapacity,
-}
-
-/// [`crate::FittedMerge`]'s published inputs per kind of merge, a zero-key merge adds its signer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MergeCapacity {
-    pub keyed: usize,
-    pub zero_key: usize,
+    /// [`crate::FittedMerge`]'s published inputs.
+    pub merge_capacity: usize,
 }
 
 #[must_use]
@@ -437,7 +431,8 @@ impl AddressCeiling<'_> {
     fn groups(&self) -> Vec<MergeGroup> {
         let mut groups: Vec<MergeGroup> = Vec::new();
         for (position, input) in self.inputs.iter().enumerate() {
-            if input.carries_data() {
+            // A zero key has no merge.
+            if input.carries_data() || input.nullifier_pubkey == ZERO_NULLIFIER_PUBKEY {
                 continue;
             }
             let held = groups
@@ -460,7 +455,7 @@ impl AddressCeiling<'_> {
             .flat_map(|group| {
                 group
                     .inputs
-                    .chunks(self.capacity_of(group).max(1))
+                    .chunks(self.merge_capacity.max(1))
                     .filter(|run| run.len() > 1)
                     .map(|run| MergeGroup {
                         inputs: run.to_vec(),
@@ -470,12 +465,5 @@ impl AddressCeiling<'_> {
             .collect();
         merges.sort_by_key(|merge| core::cmp::Reverse(merge.inputs.len()));
         merges
-    }
-
-    fn capacity_of(&self, group: &MergeGroup) -> usize {
-        match group.nullifier_pubkey == ZERO_NULLIFIER_PUBKEY {
-            true => self.merge_capacity.zero_key,
-            false => self.merge_capacity.keyed,
-        }
     }
 }

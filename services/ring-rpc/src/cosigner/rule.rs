@@ -1,0 +1,106 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use solana_address::Address;
+use solana_message::VersionedMessage;
+use solana_signature::Signature;
+
+use crate::{
+    cosign::{CoSignFlows, CoSignRefusal, CoSignSettlement},
+    error::RingRpcError,
+};
+
+#[derive(Clone, Copy)]
+pub struct Operation<'a> {
+    pub ring: Address,
+    pub message: &'a VersionedMessage,
+    pub flows: &'a CoSignFlows,
+    /// The co-signature over `message`, the key of every reservation.
+    pub ticket: Signature,
+}
+
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    Admitted,
+    Refused(CoSignRefusal),
+}
+
+/// One check of the co-signer, the only extension point.
+#[async_trait]
+pub trait CoSignRule: Send + Sync {
+    async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingRpcError>;
+
+    /// Keeps or frees what `admit` reserved under the settled signature.
+    async fn settle(&self, _settlement: CoSignSettlement) -> Result<(), RingRpcError> {
+        Ok(())
+    }
+
+    /// `next` judges only what `self` admits.
+    fn then<R: CoSignRule>(self, next: R) -> Chain<Self, R>
+    where
+        Self: Sized,
+    {
+        Chain { first: self, next }
+    }
+}
+
+/// Two rules in order, itself a rule.
+pub struct Chain<A, B> {
+    first: A,
+    next: B,
+}
+
+#[async_trait]
+impl<A: CoSignRule, B: CoSignRule> CoSignRule for Chain<A, B> {
+    async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingRpcError> {
+        match self.first.admit(operation).await? {
+            Verdict::Admitted => {}
+            refused @ Verdict::Refused(_) => return Ok(refused),
+        }
+        match self.next.admit(operation).await {
+            Ok(Verdict::Admitted) => Ok(Verdict::Admitted),
+            // The first rule frees its reservation, no signature leaves the service.
+            unsigned => {
+                self.first
+                    .settle(CoSignSettlement::Failed(operation.ticket))
+                    .await?;
+                unsigned
+            }
+        }
+    }
+
+    async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
+        self.first.settle(settlement).await?;
+        self.next.settle(settlement).await
+    }
+}
+
+/// An absent rule admits.
+#[async_trait]
+impl<R: CoSignRule> CoSignRule for Option<R> {
+    async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingRpcError> {
+        match self {
+            Some(rule) => rule.admit(operation).await,
+            None => Ok(Verdict::Admitted),
+        }
+    }
+
+    async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
+        match self {
+            Some(rule) => rule.settle(settlement).await,
+            None => Ok(()),
+        }
+    }
+}
+
+#[async_trait]
+impl<R: CoSignRule + ?Sized> CoSignRule for Arc<R> {
+    async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingRpcError> {
+        (**self).admit(operation).await
+    }
+
+    async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
+        (**self).settle(settlement).await
+    }
+}

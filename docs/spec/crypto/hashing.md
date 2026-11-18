@@ -45,7 +45,7 @@ Every commitment and statement of a custom ring is a Poseidon hash over BN254. T
 | Output seed | `TXOS(n0, seed) = Poseidon(TXOS, n0, seed)` |
 | Output blinding | `TXOB(n0, output_seed, i) = Poseidon(TXOB, n0, output_seed, i)` |
 | Private transaction blinding | `TXPB(n0, seed) = Poseidon(TXPB, n0, seed)` |
-| Merge output blinding | `TMOB(seed, n0)`, as zolana defines it. `seed` is the owner's nullifier secret, and under the zero nullifier key the private merge seed |
+| Merge output blinding | `TMOB(seed, n0)`, as zolana defines it. `seed` is the owner's nullifier secret |
 
 `n0` is the transfer's first nullifier. The transfer proof derives `private_tx_blinding = TXPB(n0, CRBS(tx_viewing_sk, salt))` and reopens `private_tx_hash` over it. SPP derives every output blinding and `private_tx_blinding` from one seed, so the shared hash fixes that seed to `CRBS(tx_viewing_sk, salt)` and SPP holds every published output's blinding to it, a dummy's included. Each output record carries its slot's blinding, and the auditor also derives it from the sealed key. Only the sender bundle carries the output seed.
 

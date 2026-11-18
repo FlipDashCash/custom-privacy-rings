@@ -163,7 +163,6 @@ export {
 export {
   encodeRingTransactInstructionData,
   type AnonymousRingEddsaCircuit,
-  type RingAuthorityExitCircuit,
   type RingCircuitId,
   type RingTransactInstructionData,
 } from "../protocol/proof/circuit.js";

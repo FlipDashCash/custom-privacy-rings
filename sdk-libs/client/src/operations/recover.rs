@@ -399,7 +399,7 @@ impl<'a> MemberRecovery<'a> {
                 if let Some(merge) =
                     confirmed_merge(transaction, event_index, confirmed, recovery.auditor)?
                 {
-                    ledger.apply(merge);
+                    ledger.apply(merge)?;
                 }
             }
         }
@@ -584,7 +584,7 @@ impl<'h> MergeRecovery<'_, 'h> {
                     continue;
                 }
                 let successor = match ledger.output(&output.hash) {
-                    // 1. A sealed record opens its output without input history, the only path to a zero-key merge.
+                    // 1. A sealed record opens its output without input history.
                     Some(merged) => {
                         let owner =
                             source.nullifier_pk_of(merged.owner.hash(&merged.owner_key)?)?;

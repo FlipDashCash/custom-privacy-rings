@@ -1467,12 +1467,9 @@ Every row is one transaction. fits: the row clears the transaction and CPI ceili
 | 49x2 | anonymous entry | full+2tree | none | - | - | - | - | - | - | no | catalog key |
 | 49x2 | delegate | - | - | - | - | - | - | - | - | no | rail |
 | 49x2 | anonymous delegate | - | - | - | - | - | - | - | - | no | rail |
-| 8x1 | merge | ring | yes | 1729 | 16 | 1 | - | - | - | yes |  |
-| 8x1 | merge | owner signed | yes | 1826 | 17 | 2 | - | - | - | yes |  |
-| 24x1 | merge | ring | yes | 2769 | 32 | 1 | - | - | - | yes |  |
-| 24x1 | merge | owner signed | yes | 2866 | 33 | 2 | - | - | - | yes |  |
-| 52x1 | merge | ring | yes | 4589 | 60 | 1 | - | - | - | no | 493 B |
-| 52x1 | merge | owner signed | yes | 4686 | 61 | 2 | - | - | - | no | 590 B |
+| 8x1 | merge | ring | yes | 1728 | 16 | 1 | - | - | - | yes |  |
+| 24x1 | merge | ring | yes | 2768 | 32 | 1 | - | - | - | yes |  |
+| 52x1 | merge | ring | yes | 4588 | 60 | 1 | - | - | - | no | 492 B |
 
 Entry capacities at two outputs. Each row is the widest owner run one transaction clears at that leg count, rows = run + a hidden sender. A confidential leg names its own destination, a hidden sender's legs name one. over: what stops the next owner.
 | shape | rail | load | legs | leg kind | owner run | rows | accounts | signatures | frame | SPP CPI | fits | over |

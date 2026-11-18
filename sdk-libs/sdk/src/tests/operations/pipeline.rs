@@ -3676,7 +3676,7 @@ async fn a_delegate_exit_and_withdrawal_read_no_policy() {
     assert!(frame.parts.approval.is_empty());
     assert!(matches!(
         frame.parts.data().unwrap().circuit(),
-        spr_interface::instruction::CircuitId::RingAuthorityExit(..)
+        spr_interface::instruction::CircuitId::RingAuthority(..)
     ));
     assert_eq!(frame.parts.interface_transfers.len(), 1);
 }

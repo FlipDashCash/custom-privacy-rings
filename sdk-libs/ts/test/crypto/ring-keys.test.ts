@@ -74,7 +74,6 @@ describe("LocalRingKeys.destroy", () => {
       };
       for (const call of [
         () => keys.listSalt(RING),
-        () => keys.mergeSeeds([]),
         () => keys.viewTags([]),
         () => keys.ringDeliverySecrets([]),
         () => keys.ringTagMatches([]),

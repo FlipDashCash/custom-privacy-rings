@@ -36,7 +36,6 @@ import { isRingKeys, type RingKeys, type RingTagFrame } from "./ring-keys.js";
 import { isSmallOrder } from "../crypto/keys/x25519.js";
 import { answered, decoded, exactlyOne, unseen } from "./batch.js";
 import { zeroKeyNullifier } from "./exposed-notes.js";
-import { openZeroKeyMerges } from "./zero-key-merge.js";
 import { HalvingPageLimit, nextHistoryToken } from "../rpc/history.js";
 import { isPendingNote } from "./ring-wallet.js";
 import type { AnonymousWallet } from "./anonymous-wallet.js";
@@ -134,12 +133,6 @@ export async function syncRingWallet(
       context,
     );
     const notes = [...opened.utxos, ...opened.pendingOpenings];
-    if (isRingKeys(keys))
-      notes.push(
-        ...(await openZeroKeyMerges({ keys, owner: keys.address(), rows }, context)).map(
-          ({ utxo }) => utxo,
-        ),
-      );
     // 3. One registry refresh per sync, a note the refresh leaves unnamed is stored pending and its position still advances.
     const { solanaRpc, commitment } = client;
     if (
@@ -408,10 +401,10 @@ class RingReads {
   }
 
   /**
-   * Each held key's slot tag, deposits and the owner tag above the key's tag position, Rust `read_tags`.
+   * Each held key's slot tag and deposits above the key's tag position, Rust `read_tags`.
    *
    * Keys at one position share a read, an unread key reads from the first indexed block.
-   * The owner tag rides the lowest group, and every read key moves to the lowest terminal slot, so the owner tag's next read leaves no gap.
+   * Every read key moves to the lowest terminal slot, one shared position keeps the next sync at one read.
    */
   async tagged(
     keys: RingKeys,
@@ -434,18 +427,12 @@ class RingReads {
     const ordered = [...groups].sort(([left], [right]) =>
       left === null ? -1 : right === null ? 1 : left < right ? -1 : left > right ? 1 : 0,
     );
-    const ownerTag = keys.address().signingPublicKey.ownerProofInputHash();
     const rows: IndexedShieldedTransaction[] = [];
     let covered: bigint | undefined;
-    for (const [at, [position, members]] of ordered.entries()) {
+    for (const [position, members] of ordered) {
       const slotTags = members.map((key) => confidentialSlotTag(key.u()));
       const reached = [
-        await this.#read(
-          "transactions",
-          [...slotTags, ...(at === 0 ? [ownerTag] : [])],
-          position,
-          rows,
-        ),
+        await this.#read("transactions", slotTags, position, rows),
         await this.#read(
           "proofless",
           members.map((key) => key.u()),

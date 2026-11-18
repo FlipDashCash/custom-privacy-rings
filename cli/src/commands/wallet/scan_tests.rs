@@ -15,16 +15,13 @@ use spr_client::{
     GetShieldedTransactionsByTagsResponse, HistoryFilters, OutputContext, OutputSlot,
     PaginationToken, RingHistoryOptions, ShieldedTransaction, TransactionOutputs, WitnessReader,
 };
-use spr_event::{encode_merge_output_data, MergeOutputDataRef, MessageData};
-use spr_interface::ZERO_NULLIFIER_PUBKEY;
+use spr_event::MessageData;
 use spr_keypair::{viewing_key::ViewTag, ShieldedAddress, ShieldedKeypair};
 use spr_transaction::{
-    instructions::merge::MergeOutputPlaintext,
     serialization::proofless::{Proofless, ProoflessEncode},
     utxo::blinding::derive_transact_output_blinding,
     AssetRegistry, Data, Mint, OwnerCx, Utxo, UtxoSerialization,
 };
-use zolana_ring_keys::{MergeSeedHolder, MergeSeedRequest};
 use zolana_ring_transaction::{
     record_key, seal_recipient_body, seal_sender_bundle, OutputBlindings,
 };
@@ -475,83 +472,6 @@ fn a_confidential_ring_wallet_finds_a_payment_under_its_slot_tag_and_resumes_pas
         [paid],
         "the ledger answers past its position"
     );
-}
-
-/// A zero-key merge under the owner's tag, its commitment.
-fn publish_owner_merge(ledger: &mut Ledger, owner: &ShieldedKeypair, first: [u8; 32]) -> [u8; 32] {
-    let seed = zolana_ring_keys::RotatingRingKeys::new(owner)
-        .unwrap()
-        .merge_seeds(&[MergeSeedRequest {
-            viewing_pubkey: owner.viewing_pubkey(),
-            ring_program_id: RING,
-            first_nullifier: first,
-        }])
-        .unwrap()
-        .remove(0);
-    let hash = Utxo {
-        owner: owner.signing_key.pubkey(),
-        asset: Mint::SOL,
-        amount: 100,
-        blinding: seed.output_blinding(&first).unwrap(),
-        ring_program_id: Some(RING),
-        data: Data::default(),
-    }
-    .hash(&ZERO_NULLIFIER_PUBKEY, &[0; 32], &[0; 32], TREE)
-    .unwrap();
-    let salt = [8; 16];
-    let ciphertext = MergeOutputPlaintext {
-        amount: 100,
-        mint: Mint::SOL.asset,
-    }
-    .encrypt(&seed.output_key(&first).unwrap(), &salt)
-    .unwrap();
-    ledger.transactions.push(ShieldedTransaction {
-        slot: 5,
-        tx_signature: Signature::from([first[0]; 64]),
-        event_index: Some(0),
-        tx_viewing_pk: None,
-        salt: None,
-        output_slots: vec![OutputSlot {
-            view_tag: owner.signing_key.pubkey().owner_proof_input_hash().unwrap(),
-            output_context: OutputContext {
-                hash,
-                tree_id: TREE,
-                leaf_index: 30,
-            },
-            payload: encode_merge_output_data(MergeOutputDataRef {
-                salt: &salt,
-                ciphertext: &ciphertext,
-                prefix: &[[0; 32]],
-            }),
-        }],
-        messages: Vec::new(),
-        nullifiers: vec![first],
-        proofless: false,
-        ring_config: None,
-        ring_program_id: Some(RING),
-    });
-    hash
-}
-
-#[test]
-fn a_seeded_merge_reads_exposed_once_on_either_ring_mode() {
-    let owner = keypair(1);
-    let mut ledger = Ledger::default();
-    let merged = publish_owner_merge(&mut ledger, &owner, nullifier(40));
-    let zolana = ledger.client();
-    for (mode, test) in [
-        (RingMode::Confidential, "seeded-merge-confidential"),
-        (RingMode::Anonymous, "seeded-merge-anonymous"),
-    ] {
-        let notes = Member::new(1, test).scan_in(&zolana, mode);
-        let exposed: Vec<[u8; 32]> = notes
-            .exposed_if_spent
-            .iter()
-            .map(|utxo| utxo.utxo_hash)
-            .collect();
-        assert_eq!(exposed, [merged]);
-        assert!(notes.spendable.utxos().next().is_none());
-    }
 }
 
 #[test]

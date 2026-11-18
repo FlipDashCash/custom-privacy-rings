@@ -10,15 +10,41 @@ pub struct Migrator;
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
     fn migrations() -> Vec<Box<dyn MigrationTrait>> {
-        vec![Box::new(Schema), Box::new(EnrollmentRings)]
+        std::iter::once(Box::new(Schema) as Box<dyn MigrationTrait>)
+            .chain(
+                ADDED_TABLES
+                    .into_iter()
+                    .map(|table| Box::new(table) as Box<dyn MigrationTrait>),
+            )
+            .collect()
     }
 }
 
 #[derive(DeriveMigrationName)]
 struct Schema;
 
-/// Named by hand, a derived name is the file stem `Schema` already holds.
-struct EnrollmentRings;
+/// Runs after `Schema`, the migration takes the table's name.
+struct AddedTable {
+    name: &'static str,
+    create: fn(&str) -> String,
+}
+
+fn enrollment_rings(blob: &str) -> String {
+    format!(
+        "CREATE TABLE enrollment_rings (writer {blob} NOT NULL, ring {blob} NOT NULL, PRIMARY KEY(writer, ring))"
+    )
+}
+
+const ADDED_TABLES: [AddedTable; 2] = [
+    AddedTable {
+        name: "enrollment_rings",
+        create: enrollment_rings,
+    },
+    AddedTable {
+        name: "cosign_list_entries",
+        create: crate::cosigner::list_migration,
+    },
+];
 
 const TABLES: [&str; 24] = [
     "records_update_members",
@@ -130,14 +156,14 @@ impl MigrationTrait for Schema {
     }
 }
 
-impl MigrationName for EnrollmentRings {
+impl MigrationName for AddedTable {
     fn name(&self) -> &str {
-        "enrollment_rings"
+        self.name
     }
 }
 
 #[async_trait::async_trait]
-impl MigrationTrait for EnrollmentRings {
+impl MigrationTrait for AddedTable {
     async fn up(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let blob = match manager.get_database_backend() {
             DatabaseBackend::Postgres => "BYTEA",
@@ -145,9 +171,7 @@ impl MigrationTrait for EnrollmentRings {
         };
         manager
             .get_connection()
-            .execute_unprepared(&format!(
-                "CREATE TABLE enrollment_rings (writer {blob} NOT NULL, ring {blob} NOT NULL, PRIMARY KEY(writer, ring))"
-            ))
+            .execute_unprepared(&(self.create)(blob))
             .await?;
         Ok(())
     }
@@ -155,7 +179,7 @@ impl MigrationTrait for EnrollmentRings {
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         manager
             .get_connection()
-            .execute_unprepared("DROP TABLE enrollment_rings")
+            .execute_unprepared(&format!("DROP TABLE {}", self.name))
             .await?;
         Ok(())
     }

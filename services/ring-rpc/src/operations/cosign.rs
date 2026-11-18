@@ -73,6 +73,11 @@ pub enum CoSignRefusal {
     OverLimit,
     /// No class the operation demands sits in the explicit approval.
     NotApproved,
+    Frozen,
+    Blocked,
+    NotAllowed,
+    /// An operator rule outside the service's own set.
+    Custom,
 }
 
 #[derive(Debug, Clone, Copy, Error, PartialEq, Eq)]
@@ -92,6 +97,16 @@ pub enum CoSignError {
     NotApproved = -32165,
     #[error("the co-sign reservation is already released")]
     ReleasedReservation = -32166,
+    #[error("a sender or an asset of the transaction is frozen")]
+    Frozen = -32167,
+    #[error("a party or an asset of the transaction is blocked")]
+    Blocked = -32168,
+    #[error("a party or an asset of the transaction is not on the allow list")]
+    NotAllowed = -32169,
+    #[error("an operator rule refuses the transaction")]
+    CustomRefused = -32174,
+    #[error("the list entry names no usable subject")]
+    ListSubject = -32175,
     #[error("the co-sign request names an asset with no record")]
     UnrecordedAsset = -32296,
 }
@@ -138,6 +153,10 @@ impl From<CoSignRefusal> for CoSignError {
             CoSignRefusal::Disabled => Self::Disabled,
             CoSignRefusal::OverLimit => Self::OverLimit,
             CoSignRefusal::NotApproved => Self::NotApproved,
+            CoSignRefusal::Frozen => Self::Frozen,
+            CoSignRefusal::Blocked => Self::Blocked,
+            CoSignRefusal::NotAllowed => Self::NotAllowed,
+            CoSignRefusal::Custom => Self::CustomRefused,
         }
     }
 }
@@ -190,6 +209,12 @@ mod tests {
             (LimitsUnavailable, -32163),
             (MessageScope, -32164),
             (NotApproved, -32165),
+            (ReleasedReservation, -32166),
+            (Frozen, -32167),
+            (Blocked, -32168),
+            (NotAllowed, -32169),
+            (CustomRefused, -32174),
+            (ListSubject, -32175),
             (UnrecordedAsset, -32296),
         ] {
             assert_eq!(ErrorObjectOwned::from(error).code(), code);

@@ -27,7 +27,6 @@ import {
 } from "../../../src/operations/audit/audit-merge.js";
 import { knownUtxoHash, type KnownUtxos } from "../../../src/operations/audit/audit.js";
 import {
-  MergeRingAuthority,
   sealMergeRecord,
   type SealedMergeRecord,
 } from "../../../src/crypto/audit/merge-disclosure.js";
@@ -90,7 +89,10 @@ describe("the tag 57 reader", () => {
   type Case = (typeof mergeVector.cases)[number];
 
   /** The vector's record over `vectorRing`, position 2 real and every other past the first padding. */
-  function row(entry: Case, overrides: Readonly<{ hash?: Bytes32; sealed?: SealedRecord }> = {}) {
+  function row(
+    entry: Case,
+    overrides: Readonly<{ hash?: Bytes32; sealed?: SealedRecord; nullifierPk?: Bytes32 }> = {},
+  ) {
     const { request } = entry;
     const seed = hex(request.seed) as Bytes32;
     const firstNullifier = hex(request.firstNullifier) as Bytes32;
@@ -102,7 +104,10 @@ describe("the tag 57 reader", () => {
       rebuiltHash(
         {
           ownerKey: record.slice(9, 41) as Bytes32,
-          owner: { kind: "keyed", nullifierPk: hex(request.nullifierPk) as Bytes32 },
+          owner: {
+            kind: "keyed",
+            nullifierPk: overrides.nullifierPk ?? (hex(request.nullifierPk) as Bytes32),
+          },
           asset: hashBytes(addressBytes(mint)) as Bytes32,
           amount: BigInt(request.amount),
           blinding: seededMergeOutputBlinding(seed, firstNullifier),
@@ -143,7 +148,6 @@ describe("the tag 57 reader", () => {
       kind: "merge" as const,
       transaction,
       sealedRecord: overrides.sealed ?? sealedFor(entry),
-      authority: MergeRingAuthority.ownerSigned,
     };
   }
 
@@ -201,7 +205,6 @@ describe("the tag 57 reader", () => {
       dataHash: ZERO_32,
       ringDataHash: hex(entry.request.outputRingDataHash),
     });
-    expect(opened.authority).toBe(MergeRingAuthority.ownerSigned);
     expect(opened.nullifiers.map(({ state }) => state.kind)).toEqual([
       "unresolvedReal",
       "padding",
@@ -215,12 +218,16 @@ describe("the tag 57 reader", () => {
   });
 
   it("identifies the zero key and the enrolled key from each record", () => {
-    const [enrolled, zero] = mergeVector.cases;
-    const keyOf = (entry: Case) =>
-      openRingMerge({ confirmed: row(entry), eventIndex: 0, auditor: vectorAuditor() }).utxo
-        .nullifierPk;
-    expect(keyOf(zero!)).toEqual(ZERO_NULLIFIER_PK);
-    expect(keyOf(enrolled!)).not.toEqual(ZERO_NULLIFIER_PK);
+    const enrolled = mergeVector.cases[0]!;
+    const keyOf = (confirmed: ReturnType<typeof row>) =>
+      openRingMerge({ confirmed, eventIndex: 0, auditor: vectorAuditor() }).utxo.nullifierPk;
+    const zero = row(enrolled, {
+      nullifierPk: ZERO_NULLIFIER_PK as Bytes32,
+      sealed: sealedFor(enrolled, { key: carriedRecordKey(ZERO_NULLIFIER_PK as Bytes32) }),
+    });
+    expect(keyOf(zero)).toEqual(ZERO_NULLIFIER_PK);
+    expect(keyOf(row(enrolled))).toEqual(hex(enrolled.request.nullifierPk));
+    expect(hex(enrolled.request.nullifierPk)).not.toEqual(ZERO_NULLIFIER_PK);
   });
 
   it("resolves a nullifier through the known notes and never a padding position", () => {

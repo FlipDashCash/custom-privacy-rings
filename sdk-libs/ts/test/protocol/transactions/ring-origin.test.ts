@@ -40,7 +40,6 @@ import {
 import { RingInstructionTag } from "../../../src/operations/management/admin.js";
 import { RingTransactData } from "../../../src/protocol/transaction/transact.js";
 import {
-  MergeRingAuthority,
   decodeRingMergeRequest,
   encodeRingMergeRequest,
   forwardedMergeData,
@@ -983,12 +982,14 @@ describe("RpcTransactionOrigin", () => {
 
   describe("tag 57", () => {
     const vectorFrame = decodeRingMergeRequest(
-      Buffer.from(
-        readFileSync(
-          new URL("../../../../../test-vectors/merge/merge_frame.hex", import.meta.url),
-          "utf8",
-        ).trim(),
-        "hex",
+      Uint8Array.from(
+        Buffer.from(
+          readFileSync(
+            new URL("../../../../../test-vectors/merge/merge_frame.hex", import.meta.url),
+            "utf8",
+          ).trim(),
+          "hex",
+        ),
       ),
     );
     const tree = treeAddress(4);
@@ -1004,12 +1005,8 @@ describe("RpcTransactionOrigin", () => {
       .finish();
 
     /** The vector frame's row, its salt and ciphertext read back from the forwarded body. */
-    function bind(
-      authority: MergeRingAuthority,
-      tamper = false,
-      wrapperTag: number = RingInstructionTag.merge,
-    ) {
-      const request = { ...vectorFrame, authority };
+    function bind(tamper = false, wrapperTag: number = RingInstructionTag.merge) {
+      const request = vectorFrame;
       const forwarded = forwardedMergeData(
         request,
         sppMergeBody(request.compactBody),
@@ -1037,12 +1034,9 @@ describe("RpcTransactionOrigin", () => {
       return { indexed, confirmed: confirmedEvent(RING, [], source, event, wrapper), source };
     }
 
-    it.each([
-      ["ring", MergeRingAuthority.ring],
-      ["ownerSigned", MergeRingAuthority.ownerSigned],
-    ] as const)("binds the %s authority and refuses another source byte", async (_, authority) => {
-      const { confirmed, source, indexed } = bind(authority);
-      const merge = readMergeData(new Reader(source.subarray(34)));
+    it("binds the sealed record and refuses another source byte", async () => {
+      const { confirmed, source, indexed } = bind();
+      const merge = readMergeData(new Reader(source.subarray(33)));
       const payload = encodeMergeOutputData({
         ringDataHash: vectorFrame.outputRingDataHash,
         salt: merge.outputEncryption.salt,
@@ -1051,12 +1045,19 @@ describe("RpcTransactionOrigin", () => {
       const row = indexed(merge.nullifiers, payload, merge.outputUtxoHash);
       await expect(
         new RpcTransactionOrigin(rpcWith(confirmed)).confirmedTransaction(row, RING),
-      ).resolves.toMatchObject({ kind: "merge", authority });
-      const tampered = bind(authority, true);
+      ).resolves.toMatchObject({
+        kind: "merge",
+        sealedRecord: {
+          ephemeralPublicKey: vectorFrame.sealed.ephemeralPublicKey,
+          envelope: vectorFrame.sealed.envelope,
+          record: vectorFrame.sealed.record,
+        },
+      });
+      const tampered = bind(true);
       await expect(
         new RpcTransactionOrigin(rpcWith(tampered.confirmed)).confirmedTransaction(row, RING),
       ).rejects.toMatchObject({ code: "RING_ORIGIN_DECODE" });
-      const sppTag = bind(authority, false, InstructionTag.ringMergeTransact);
+      const sppTag = bind(false, InstructionTag.ringMergeTransact);
       await expect(
         new RpcTransactionOrigin(rpcWith(sppTag.confirmed)).confirmedTransaction(row, RING),
       ).rejects.toMatchObject({ code: "RING_ORIGIN_DECODE" });

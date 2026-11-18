@@ -4,7 +4,7 @@ import {
   type Bytes32,
   type Instruction,
 } from "@heliuslabs/spr/interface";
-import { encodeBase58 } from "@heliuslabs/spr/internal";
+import { encodeBase58, ZERO_NULLIFIER_PK } from "@heliuslabs/spr/internal";
 import { ShieldedKeypair } from "@heliuslabs/spr/keypair";
 import { SOL_MINT } from "@heliuslabs/spr/transaction";
 import { AccountRole } from "@solana/kit";
@@ -18,7 +18,6 @@ import {
   decideAddressCeiling,
   TransactionFit,
   type CeilingDecision,
-  type MergeCapacity,
   type SpentInput,
 } from "../../../src/operations/workflow/address-ceiling.js";
 
@@ -44,16 +43,15 @@ const note = (owner: number, seed: number): SpentInput => ({
   nullifierPda: address(1000 + seed),
 });
 
-function decide(
-  inputs: readonly SpentInput[],
-  other: number,
-  mergeCapacity: MergeCapacity = { keyed: 45, zeroKey: 45 },
-): CeilingDecision {
+function decide(inputs: readonly SpentInput[], other: number, mergeCapacity = 45): CeilingDecision {
   const accounts = [
     ...inputs.map((input) => input.nullifierPda),
     ...Array.from({ length: other }, (_, seed) => address(5000 + seed)),
   ].map((account) => ({ address: account, role: 1 }));
-  const instruction = { programAddress: address(2), accounts } as unknown as Instruction;
+  const instruction = {
+    programAddress: address(2),
+    accounts,
+  } as unknown as Instruction;
   return decideAddressCeiling({
     payer: address(1),
     instruction,
@@ -86,7 +84,10 @@ const realFrame = (messages: readonly number[] = []): Instruction =>
     data: ringInstructionData({
       ...ringFrame({ rail: "confidential", inputs: 1, outputs: 2 }),
       extensions: {
-        messages: messages.map((length) => ({ viewTag: field(9), data: new Uint8Array(length) })),
+        messages: messages.map((length) => ({
+          viewTag: field(9),
+          data: new Uint8Array(length),
+        })),
       },
     }),
   }) as unknown as Instruction;
@@ -141,10 +142,15 @@ describe("decideAddressCeiling, the cases of Rust `validation::address_ceiling`"
     const inputs = [
       note(1, 0),
       { ...note(1, 1), asset: address(7) },
-      { ...note(1, 2), nullifierPublicKey: new Uint8Array(32).fill(9) as Bytes32 },
+      {
+        ...note(1, 2),
+        nullifierPublicKey: new Uint8Array(32).fill(9) as Bytes32,
+      },
       { ...note(1, 3), treeId: 2 },
     ];
-    expect(refused(inputs, LIMIT - 2 - 4 + 1)).toMatchObject({ afterMerging: LIMIT + 1 });
+    expect(refused(inputs, LIMIT - 2 - 4 + 1)).toMatchObject({
+      afterMerging: LIMIT + 1,
+    });
   });
 
   it("refuses consolidation short of the ceiling with how far it reached", () => {
@@ -155,10 +161,20 @@ describe("decideAddressCeiling, the cases of Rust `validation::address_ceiling`"
   });
 
   it("names no merge for a lone note past the capacity", () => {
-    const decision = decide(notes(1, 4), LIMIT - 2 - 4 + 1, { keyed: 3, zeroKey: 3 });
+    const decision = decide(notes(1, 4), LIMIT - 2 - 4 + 1, 3);
     if (decision.kind !== "mergeFirst") throw new Error("merge first");
     expect(decision.groups.map((group) => group.inputs)).toEqual([[0, 1, 2]]);
     expect(decision.addresses).toBe(LIMIT - 1);
+  });
+
+  it("names no merge for zero-key notes", () => {
+    const zeroKeyed = notes(1, 4).map((input) => ({
+      ...input,
+      nullifierPublicKey: ZERO_NULLIFIER_PK as Bytes32,
+    }));
+    expect(refused(zeroKeyed, LIMIT - 2 - 4 + 1)).toMatchObject({
+      afterMerging: LIMIT + 1,
+    });
   });
 
   it("reads a frame that parses under neither rail as unparsed, whatever its length", () => {
@@ -176,7 +192,7 @@ describe("decideAddressCeiling, the cases of Rust `validation::address_ceiling`"
           instruction,
           computeUnitLimit: 1_000_000,
           inputs: [],
-          mergeCapacity: { keyed: 45, zeroKey: 45 },
+          mergeCapacity: 45,
         }),
       ),
     ).toMatchObject({ code: "RING_FIT_UNPARSED_FRAME" });
@@ -190,7 +206,12 @@ describe("TransactionFit, the refusals of Rust `TransactionFit`", () => {
     const fit = TransactionFit.of(realFrame(), payer, BUDGET);
     expect(fit).toMatchObject({ signatures: 1, addresses: 2 });
     expect(fit.cpiBytes).toBeGreaterThan(realFrame().data?.length ?? 0);
-    expect(fit.setup).toEqual({ instructions: 0, signatures: 0, bytes: 0, addresses: 0 });
+    expect(fit.setup).toEqual({
+      instructions: 0,
+      signatures: 0,
+      bytes: 0,
+      addresses: 0,
+    });
   });
 
   it("names no CPI bytes off the transfer tags", () => {
@@ -218,7 +239,10 @@ describe("TransactionFit, the refusals of Rust `TransactionFit`", () => {
 
   it("refuses an expansion past one CPI ahead of every other ceiling", () => {
     const instruction = realFrame([MAX_CPI_DATA_LEN]);
-    const refusal = { code: "RING_FIT_CPI_BYTES", details: { limit: MAX_CPI_DATA_LEN } };
+    const refusal = {
+      code: "RING_FIT_CPI_BYTES",
+      details: { limit: MAX_CPI_DATA_LEN },
+    };
     expect(thrown(() => TransactionFit.of(instruction, payer, BUDGET))).toMatchObject(refusal);
     const crowded = Array.from({ length: 13 }, (_, key) => signing(50 + key));
     expect(
@@ -256,7 +280,10 @@ describe("TransactionFit, the refusals of Rust `TransactionFit`", () => {
       address: address(5000 + seed),
       role: 1,
     }));
-    const instruction = { programAddress: address(2), accounts } as unknown as Instruction;
+    const instruction = {
+      programAddress: address(2),
+      accounts,
+    } as unknown as Instruction;
     expect(thrown(() => TransactionFit.of(instruction, payer, BUDGET))).toMatchObject({
       code: "RING_FIT_ADDRESSES",
       details: { addresses: LIMIT + 2, limit: LIMIT },
@@ -268,7 +295,10 @@ describe("TransactionFit, the refusals of Rust `TransactionFit`", () => {
       address: address(5000 + seed),
       role: AccountRole.READONLY,
     }));
-    const instruction = { programAddress: address(2), accounts } as unknown as Instruction;
+    const instruction = {
+      programAddress: address(2),
+      accounts,
+    } as unknown as Instruction;
     const setup = (extra: number): Instruction =>
       ({
         programAddress: address(3),
@@ -292,7 +322,11 @@ describe("TransactionFit, the refusals of Rust `TransactionFit`", () => {
       { ...payer, setupInstructions: [signing(5)] },
       BUDGET,
     );
-    expect(fit.setup).toMatchObject({ instructions: 1, signatures: 1, addresses: 1 });
+    expect(fit.setup).toMatchObject({
+      instructions: 1,
+      signatures: 1,
+      addresses: 1,
+    });
     expect(fit.setup.bytes).toBeGreaterThan(0);
   });
 });

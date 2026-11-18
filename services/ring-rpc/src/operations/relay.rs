@@ -26,19 +26,20 @@ use thiserror::Error;
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
 use zolana_ring_client::rpc::{
-    GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest, ReadTarget, RelayId,
-    RelayIntent, RelayMergeInputs, RelayProofInputs, RelayProofInputsError, RelayQuote, RelayRail,
-    RelayRequestAttestation, RelayStatus, RelayStep, ServiceTarget, SubmitRelayRequest,
-    TokenAccountSetupError,
+    CoSignTransactionRequest, CoSignTransactionResponse, GetRelayQuoteRequest,
+    GetRelayStatusRequest, PrepareRelayRequest, ReadTarget, RelayId, RelayIntent, RelayMergeInputs,
+    RelayProofInputs, RelayProofInputsError, RelayQuote, RelayRail, RelayRequestAttestation,
+    RelayStatus, RelayStep, ServiceTarget, SubmitRelayRequest, TokenAccountSetupError,
 };
 use zolana_ring_transaction::ClassifiedInput;
 
 use crate::{
     authority_transfer::AuthorityTransferError,
     cosign::{
-        CoSignDecision, CoSignFlows, CoSignPolicy, CoSignRefusal, CoSignRequest, CoSignSettlement,
-        RefusingCoSigner,
+        CoSignDecision, CoSignError, CoSignFlows, CoSignPolicy, CoSignRefusal, CoSignRequest,
+        CoSignSettlement, RefusingCoSigner,
     },
+    cosigner::DirectCoSign,
     database::Store,
     error::{redacted, RingRpcError},
     landing::{signature_fees, Attempt, ChainOutcome, ChainSubmit, Landing, LatestBlockhash},
@@ -1105,6 +1106,19 @@ impl Relay {
         })
     }
 
+    /// The co-signature of a transaction the wallet proved and sends itself.
+    pub async fn co_sign_transaction(
+        &self,
+        request: &CoSignTransactionRequest,
+    ) -> Result<CoSignTransactionResponse, RingRpcError> {
+        DirectCoSign {
+            chain: self.chain.as_ref(),
+            policy: self.co_signer.as_ref(),
+        }
+        .sign(request)
+        .await
+    }
+
     /// A refusal stores nothing, a repeat of a held decision reserves nothing more.
     async fn co_sign(
         &self,
@@ -1124,6 +1138,12 @@ impl Relay {
             CoSignDecision::Refused(
                 CoSignRefusal::Disabled | CoSignRefusal::OverLimit | CoSignRefusal::NotApproved,
             ) => Err(RelayError::CoSignRefused.into()),
+            CoSignDecision::Refused(
+                listed @ (CoSignRefusal::Frozen
+                | CoSignRefusal::Blocked
+                | CoSignRefusal::NotAllowed
+                | CoSignRefusal::Custom),
+            ) => Err(CoSignError::from(listed).into()),
         }
     }
 

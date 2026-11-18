@@ -1156,7 +1156,8 @@ describe("delegate rail", () => {
     expect(opened?.utxo.amount).toBe(100n);
   });
 
-  it("withdraws a member's note publicly on the authority rail", async () => {
+  // Zolana proves no public withdrawal on the authority rail.
+  it.skip("withdraws a member's note publicly on the authority rail", async () => {
     const source = ShieldedKeypair.generate();
     const recipient = ShieldedKeypair.generate();
     const { fixture, delegate } = await delegateRing([source, recipient]);

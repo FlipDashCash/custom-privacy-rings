@@ -18,7 +18,7 @@ import type { Address, Bytes32, RequestContext, Signature } from "@heliuslabs/sp
 import type { X25519Keypair } from "@heliuslabs/spr/keypair";
 import type { OutputContext } from "@heliuslabs/spr/transaction";
 
-import { openMergeRecord, type MergeRingAuthority } from "../../crypto/audit/merge-disclosure.js";
+import { openMergeRecord } from "../../crypto/audit/merge-disclosure.js";
 import { ringIdField } from "../../crypto/derivation/ring-stream.js";
 import { namedNullifierPk, RecordKind } from "../../protocol/codec/audit-stream.js";
 import { RingError } from "../../protocol/error.js";
@@ -60,7 +60,6 @@ export interface OpenedRingMerge {
   readonly eventIndex: number;
   readonly outputContext: OutputContext;
   readonly utxo: AuditedUtxo;
-  readonly authority: MergeRingAuthority;
   readonly nullifiers: readonly MergeNullifierRow[];
 }
 
@@ -197,7 +196,6 @@ export function openRingMerge(
       eventIndex,
       outputContext: slot.outputContext,
       utxo,
-      authority: confirmed.authority,
       nullifiers: Object.freeze(
         transaction.nullifiers.map((nullifier, position) =>
           Object.freeze({

@@ -88,7 +88,7 @@ impl<S: TransactionSource> Hub<S> {
     }
 
     /// Signature and nonce only, the writer checks the policy authority.
-    async fn authorize_policy_action<A: PolicyAuthorityAction>(
+    pub(crate) async fn authorize_policy_action<A: PolicyAuthorityAction>(
         &self,
         ring: Address,
         auth: &PolicyAuthorityAuth,

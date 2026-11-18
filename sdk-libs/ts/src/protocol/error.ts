@@ -174,6 +174,7 @@ export const RING_ERROR_CODES = [
   "RING_TRANSFER_PAST_ACCOUNT_BOUND",
   "RING_COSIGNER_OUT_OF_SCOPE",
   "RING_DELEGATE_DEPOSIT_LEG",
+  // Reserved, nothing raises it and the snapshot keeps later codes in place.
   "RING_MERGE_OWNER_MISMATCH",
   "RING_LIST_SALT_MISSING",
   "RING_RECIPIENT_VIEWING_KEY_STALE",
@@ -213,7 +214,6 @@ export const RING_ERROR_CODES = [
   "RING_RELAY_FAILED",
   "RING_SUBMISSION_UNPROVED",
   "RING_RELAY_FEE_PAYER_FUNDS_DEPOSIT",
-  // Reserved, nothing raises it and the snapshot keeps later codes in place.
   "RING_ZERO_KEY_MERGE_UNAVAILABLE",
   "RING_EXIT_PROOF_UNAVAILABLE",
   "RING_RECIPIENT_LITERAL_ZERO_KEY",

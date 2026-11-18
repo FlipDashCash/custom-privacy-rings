@@ -9,6 +9,7 @@ mod anonymous_rail;
 mod assets;
 mod error;
 mod input_map;
+mod merge_seed;
 mod published;
 mod recipient_delivery;
 
@@ -44,6 +45,7 @@ pub use anonymous_rail::{random_tag_preimage, AnonymousPlan, AnonymousSlot};
 pub use assets::RingAssets;
 pub use error::RingRailError;
 pub use input_map::{address_chain, note_count, ClassifiedInput, InputClass};
+pub use merge_seed::MergeSeed;
 pub use published::PublishedSlot;
 pub use recipient_delivery::{
     carried_key, is_contributory, open_recipient_body, open_reply, open_sender_bundle,

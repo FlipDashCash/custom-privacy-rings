@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use custom_ring_interface::{
-    settlement_mints, tag, InstructionTag, ParsedTransact, PublicLeg, PublicSlotError, PublicSlots,
-    RingRail, RingTransactData, RING_TRANSACT_RING_CONFIG_INDEX,
+    funder_account_position, settlement_mints, tag, InstructionTag, ParsedTransact, PublicLeg,
+    PublicSlotError, PublicSlots, RingRail, RingTransactData, RING_TRANSACT_RING_CONFIG_INDEX,
 };
 use custom_ring_sdk::CustomRing;
 use solana_address::Address;
@@ -27,6 +27,7 @@ use zolana_ring_transaction::RingAssets;
 use crate::{
     cosign::{AssetFlow, CoSignError, OwnerFlow},
     cosign_limits::{FrameRead, TransferRead},
+    cosigner::{FrameParties, Parties},
     error::RingRpcError,
     hub::Shared,
     upstream::TransactionSource,
@@ -73,20 +74,76 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
     pub async fn flows(self) -> Result<FrameRead, RingRpcError> {
         let frame = RingFrame::of(self.message, self.ring)?;
         let co_signers = frame.co_signers(self.ring);
-        Ok(match self.read(frame).await? {
-            FrameRead::Transfer(read) => FrameRead::Transfer(TransferRead { co_signers, ..read }),
-            FrameRead::Delegate => FrameRead::Delegate,
-        })
+        let Some(opened) = self.open(&frame).await? else {
+            return Ok(FrameRead::Delegate);
+        };
+        let notes = real_input_notes(&self.shared.store(self.ring), &opened.audited).await?;
+        let read = FrameFlows {
+            audited: &opened.audited,
+            notes: &notes,
+            owner_signers: opened.owner_signers,
+            public: opened.public,
+            assets: &self.shared.cached_assets().await,
+            ring: self.ring,
+        }
+        .read(opened.approval_bits)?;
+        Ok(FrameRead::Transfer(TransferRead { co_signers, ..read }))
     }
 
-    async fn read(&self, frame: RingFrame<'_>) -> Result<FrameRead, RingRpcError> {
+    /// Waits for no input note the signer run already answers for.
+    pub async fn parties(self) -> Result<FrameParties, RingRpcError> {
+        let frame = RingFrame::of(self.message, self.ring)?;
+        let Some(opened) = self.open(&frame).await? else {
+            return Ok(FrameParties::Delegate);
+        };
+        let notes = real_input_notes(&self.shared.store(self.ring), &opened.audited).await?;
+        let flows = FrameFlows {
+            audited: &opened.audited,
+            notes: &notes,
+            owner_signers: opened.owner_signers,
+            public: opened.public,
+            assets: &self.shared.cached_assets().await,
+            ring: self.ring,
+        };
+        let spent = match flows.inputs() {
+            Ok(spent) => spent,
+            // The proof binds every owner of such a frame into the signer run.
+            Err(_) if !opened.hidden_sender => flows.entries()?,
+            Err(unknown) => return Err(unknown),
+        };
+        let outputs = flows.outputs()?;
+        let senders = flows
+            .owner_signers
+            .iter()
+            .copied()
+            .chain(spent.iter().map(|input| input.owner))
+            .map(member)
+            .collect::<Result<_, _>>()?;
+        let moved = outputs
+            .iter()
+            .map(|output| output.asset)
+            .chain(spent.iter().map(|input| input.asset))
+            .map(|asset| flows.mint_of(&asset))
+            .chain(flows.public.iter().map(|public| Ok(public.mint)))
+            .collect::<Result<_, _>>()?;
+        Ok(FrameParties::Transfer(Parties {
+            senders,
+            recipients: outputs
+                .iter()
+                .map(|output| member(output.owner))
+                .collect::<Result<_, _>>()?,
+            destinations: opened.withdrawal_accounts,
+            assets: moved,
+        }))
+    }
+
+    /// `None` on the delegate rail.
+    async fn open(&self, frame: &RingFrame<'_>) -> Result<Option<OpenedFrame>, RingRpcError> {
         let service = self.shared.service(Some(self.ring))?;
         let config = service.served_config().await?.ok_or_else(unavailable)?;
-        let assets = self.shared.cached_assets().await;
         if frame.tag == tag::AUTHORITY_TRANSFER {
-            return Ok(FrameRead::Delegate);
+            return Ok(None);
         }
-        let store = self.shared.store(self.ring);
         let rail = InstructionTag::try_from(frame.tag)
             .and_then(|tag| RingRail::of(tag, config.mode))
             .map_err(|_| unavailable())?;
@@ -126,18 +183,29 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
             .iter()
             .map(|owner| identity(owner.as_array()))
             .collect::<Result<Vec<_>, _>>()?;
-        let notes = real_input_notes(&store, &audited).await?;
-        FrameFlows {
-            audited: &audited,
-            notes: &notes,
+        Ok(Some(OpenedFrame {
+            audited,
             owner_signers,
+            withdrawal_accounts: withdrawal_accounts(&parsed.data().interface_transfers, window)?,
             public,
-            assets: &assets,
-            ring: self.ring,
-        }
-        .read(parsed.data().approval.bits())
-        .map(FrameRead::Transfer)
+            approval_bits: parsed.data().approval.bits(),
+            hidden_sender: rail != RingRail::Confidential
+                || parsed.data().in_proof_owner.is_some()
+                || parsed.data().anonymous.is_some(),
+        }))
     }
+}
+
+/// A frame the auditor key opened, before any input note is read.
+struct OpenedFrame {
+    audited: AuditedTransaction,
+    owner_signers: Vec<[u8; 32]>,
+    public: Vec<PublicFlow>,
+    /// The settlement group of each withdrawing leg.
+    withdrawal_accounts: Vec<Address>,
+    approval_bits: u8,
+    /// An input owner signs inside the proof or stays hidden.
+    hidden_sender: bool,
 }
 
 impl<'m> RingFrame<'m> {
@@ -217,6 +285,24 @@ fn public_flows(
         })
         .collect::<Result<Vec<_>, RingRpcError>>()?;
     fold_public_flows(data.interface_transfers.iter().copied().zip(named))
+}
+
+fn withdrawal_accounts(
+    transfers: &[InterfaceTransfer],
+    window: &[Address],
+) -> Result<Vec<Address>, RingRpcError> {
+    let mut rest = window;
+    let mut accounts = Vec::new();
+    for transfer in transfers {
+        let (group, later) = rest
+            .split_at_checked(transfer.settlement_account_count())
+            .ok_or_else(unavailable)?;
+        rest = later;
+        if funder_account_position(transfer).is_none() {
+            accounts.extend_from_slice(group);
+        }
+    }
+    Ok(accounts)
 }
 
 /// The rows of a relayed deposit, the frame the relay proves from these legs carries the same.
@@ -435,18 +521,26 @@ impl FrameFlows<'_> {
                 });
             }
         }
-        // The frame's proven entry evidence, a default-ring note holds no index row.
-        for entry in &audited.entries {
-            inputs.push(DebitInput {
-                owner: identity(&entry.owner_key)?,
-                asset: entry.asset,
-                amount: entry.amount,
-            });
-        }
+        inputs.extend(self.entries()?);
         match inputs.len() == usize::from(audited.real_inputs) {
             true => Ok(inputs),
             false => Err(unavailable()),
         }
+    }
+
+    /// The frame's proven entry evidence, a default-ring note holds no index row.
+    fn entries(&self) -> Result<Vec<DebitInput>, RingRpcError> {
+        self.audited
+            .entries
+            .iter()
+            .map(|entry| {
+                Ok(DebitInput {
+                    owner: identity(&entry.owner_key)?,
+                    asset: entry.asset,
+                    amount: entry.amount,
+                })
+            })
+            .collect()
     }
 
     /// A slot with no proven record could return funds, the outflow stays unknown.
@@ -692,6 +786,24 @@ mod tests {
         let pinned: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(VECTOR).expect("vector")).expect("json");
         assert_eq!(built, pinned);
+    }
+
+    #[test]
+    fn a_deposit_leg_names_no_withdrawal_account() {
+        let deposit = InterfaceTransfer::SolDeposit { amount: 1 };
+        let withdrawal = InterfaceTransfer::SolWithdrawal { amount: 1 };
+        let legs = [deposit, withdrawal, deposit];
+        let window: Vec<Address> = (1u8..)
+            .map(|seed| Address::new_from_array([seed; 32]))
+            .take(legs.iter().map(|leg| leg.settlement_account_count()).sum())
+            .collect();
+        let deposited = deposit.settlement_account_count();
+        let withdrawn = withdrawal.settlement_account_count();
+        assert_eq!(
+            withdrawal_accounts(&legs, &window).expect("groups"),
+            window[deposited..deposited + withdrawn]
+        );
+        assert!(withdrawal_accounts(&legs, &window[1..]).is_err());
     }
 
     #[test]

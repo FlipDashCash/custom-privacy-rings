@@ -331,12 +331,11 @@ describe("syncRingWallet", () => {
 
     expect(report.storedUtxos).toBe(1);
     expect(wallet.utxos().map((entry) => entry.utxo.amount)).toEqual([AMOUNT]);
-    // The core tags, then the slot tag a delivery publishes beside the owner tag a zero-key merge carries.
+    // The core tags, then the slot tag a delivery publishes.
     const viewing = keys.viewingPublicKeys()[0]!;
-    const owner = recipient.shieldedAddress().signingPublicKey.ownerProofInputHash();
     expect(
       client.getShieldedTransactionsByTags.mock.calls.map(([request]) => request.tags),
-    ).toEqual([expect.anything(), [slotTag(viewing.u()), owner]]);
+    ).toEqual([expect.anything(), [slotTag(viewing.u())]]);
     expect(client.getEncryptedUtxosByTags.mock.calls.map(([request]) => request.tags)).toEqual([
       expect.anything(),
       [viewing.u()],

@@ -61,7 +61,7 @@ The sender's SDK pays a nonzero key to any owner, enrolled or not, since only th
 
 - `AnonymousSync` reads the history of each ring the wallet's `ViewingHistory` names, then tests each slot and bundle tag for each held key.
 - The key holder runs one agreement per candidate per key and returns a slot secret on a match. Raw agreements stay inside the holder.
-- A deposit is found through its tag stream. A nonzero-key merge is found from its nullifiers, and a zero-key merge from the owner tag SPP publishes.
+- A deposit is found through its tag stream. A merge is found from its nullifiers, and the ring proof binds the ciphertext the wallet opens.
 - Full recovery reads a ring from its first row and tries every output and message without a tag. Rust uses `AnonymousSync::new(keys, assets).with_full_scan(ring).fetch_wallet(indexer, wallet)`. TypeScript uses `fullScanWallet(client, wallet, ring)`.
 - A body a full scan leaves unopened stays in `auditor_recovery.unopened`, foreign notes and dummies among them.
 - A wallet takes the nullifier key its record names. A note under a key other than the owner's enrolled key opens, and it spends only once that key is enrolled.

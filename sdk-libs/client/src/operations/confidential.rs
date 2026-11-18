@@ -13,11 +13,11 @@ use spr_keypair::ShieldedAddress;
 use spr_transaction::{
     verify_owned, DecryptionResult, OwnedUtxos, ShieldedKeys, ShieldedTransaction, WalletUtxo,
 };
-use zolana_ring_keys::{MergeSeedHolder, RingKeys};
+use zolana_ring_keys::RingKeys;
 use zolana_ring_transaction::{open_recipient_body, AnonymousOutput, OpenedBody, RingAssets};
 
 use crate::{
-    anonymous::{published_note, AnonymousSync, AuditorRecovery, OwnerMergeOpener},
+    anonymous::{published_note, AnonymousSync, AuditorRecovery},
     anonymous_wallet::{AnonymousWallet, PendingNote, ScanCommit},
     delivered::{
         assign_nullifiers, confidential_delivered, RingDeliveredCandidate, RingDeliveryContext,
@@ -70,7 +70,7 @@ struct Found {
     unresolved: BTreeSet<[u8; 32]>,
 }
 
-impl<'a, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized> RingConfidentialScan<'a, K> {
+impl<'a, K: ShieldedKeys + RingKeys + ?Sized> RingConfidentialScan<'a, K> {
     pub fn new(keys: &'a K, assets: &'a RingAssets) -> Self {
         Self {
             keys,
@@ -187,19 +187,12 @@ impl<'a, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized> RingConfidential
                 groups.entry(entry.tag_position()).or_default().push(index);
             }
         }
-        // 2. Only the owner tag finds a zero-key merge, it rides the lowest group and step 3 keeps its next read gapless.
-        let owner_tag = self
-            .keys
-            .address()?
-            .signing_pubkey
-            .owner_proof_input_hash()?;
         let mut rows = Vec::new();
         let mut covered: Option<u64> = None;
-        for (group, (position, entries)) in groups.iter().enumerate() {
+        for (position, entries) in &groups {
             let tags: Vec<[u8; 32]> = entries
                 .iter()
                 .map(|index| confidential_slot_tag(history.entries()[*index].viewing_pubkey().u()))
-                .chain((group == 0).then_some(owner_tag))
                 .collect();
             let from = position.map_or_else(HistoryPosition::default, HistoryPosition::after_slot);
             let read = reads.tagged(&tags, from).await?;
@@ -208,7 +201,7 @@ impl<'a, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized> RingConfidential
                 covered = Some(covered.map_or(slot, |lowest| lowest.min(slot)));
             }
         }
-        // 3. One shared position keeps the next sync at one read.
+        // 2. One shared position keeps the next sync at one read.
         if let Some(slot) = covered {
             for index in groups.into_values().flatten() {
                 history.entries_mut()[index].set_tag_position(slot);
@@ -305,10 +298,8 @@ impl<'a, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized> RingConfidential
                 )?;
             }
         }
-        // 2. A seeded merge opens from its row alone, the spent input may be absent from `transactions`.
-        self.open_owner_merges(transactions, &mut decrypted, &mut pending)?;
         assign_nullifiers(self.keys, &mut decrypted.utxos)?;
-        // 3. Only a commitment rebuilt under the owner proves a note, a pending note rebuilt its own in the opener.
+        // 2. Only a commitment rebuilt under the owner proves a note, a pending note rebuilt its own in the opener.
         assign_nullifiers(self.keys, &mut pending)?;
         let RingOwnedUtxos {
             owned,
@@ -322,27 +313,6 @@ impl<'a, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized> RingConfidential
             },
             pending,
         })
-    }
-
-    /// A rotated wallet's merge sits under the seed of the key it held then, every held key tries each row.
-    fn open_owner_merges(
-        &self,
-        transactions: &[ShieldedTransaction],
-        decrypted: &mut DecryptionResult,
-        pending: &mut Vec<WalletUtxo>,
-    ) -> Result<(), AnonymousError> {
-        let owner = self.keys.address()?.signing_pubkey;
-        let opener = OwnerMergeOpener::new(self.keys, owner, self.assets)?;
-        let held = self.keys.viewing_public_keys();
-        for merge in transactions.iter().filter_map(|tx| opener.candidate(tx)) {
-            for viewing_pubkey in &held {
-                if let Some(opened) = opener.open(&merge, *viewing_pubkey)? {
-                    keep_opened(decrypted, pending, merge.tx, 0, opened)?;
-                    break;
-                }
-            }
-        }
-        Ok(())
     }
 
     /// A wrong tag hides nothing here, every held key tries every site of `ring`.
@@ -377,7 +347,7 @@ impl<'a, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized> RingConfidential
 }
 
 /// Spent state covers `transactions` alone.
-pub fn open_ring_confidential<K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized>(
+pub fn open_ring_confidential<K: ShieldedKeys + RingKeys + ?Sized>(
     keys: &K,
     assets: &RingAssets,
     transactions: &[ShieldedTransaction],
@@ -495,20 +465,14 @@ mod tests {
         PaginationToken, RingHistoryOptions, TransactionEvents,
     };
     use spr_event::{encode_merge_output_data, MergeOutputDataRef};
-    use spr_interface::ZERO_NULLIFIER_PUBKEY;
     use spr_keypair::{
-        viewing_key::ViewTag, KeypairError, NullifierKey, ShieldedKeypair, SigningKey, ViewingKey,
-        X25519Pubkey,
+        viewing_key::ViewTag, KeypairError, ShieldedKeypair, SigningKey, ViewingKey, X25519Pubkey,
     };
     use spr_transaction::{
-        instructions::merge::{
-            merge_output_blinding, merge_output_key, MergeOutputPlaintext, MergeSeed,
-        },
+        instructions::merge::{merge_output_blinding, merge_output_key, MergeOutputPlaintext},
         DecryptRequest, DeriveRequest, Mint, TransactionError, TransactionKeyRequest,
     };
-    use zolana_ring_keys::{
-        MergeSeedRequest, RingDeliveryRequest, RingKeyError, RingTagFrame, ViewTagRequest,
-    };
+    use zolana_ring_keys::{RingDeliveryRequest, RingKeyError, RingTagFrame, ViewTagRequest};
     use zolana_ring_transaction::seal_recipient_body;
 
     use std::sync::Mutex;
@@ -663,15 +627,8 @@ mod tests {
         page.data.iter().map(|item| item.events.len()).sum()
     }
 
-    #[derive(PartialEq)]
-    enum HolderFailure {
-        /// The error a bad published value raises.
-        MergeOutputKey,
-        MergeSeed,
-    }
-
-    /// Answers as its keypair does, except the call it fails.
-    struct FailingHolder(ShieldedKeypair, HolderFailure);
+    /// Answers as its keypair does, except the merge output key it fails.
+    struct FailingHolder(ShieldedKeypair);
 
     impl ShieldedKeys for FailingHolder {
         fn address(&self) -> Result<ShieldedAddress, TransactionError> {
@@ -690,10 +647,9 @@ mod tests {
         }
 
         fn derive(&self, requests: &[DeriveRequest]) -> Result<Vec<[u8; 32]>, TransactionError> {
-            if self.1 == HolderFailure::MergeOutputKey
-                && requests
-                    .iter()
-                    .any(|request| matches!(request, DeriveRequest::MergeOutputKey { .. }))
+            if requests
+                .iter()
+                .any(|request| matches!(request, DeriveRequest::MergeOutputKey { .. }))
             {
                 return Err(TransactionError::Keypair(KeypairError::Poseidon(1)));
             }
@@ -705,18 +661,6 @@ mod tests {
             requests: &[TransactionKeyRequest],
         ) -> Result<Vec<ViewingKey>, TransactionError> {
             self.0.transaction_keys(requests)
-        }
-    }
-
-    impl MergeSeedHolder for FailingHolder {
-        fn merge_seeds(
-            &self,
-            requests: &[MergeSeedRequest],
-        ) -> Result<Vec<MergeSeed>, RingKeyError> {
-            if self.1 == HolderFailure::MergeSeed {
-                return Err(RingKeyError::UnknownViewingKey);
-            }
-            self.0.merge_seeds(requests)
         }
     }
 
@@ -832,33 +776,6 @@ mod tests {
                 .unwrap();
             (hash, hashes(&opened.utxos))
         }
-    }
-
-    /// A zero-key merge under `owner`'s tag, encrypted to `seed`, its commitment and row.
-    fn seeded_merge(
-        owner: &ShieldedAddress,
-        seed: &MergeSeed,
-        first: [u8; 32],
-    ) -> ([u8; 32], ShieldedTransaction) {
-        let hash = ring_note(owner, seed.output_blinding(&first).unwrap())
-            .hash(&ZERO_NULLIFIER_PUBKEY, &[0; 32], &[0; 32], TREE)
-            .unwrap();
-        let slot = OutputSlot {
-            view_tag: owner.signing_pubkey.owner_proof_input_hash().unwrap(),
-            output_context: output_context(hash),
-            payload: merge_payload(&seed.output_key(&first).unwrap(), [0; 32], Mint::SOL),
-        };
-        (hash, merge_row(slot, first))
-    }
-
-    fn own_seed(keys: &ShieldedKeypair, first: [u8; 32]) -> MergeSeed {
-        keys.merge_seeds(&[MergeSeedRequest {
-            viewing_pubkey: keys.viewing_pubkey(),
-            ring_program_id: RING,
-            first_nullifier: first,
-        }])
-        .unwrap()
-        .remove(0)
     }
 
     /// The blinding of `payment_event(_, 0)`.
@@ -1202,64 +1119,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_finds_a_zero_key_merge_with_no_input_history_and_reads_it_exposed() {
-        let owner = wallet(7);
-        let address = owner.shielded_address().unwrap();
-        let first = [0x14; 32];
-        let (hash, row) = seeded_merge(&address, &own_seed(&owner, first), first);
-        let assets = assets();
-        let notes = RingConfidentialScan::new(&owner, &assets)
-            .fetch(&Rows::of(vec![row]), &[])
-            .await
-            .unwrap();
-        assert_eq!(hashes(&notes.exposed_if_spent), [hash]);
-        assert!(notes.owned.utxos.is_empty());
-    }
-
-    #[tokio::test]
-    async fn fetch_moves_the_exposure_from_a_spent_zero_key_note_to_its_merge_output() {
-        let owner = wallet(7);
-        let address = owner.shielded_address().unwrap();
-        let mut payment = payment_event(&owner, 0);
-        let note = &mut payment.output_slots[0].output_context;
-        note.hash = ring_note(&address, PAYMENT_BLINDING)
-            .hash(&ZERO_NULLIFIER_PUBKEY, &[0; 32], &[0; 32], TREE)
-            .unwrap();
-        let input = NullifierKey::from_secret([0; 31])
-            .nullifier(&note.hash, &PAYMENT_BLINDING)
-            .unwrap();
-        let (hash, merge) = seeded_merge(&address, &own_seed(&owner, input), input);
-        let assets = assets();
-        let notes = RingConfidentialScan::new(&owner, &assets)
-            .fetch(
-                &Rows::of(vec![payment.clone(), merge]),
-                core::slice::from_ref(&payment),
-            )
-            .await
-            .unwrap();
-        assert_eq!(hashes(&notes.exposed_if_spent), [hash]);
-    }
-
-    #[tokio::test]
-    async fn fetch_opens_no_zero_key_merge_under_another_wallets_seed() {
-        let (owner, other) = (wallet(7), wallet(8));
-        let first = [0x14; 32];
-        let (_, row) = seeded_merge(
-            &owner.shielded_address().unwrap(),
-            &own_seed(&other, first),
-            first,
-        );
-        let assets = assets();
-        let notes = RingConfidentialScan::new(&owner, &assets)
-            .fetch(&Rows::of(vec![row]), &[])
-            .await
-            .unwrap();
-        assert!(notes.exposed_if_spent.is_empty() && notes.owned.utxos.is_empty());
-    }
-
-    #[tokio::test]
     async fn a_poseidon_error_from_the_holder_fails_fetch_and_full_scan() {
-        let holder = FailingHolder(wallet(7), HolderFailure::MergeOutputKey);
+        let holder = FailingHolder(wallet(7));
         let payment = payment_event(&holder.0, 0);
         let input = holder
             .0
@@ -1291,19 +1152,6 @@ mod tests {
         assert!(refused(scan.full_scan(&indexer, RING).await.err().unwrap()));
     }
 
-    #[tokio::test]
-    async fn a_merge_seed_failure_from_the_holder_fails_fetch_and_full_scan() {
-        let holder = FailingHolder(wallet(7), HolderFailure::MergeSeed);
-        let address = holder.address().unwrap();
-        let first = [0x14; 32];
-        let (_, row) = seeded_merge(&address, &own_seed(&holder.0, first), first);
-        let indexer = Rows::of(vec![row]);
-        let assets = assets();
-        let scan = RingConfidentialScan::new(&holder, &assets);
-        assert!(scan.fetch(&indexer, &[]).await.is_err());
-        assert!(scan.full_scan(&indexer, RING).await.is_err());
-    }
-
     #[test]
     fn a_published_value_outside_the_field_skips_only_its_merge() {
         let owner = wallet(7);
@@ -1327,23 +1175,6 @@ mod tests {
             .open(&owner, &assets())
             .unwrap();
         assert_eq!(hashes(&opened.utxos), [hash]);
-    }
-
-    #[tokio::test]
-    async fn a_seeded_merge_with_a_first_nullifier_outside_the_field_fails_no_read() {
-        let owner = wallet(7);
-        let address = owner.shielded_address().unwrap();
-        let first = [0x14; 32];
-        let (hash, good) = seeded_merge(&address, &own_seed(&owner, first), first);
-        let other = [0x15; 32];
-        let (_, mut bad) = seeded_merge(&address, &own_seed(&owner, other), other);
-        bad.nullifiers[0] = NOT_IN_FIELD;
-        let assets = assets();
-        let notes = RingConfidentialScan::new(&owner, &assets)
-            .fetch(&Rows::of(vec![good, bad]), &[])
-            .await
-            .unwrap();
-        assert_eq!(hashes(&notes.exposed_if_spent), [hash]);
     }
 
     #[tokio::test]

@@ -29,20 +29,22 @@ use tower::Service;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use zolana_ring_client::rpc::{
-    CreateAuditorKeyRequest, CreateAuditorKeyResponse, CreateRecordsRegistryRequest,
-    GetAuditedMergesResponse, GetAuditedUtxosRequest, GetDecryptedTransactionsRequest,
+    CoSignTransactionRequest, CreateAuditorKeyRequest, CreateAuditorKeyResponse,
+    CreateRecordsRegistryRequest, EditCoSignListRequest, GetAuditedMergesResponse,
+    GetAuditedUtxosRequest, GetCoSignListsRequest, GetDecryptedTransactionsRequest,
     GetDecryptedTransactionsResponse, GetDelegateNotesRequest, GetListSaltRequest,
     GetPendingListApprovalsRequest, GetRecordUpdateStatusRequest, GetRelayQuoteRequest,
     GetRelayStatusRequest, GetSpendCoverageRequest, GetWalletActivityResponse,
     GetWalletStatusRequest, PagedRead, PrepareAuthorityTransferRequest, PrepareRelayRequest,
     RefuseListApprovalRequest, RegisterEnrollmentRingRequest, RingState, RingStatusRequest,
     RingStatusResponse, SetMergeSettingsRequest, SetReaderGrantRequest, SubmitEnrollmentRequest,
-    SubmitRecordUpdateRequest, SubmitRelayRequest, CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY,
-    GET_AUDITED_UTXOS, GET_DELEGATE_NOTES, GET_LIST_SALT, GET_PENDING_LIST_APPROVALS,
-    GET_RECORD_UPDATE_STATUS, GET_RELAY_QUOTE, GET_RELAY_STATUS, GET_SPEND_COVERAGE,
-    GET_WALLET_STATUS, HEALTH, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY, REFUSE_LIST_APPROVAL,
-    REGISTER_ENROLLMENT_RING, RELEASE_DELEGATE_SNAPSHOT, RELEASE_WALLET_SNAPSHOT, RING_STATUS,
-    SET_MERGE_SETTINGS, SET_READER_GRANT, SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE, SUBMIT_RELAY,
+    SubmitRecordUpdateRequest, SubmitRelayRequest, CO_SIGN_TRANSACTION, CREATE_AUDITOR_KEY,
+    CREATE_RECORDS_REGISTRY, EDIT_CO_SIGN_LIST, GET_AUDITED_UTXOS, GET_CO_SIGN_LISTS,
+    GET_DELEGATE_NOTES, GET_LIST_SALT, GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS,
+    GET_RELAY_QUOTE, GET_RELAY_STATUS, GET_SPEND_COVERAGE, GET_WALLET_STATUS, HEALTH,
+    PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY, REFUSE_LIST_APPROVAL, REGISTER_ENROLLMENT_RING,
+    RELEASE_DELEGATE_SNAPSHOT, RELEASE_WALLET_SNAPSHOT, RING_STATUS, SET_MERGE_SETTINGS,
+    SET_READER_GRANT, SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE, SUBMIT_RELAY,
 };
 
 use crate::{
@@ -338,6 +340,22 @@ pub fn rpc_module<S: TransactionSource + 'static>(
     )?;
     method(
         &mut module,
+        EDIT_CO_SIGN_LIST,
+        |hub, request: EditCoSignListRequest| async move {
+            let _authentication = hub.admit(Lane::Authentication)?;
+            hub.edit_co_sign_list(&request).await
+        },
+    )?;
+    method(
+        &mut module,
+        GET_CO_SIGN_LISTS,
+        |hub, request: GetCoSignListsRequest| async move {
+            let _authentication = hub.admit(Lane::Authentication)?;
+            hub.co_sign_lists(&request).await
+        },
+    )?;
+    method(
+        &mut module,
         CREATE_RECORDS_REGISTRY,
         |hub, request: CreateRecordsRegistryRequest| async move {
             let _authentication = hub.admit(Lane::Authentication)?;
@@ -399,6 +417,13 @@ pub fn relay_module(relay: Arc<Relay>) -> Result<RpcModule<Arc<Relay>>, Register
         &mut module,
         SUBMIT_RELAY,
         |relay, request: SubmitRelayRequest| async move { relay.submit(&request).await },
+    )?;
+    method(
+        &mut module,
+        CO_SIGN_TRANSACTION,
+        |relay, request: CoSignTransactionRequest| async move {
+            relay.co_sign_transaction(&request).await
+        },
     )?;
     method(
         &mut module,

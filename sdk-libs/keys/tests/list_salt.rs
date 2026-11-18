@@ -3,10 +3,7 @@ use serde::{Deserialize, Serialize};
 use solana_address::Address;
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_keypair::{NullifierKey, ShieldedKeypair, SigningKey, ViewingKey};
-use zolana_ring_keys::{
-    ListSaltHolder, MergeSeedHolder, MergeSeedRequest, RingAddress, RingKeyError, RotatingRingKeys,
-    LIST_SALT_LABEL,
-};
+use zolana_ring_keys::{ListSaltHolder, RingAddress, RingKeyError, RotatingRingKeys};
 
 const VECTOR: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -101,17 +98,6 @@ fn a_rotation_keeps_the_salt_a_final_tag_holds() {
         rotated.list_salt(&RING).unwrap(),
         owner.list_salt(&RING).unwrap()
     );
-}
-
-#[test]
-fn no_merge_seed_request_reaches_the_salt() {
-    let owner = wallet(7);
-    let refused = owner.merge_seeds(&[MergeSeedRequest {
-        viewing_pubkey: owner.viewing_key.pubkey(),
-        ring_program_id: RING,
-        first_nullifier: LIST_SALT_LABEL,
-    }]);
-    assert_eq!(refused.err(), Some(RingKeyError::InvalidMergeSeed));
 }
 
 #[test]

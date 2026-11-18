@@ -16,16 +16,12 @@ use custom_ring_interface::{
 use solana_address::Address;
 use solana_signature::Signature;
 use spr_client::{AsyncRpc, IndexerRpcConfig};
-use spr_interface::ZERO_NULLIFIER_PUBKEY;
 use spr_keypair::{PublicKey, ShieldedAddress, ViewingKey, X25519Pubkey};
 use spr_transaction::{
     instructions::merge::MergeOutputPlaintext, DecryptionResult, DeriveRequest, Mint, ShieldedKeys,
     ShieldedTransaction, TransactionError, TransactionKeyRequest, WalletUtxo,
 };
-use zolana_ring_keys::{
-    MergeSeedHolder, MergeSeedRequest, RingDeliveryRequest, RingKeys, RingTagFrame, RingTagKind,
-    RingTagProbe,
-};
+use zolana_ring_keys::{RingDeliveryRequest, RingKeys, RingTagFrame, RingTagKind, RingTagProbe};
 use zolana_ring_transaction::{
     is_contributory, open_recipient_body, open_reply, open_sender_bundle, AnonymousOutput,
     OpenedBody, OpenedNote, ReplyClaim, RingAssets,
@@ -38,7 +34,7 @@ use crate::{
     decrypt::SealedRecipientKeys,
     delivered::{self, RingDeliveryContext},
     error::RowDisposition,
-    exactly_one, exactly_one_each,
+    exactly_one_each,
     merge_audit::RingMergeBody,
     origin::TransactionOrigin,
     tags::IndexerReads,
@@ -255,7 +251,7 @@ enum ScanFrom {
     Start,
 }
 
-impl<'a, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized> AnonymousSync<'a, K> {
+impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
     pub fn new(keys: &'a K, assets: &'a RingAssets) -> Self {
         Self {
             keys,
@@ -466,9 +462,7 @@ impl<'t> Body<'t> {
     }
 }
 
-impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized>
-    Scan<'_, '_, '_, I, K>
-{
+impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_, I, K> {
     fn held_entries(&self) -> Vec<usize> {
         let held = self.sync.keys.viewing_public_keys();
         self.history
@@ -592,34 +586,6 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
             .zip(secrets)
             .map(|(body, secret)| Ok((body, SlotSecret::new(secret)?)))
             .collect()
-    }
-
-    /// Only the seed a held key derives opens a zero-key merge.
-    fn open_owner_merges(
-        &mut self,
-        index: usize,
-        rows: &[ShieldedTransaction],
-    ) -> Result<(), AnonymousError> {
-        let viewing_pubkey = self.history.entries()[index].viewing_pubkey();
-        let sync = self.sync;
-        let opener = OwnerMergeOpener::new(sync.keys, self.address.signing_pubkey, sync.assets)?;
-        for tx in rows {
-            let Some(merge) = opener.candidate(tx) else {
-                continue;
-            };
-            if self.is_found(merge.commitment()) {
-                continue;
-            }
-            let found = AnonymousStream::Merge {
-                first_nullifier: merge.first_nullifier,
-            };
-            match opener.open(&merge, viewing_pubkey)? {
-                Some(OpenedBody::Note(note)) => self.accept(index, tx, found, 0, note)?,
-                Some(OpenedBody::UnknownMint(note)) => self.hold_back(tx, 0, note)?,
-                None => {}
-            }
-        }
-        Ok(())
     }
 
     /// The transaction key of each transaction the entry's key sent, keyed by its first nullifier.
@@ -1045,68 +1011,6 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized
     }
 }
 
-/// Opens one owner's zero-key merges, the shared reader of normal fetch and full scan.
-pub(crate) struct OwnerMergeOpener<'a, K: ?Sized> {
-    keys: &'a K,
-    owner: PublicKey,
-    owner_tag: [u8; 32],
-    assets: &'a RingAssets,
-}
-
-impl<'a, K: MergeSeedHolder + ?Sized> OwnerMergeOpener<'a, K> {
-    pub(crate) fn new(
-        keys: &'a K,
-        owner: PublicKey,
-        assets: &'a RingAssets,
-    ) -> Result<Self, AnonymousError> {
-        Ok(Self {
-            keys,
-            owner,
-            owner_tag: owner.owner_proof_input_hash()?,
-            assets,
-        })
-    }
-
-    pub(crate) fn candidate<'t>(&self, tx: &'t ShieldedTransaction) -> Option<OwnerMerge<'t>> {
-        OwnerMerge::of(tx, &self.owner_tag)
-    }
-
-    /// `None` under another wallet's seed, a holder failure fails the read.
-    pub(crate) fn open(
-        &self,
-        merge: &OwnerMerge<'_>,
-        viewing_pubkey: X25519Pubkey,
-    ) -> Result<Option<OpenedBody>, AnonymousError> {
-        let seed = exactly_one(self.keys.merge_seeds(&[MergeSeedRequest {
-            viewing_pubkey,
-            ring_program_id: merge.ring,
-            first_nullifier: merge.first_nullifier,
-        }])?)?;
-        let Some(note) = merge.rebuild(MergeKeys {
-            owner: self.owner,
-            nullifier_pk: ZERO_NULLIFIER_PUBKEY,
-            key: seed.output_key(&merge.first_nullifier)?,
-            blinding: seed.output_blinding(&merge.first_nullifier)?,
-        })?
-        else {
-            return Ok(None);
-        };
-        Ok(Some(
-            match self.assets.registry().mint(&note.utxo.asset.asset) {
-                Ok(registered) => OpenedBody::Note(OpenedNote {
-                    utxo: spr_transaction::Utxo {
-                        asset: registered,
-                        ..note.utxo
-                    },
-                    ..note
-                }),
-                Err(TransactionError::UnknownMint(_)) => OpenedBody::UnknownMint(note),
-                Err(error) => return Err(error.into()),
-            },
-        ))
-    }
-}
-
 /// Nothing of it is authentic until its commitment rebuilds.
 pub(crate) struct OwnerMerge<'t> {
     pub(crate) tx: &'t ShieldedTransaction,
@@ -1123,16 +1027,6 @@ struct MergeKeys {
 }
 
 impl<'t> OwnerMerge<'t> {
-    fn of(tx: &'t ShieldedTransaction, owner_tag: &[u8; 32]) -> Option<Self> {
-        let [slot] = tx.output_slots.as_slice() else {
-            return None;
-        };
-        if slot.view_tag != *owner_tag {
-            return None;
-        }
-        Self::read(tx)
-    }
-
     /// The single output of a ring merge under any view tag.
     fn read(tx: &'t ShieldedTransaction) -> Option<Self> {
         let [slot] = tx.output_slots.as_slice() else {

@@ -649,7 +649,7 @@ impl RingOperation<'_> {
                     proven.instruction(payer)?,
                     InstructionTag::Merge,
                     BoundState {
-                        roots: proven.bound_root().into_iter().collect(),
+                        roots: vec![proven.bound_root()],
                         ..BoundState::default()
                     },
                 )

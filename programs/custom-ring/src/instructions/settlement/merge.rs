@@ -5,9 +5,9 @@
 //!
 //! The instruction guarantees:
 //!
-//! 1. The record opens the output under the ring's auditor key, the output and first nullifier come from SPP's body.
-//! 2. A hidden owner's key is its enrolled row under the tracking root the ring pins, and the payer is another account.
-//! 3. A zero key reads no row, the statement publishes that owner and SPP requires its signature.
+//! 1. The record opens the output under the ring's auditor key, the output, first nullifier and ciphertext come from SPP's body.
+//! 2. A hidden owner's key is its enrolled row under the tracking root the ring pins, the statement binds the payer.
+//! 3. A zero key has no row, no zero-key merge settles.
 //! 4. `ring_auth` sits only in SPP's `ring_config` slot, and the payer signs.
 //!
 //! No list, guard, cap or co-signer rule applies, a merge keeps one owner's value in one asset.
@@ -18,19 +18,15 @@
 
 use custom_ring_interface::{
     key_catalog::RingCircuit, CustomRingError, CustomRingMergeIxDataRef, MergePublicInput,
-    RootRead, RING_MERGE_OWNER_INDEX, RING_MERGE_PAYER_INDEX, RING_MERGE_RING_CONFIG_INDEX,
-    VIEWING_PUBKEY_TAG,
+    RootRead, RING_MERGE_PAYER_INDEX, RING_MERGE_RING_CONFIG_INDEX, VIEWING_PUBKEY_TAG,
 };
 use pinocchio::{
-    error::ProgramError,
     sysvars::{clock::Clock, Sysvar},
     AccountView, Address, ProgramResult,
 };
 use spr_account_checks::AccountIterator;
 use spr_hasher::primitives::solana_owner_identity;
-use spr_interface::instruction::instruction_data::{
-    merge_ring::MergeRingAuthority, merge_transact::MergeTransactIxDataRef,
-};
+use spr_interface::instruction::instruction_data::merge_transact::MergeTransactIxDataRef;
 use zolana_ring_policy::ring_id_field;
 
 use crate::instructions::{
@@ -64,23 +60,10 @@ pub fn process_merge_ix(
     if request.eph_pk[0] != VIEWING_PUBKEY_TAG {
         return Err(CustomRingError::InvalidMergeDisclosure.into());
     }
-    // 3. A nonzero key reads its row, a zero key names the owner SPP makes sign.
-    let (tracking_root, published_owner) = match request.authority {
-        MergeRingAuthority::Ring => (
-            registries
-                .roots(Clock::get()?.slot)
-                .tracking(request.tracking_revision)?,
-            [0; 32],
-        ),
-        MergeRingAuthority::OwnerSigned => {
-            let owner = spp_accounts
-                .get(RING_MERGE_OWNER_INDEX)
-                .ok_or(ProgramError::NotEnoughAccountKeys)?;
-            let identity =
-                solana_owner_identity(owner.address().as_array()).map_err(CustomRingError::from)?;
-            ([0; 32], identity)
-        }
-    };
+    // 3. The owner's key is its enrolled row, a zero key has none and its merge is refused.
+    let tracking_root = registries
+        .roots(Clock::get()?.slot)
+        .tracking(request.tracking_revision)?;
     // 4. A bad SPP proof point is refused before the record pairing.
     let spp_body = request.spp_merge_body()?;
     let merge = MergeTransactIxDataRef::from_bytes(&spp_body)
@@ -89,7 +72,7 @@ pub fn process_merge_ix(
         .nullifiers
         .first()
         .ok_or(CustomRingError::InvalidInstructionData)?;
-    // 5. The program supplies the ring id, the auditor key, the payer, the published owner and the root.
+    // 5. The program supplies the ring id, the auditor key, the payer, the root and SPP's output ciphertext.
     let payer = solana_owner_identity(spp_accounts[RING_MERGE_PAYER_INDEX].address().as_array())
         .map_err(CustomRingError::from)?;
     let statement = MergePublicInput {
@@ -101,8 +84,8 @@ pub fn process_merge_ix(
         envelope: request.envelope,
         record: request.record,
         payer: &payer,
-        published_owner: &published_owner,
         tracking_root: &tracking_root,
+        output_encryption: &merge.output_encryption,
     }
     .hash()
     .map_err(CustomRingError::from)?;
@@ -112,7 +95,7 @@ pub fn process_merge_ix(
         key: ring_key(RingCircuit::Merge)?,
     }
     .verify()?;
-    // 6. SPP's proof binds the output ciphertext, the ring data hash and the published owner.
+    // 6. SPP's proof binds the ring data hash and no ciphertext, the statement above bound it.
     let forwarded = request.forwarded(&spp_body);
     validate_spp_program(spp_accounts)?;
     ring_auth.invoke(spp_accounts, &forwarded)
