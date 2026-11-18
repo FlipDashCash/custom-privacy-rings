@@ -97,7 +97,7 @@ The apply proof binds that restrictive bit, reading an absent member's old field
 - A proof names a root by its revision, and the program reads that root. The prover picks the revision, never the root.
 - A direct sender that meets a retired root reads the newest root and proves again. Ring RPC never proves a relay again, so a relay that meets a retired root fails and the wallet sends a new request.
 - A delegate transfer and a merge read no policy root, so a policy update cannot fail them. Every transfer and deposit reads the tracking root.
-- An owner-signed merge reads no tracking root, and a merge under a nonzero key reads one.
+- A merge reads a tracking root.
 - An audit-only ring with no records reads the tracking root alone.
 
 ## How fast a change binds

@@ -1,6 +1,6 @@
 # Co-signing and limits
 
-A ring bounds what moves in three places. The ring program checks co-signer approval, the transfer proof enforces caps and sets approval bits, and Ring RPC enforces window limits on the transactions that need its signature. [Spec](../spec.md)
+A ring bounds what moves in three places. The ring program checks co-signer approval, the transfer proof enforces caps and sets approval bits, and Ring RPC enforces window limits and operator lists on the transactions that need its signature. [Spec](../spec.md)
 
 ## Who must co-sign
 
@@ -55,11 +55,52 @@ As an example, S spends 1000, deposits 1000, returns 1000 to S and exits 1000 to
 - A delegate frame reads no limit and reserves nothing.
 - No proof carries a window limit. A proof of one would need authenticated usage state that every transaction updates.
 
+## Operator lists, in Ring RPC
+
+The lists are the centralized form of the ring's proven lists. The ring proves nothing about them, and the program checks only the co-signature.
+
+- A ring turns them on with a `CoSigner` record for Ring RPC's key that covers `TRANSFERS`, `DEPOSITS` and `WITHDRAWALS`. The program then demands that signature on each of those operations.
+- Each ring has an allow list, a block list and a freeze list. An entry names an owner, an asset or a destination. A destination is an account of a public withdrawal leg.
+- A freeze refuses what a listed owner sends and every transfer of a listed asset. A frozen owner still receives.
+- A block refuses a transfer that names the subject as sender, recipient, destination or asset.
+- One allow entry closes its kind. Only allowed subjects of that kind pass, and the removal of the last entry opens the kind again.
+- The checks run in the order freeze, block, allow. The operator's own rules run next, then the approval classes and the window limits.
+- The ring policy authority signs `editCoSignList` and `getCoSignLists`. No other key reads or changes a list.
+- Ring RPC lists an owner under the owner identity of its wallet address, the identity a frame names it with.
+
+### What the co-signer reads
+
+- Ring RPC opens every frame it co-signs with the ring's auditor key. It reads the recipients and the assets from the auditor envelope the transfer proof binds.
+- It reads the senders from the input notes it has ingested. For a note it has not ingested, the signer run names the sender, and the lists decide with no wait.
+- A frame that hides its sender or holds an in-proof owner has no such run. Ring RPC refuses it with `LimitsUnavailable` until it has ingested the notes.
+- The delegate reads an owner's notes through `getDelegateNotes`. Ring RPC opens them with the auditor key too.
+- The co-signer service and the delegate operator therefore read every amount, asset and owner of the ring. An operator that runs the lists cannot be kept blind to a transfer.
+
+### A wallet that sends its own transaction
+
+- `coSignTransaction` takes the wallet's message and returns Ring RPC's signature or a named refusal.
+- Ring RPC simulates the message first. No co-signer rule verifies the ring proof, and the simulation runs the program's check of it.
+- The same rules then run as on a relayed transfer.
+- Ring RPC never learns whether such a transaction landed. Its window reservation stays held and counts in each window.
+
+### Limits of the lists
+
+- A merge and a delegate transfer demand no co-signer, so no list gates them. A frozen owner can still merge its own notes.
+- A relayed deposit is screened by its assets alone.
+- A destination entry names an account. A new token account of the same wallet is another destination.
+- A refusal names its list, so a sender learns that a party is listed.
+- A change to a list binds the next signature. A signature Ring RPC already gave stays valid until its blockhash expires.
+- Ring RPC must be online for every gated operation, and it can refuse any of them.
+
+### Your own rule
+
+A deployment adds a check with one type that implements `CoSignRule` and one `HubBuilder::with_co_signer_rule` call. The rule sees the ring, the message and the co-signature, and it reads what it needs from its own sources. A rule that reserves state keys it by the co-signature and frees it in `settle`.
+
 ## What passes them
 
 - Window limits apply only to operations that demand a co-signer and that Ring RPC co-signs.
 - The limits bind every operation of a class only when Ring RPC is the one co-signer that covers that class.
-- A co-signer key outside Ring RPC whose scope covers the demanded classes signs with no window limit.
+- A co-signer key outside Ring RPC whose scope covers the demanded classes signs with no window limit and no list.
 - Each signing key is its own sender, so one person with many keys passes a sender cap once per key.
 - Outflow caps and amount guards sum one transfer. A payment split across transfers passes each part.
 - A deposit-funded payment to another ring owner, where nothing leaves, keeps the charged outflow at `debit`.

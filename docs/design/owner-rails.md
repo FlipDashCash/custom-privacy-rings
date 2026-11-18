@@ -49,8 +49,7 @@ A zero-key note has `nullifier_secret = 0`. Anyone who knows its opening compute
 ## Merge authority
 
 - A merge under a nonzero key runs on the ring PDA's authority, so the holder of the owner's secret and openings can merge. The merge proof admits the owner as the payer, and the SDKs refuse it, since that payer names the owner.
-- A merge under the zero key needs the owner's signature in SPP. SPP's signer check stops a holder of an opening. A private seed from the owner's viewing key keeps the output blinding from that holder.
-- A program-run merge with a seed its owner cannot derive leaves the wallet path unable to open the note. Its program recovers through `OwnerGrant` and the auditor record.
+- No merge settles under the zero key. The merge proof opens the owner's enrolled tracking row, and a zero key has none. The SDKs refuse it before they prove.
 - A merge runs no list, guard, cap or approval rule, and it needs one owner, asset and nullifier key.
 
 ## Delegate
@@ -58,7 +57,7 @@ A zero-key note has `nullifier_secret = 0`. Anyone who knows its opening compute
 - The delegate is permanent and set once. It may move any eligible note of the ring, its own and several members' included.
 - The rail clears the rules, caps and approval bits, and its statement reads no policy root. A curator's restrictive update therefore cannot fail a delegate's proof in flight.
 - The tracking root, the input predicate, the output predicate, the output records and the sealed note count all stay.
-- A delegate may withdraw and exit, and SPP's exit selector settles an exit. A deposit leg is refused, since it would bring an unlisted asset in.
+- A delegate may withdraw. SPP's authority rail keeps every output in the ring, so a delegate exit has no proof. A deposit leg is refused, since it would bring an unlisted asset in.
 - `getDelegateNotes` serves the owner's openings and secret to the delegate on a signed request. Recovery therefore depends on Ring RPC.
 
 ## What each rail publishes
