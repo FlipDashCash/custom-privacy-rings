@@ -11,7 +11,7 @@ import { getBase58Decoder, type Address } from "@solana/kit";
 import { hexToBytes, bytesToHex } from "@noble/hashes/utils.js";
 
 import { LocalRingKeys } from "../../src/state/ring-keys.js";
-import { LIST_SALT_LABEL, listSaltOf, listTagOf } from "../../src/crypto/keys/list-salt.js";
+import { listSaltOf, listTagOf } from "../../src/crypto/keys/list-salt.js";
 import { RingAddress } from "../../src/crypto/keys/ring-address.js";
 import { selectRingInputs } from "../../src/operations/payments/transfer.js";
 import { AnonymousWallet } from "../../src/state/anonymous-wallet.js";
@@ -123,14 +123,5 @@ describe("list_salt.json", () => {
     const other = getBase58Decoder().decode(new Uint8Array(32).fill(5)) as Address;
     expect(listSaltOf(holder.viewingKey(), other)).not.toEqual(salt);
     await expect(LocalRingKeys.fromKeypair(holder).listSalt(program)).resolves.toEqual(salt);
-    await expect(
-      LocalRingKeys.fromKeypair(holder).mergeSeeds([
-        {
-          viewingPublicKey: holder.viewingPublicKey(),
-          ringProgramId: program,
-          firstNullifier: LIST_SALT_LABEL,
-        },
-      ]),
-    ).rejects.toMatchObject({ code: "KEYPAIR_INVALID_MERGE_SEED" });
   });
 });

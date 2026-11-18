@@ -46,7 +46,7 @@ func (c *RegisterKeyCircuit) Define(api frontend.API) error {
 	api.AssertIsEqual(c.NullifierSecret[0], 0)
 	secret := shared.PackBounded(api, c.NullifierSecret[1:])[0]
 	// Poseidon(0) is the zero key, never enrolled.
-	// A transfer or deposit output under that key carries no secret and proves its owner absent from the named tracking root, a merge output reads no row, see ZeroNullifierPk in shared/derivation.go.
+	// A transfer or deposit output under that key carries no secret and proves its owner absent from the named tracking root, see ZeroNullifierPk in shared/derivation.go.
 	api.AssertIsDifferent(secret, 0)
 	nullifierPk := gadget.PoseidonHash(api, []frontend.Variable{secret})
 	// 2. A salt the envelope does not hold would leave the owner off the auditor's list writes.

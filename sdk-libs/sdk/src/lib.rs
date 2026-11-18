@@ -69,7 +69,7 @@ pub use crate::{
     },
     address_ceiling::{
         AddressCeiling, AddressCeilingError, CeilingDecision, Fit, FitError, FitSigners,
-        MergeCapacity, MergeGroup, SetupEffect, SpentInput, TransactionFit,
+        MergeGroup, SetupEffect, SpentInput, TransactionFit,
     },
     admin::{
         ClearCoSigner, InitialPolicy, Initialize, PolicyTable, PolicyUpdate, SetCoSigner,

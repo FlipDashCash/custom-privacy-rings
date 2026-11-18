@@ -1141,12 +1141,7 @@ function circuitId(data: RingTransactData): RingCircuitId {
       );
     case "delegate":
     case "anonymousDelegate":
-      return Object.freeze({
-        kind: data.outputs.some((output) => output.body.kind === "exit")
-          ? ("ringAuthorityExit" as const)
-          : ("ringAuthority" as const),
-        ...shape,
-      });
+      return Object.freeze({ kind: "ringAuthority" as const, ...shape });
   }
 }
 

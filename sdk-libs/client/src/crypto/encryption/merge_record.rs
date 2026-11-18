@@ -135,7 +135,7 @@ fn open_record(secret: &SlotSecret, ciphertext: &[u8; MERGE_RECORD_LEN]) -> Resu
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
-    use spr_transaction::instructions::merge::MergeSeed;
+    use zolana_ring_transaction::MergeSeed;
 
     use super::*;
 

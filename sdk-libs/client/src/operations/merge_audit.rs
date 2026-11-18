@@ -17,8 +17,8 @@ use spr_hasher::primitives::{hash_bytes, is_canonical_bn254_scalar_be};
 use spr_indexer_api::Context;
 use spr_interface::instruction::instruction_data::merge_transact::merge_circuit_width;
 use spr_keypair::{X25519Keypair, X25519Pubkey};
-use spr_transaction::{instructions::merge::MergeSeed, OutputSlot};
-use zolana_ring_transaction::published_nullifier_pk;
+use spr_transaction::OutputSlot;
+use zolana_ring_transaction::{published_nullifier_pk, MergeSeed};
 
 use crate::{
     encryption::{open_merge_record, SealedMergeCiphertexts},
@@ -316,7 +316,7 @@ impl MergeOutput {
             record,
             seed: secret,
         } = opened;
-        // A merge record carries its key, zero or nonzero.
+        // A merge record carries its key.
         let nullifier_pk = published_nullifier_pk(&record)
             .filter(|key| record.kind == RecordKind::Ring && is_canonical_bn254_scalar_be(key))
             .ok_or(AuditError::DisclosureField)?;
@@ -346,7 +346,7 @@ impl MergeOutput {
             nullifier_pk,
             mint: Address::new_from_array(record.mint),
             amount: record.amount,
-            seed: *seed.as_bytes(),
+            blinding: rebuilt.blinding,
             real_nullifiers,
         })
     }
@@ -385,6 +385,11 @@ mod tests {
     const OWNER: [u8; 32] = [0xb1; 32];
     const MINT: [u8; 32] = [0xc1; 32];
     const RING_DATA: [u8; 32] = [0; 32];
+    const SEED: [u8; 32] = {
+        let mut seed = [0x13; 32];
+        seed[0] = 0;
+        seed
+    };
 
     fn merge_row(hash: [u8; 32], nullifiers: Vec<[u8; 32]>) -> ShieldedTransaction {
         ShieldedTransaction {
@@ -496,10 +501,9 @@ mod tests {
     #[test]
     fn a_record_rebuilds_its_output_and_its_seed_classifies_the_padding_in_both_modes() {
         let auditor = X25519Keypair::new();
-        let seed = [0x13; 32].map(|byte: u8| byte & 0x1f);
         for nullifier_pk in [[0x07; 32], ZERO_NULLIFIER_PUBKEY] {
-            let (record, commitment) = merged_note(nullifier_pk, seed);
-            let derived = MergeSeed::from_bytes(seed).unwrap();
+            let (record, commitment) = merged_note(nullifier_pk, SEED);
+            let derived = MergeSeed::from_bytes(SEED).unwrap();
             let nullifiers = vec![
                 FIRST,
                 [6; 32],
@@ -529,7 +533,7 @@ mod tests {
     #[test]
     fn each_record_field_changed_fails_the_rebuild() {
         let auditor = X25519Keypair::new();
-        let (record, commitment) = merged_note([0x07; 32], [0x13; 32].map(|byte: u8| byte & 0x1f));
+        let (record, commitment) = merged_note([0x07; 32], SEED);
         let row = merge_row(commitment, vec![FIRST; 8]);
         let opens =
             |spoiled: MergeRecord| confirmed_merge(&row, 0, &sealed(&auditor, spoiled), &auditor);

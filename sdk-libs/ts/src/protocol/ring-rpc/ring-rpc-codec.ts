@@ -12,7 +12,17 @@ import type {
   AuthorityTransfer,
   AuthorityPayment,
   PolicyAuthorityAuth,
+  CoSignList,
+  CoSignListEdit,
+  CoSignListEntry,
+  CoSignListsPage,
+  CoSignSubjectKind,
+  CoSignTransactionRequest,
+  CoSignTransactionResponse,
   CreateRecordsRegistryRequest,
+  EditCoSignListRequest,
+  GetCoSignListsRequest,
+  RegisterEnrollmentRingRequest,
   GetPendingListApprovalsRequest,
   MergeSettings,
   PendingListApproval,
@@ -48,6 +58,13 @@ type Hash = indexerTypes.Hash;
 const base58 = getBase58Decoder();
 
 const RELAY_OPERATIONS = ["anonymous", "confidential", "delegate", "deposit", "merge"] as const;
+const CO_SIGN_LISTS = ["allow", "block", "freeze"] as const satisfies readonly CoSignList[];
+const CO_SIGN_SUBJECT_KINDS = [
+  "owner",
+  "asset",
+  "destination",
+] as const satisfies readonly CoSignSubjectKind[];
+const CO_SIGN_LIST_EDITS = ["set", "remove"] as const satisfies readonly CoSignListEdit[];
 
 function toU64(value: bigint, path: string): number {
   return toWireInteger(value, path, 0n, U64_MAX);
@@ -385,6 +402,21 @@ export function encodeCreateRecordsRegistryRequest(
   };
 }
 
+/** Rust `RegisterEnrollmentRingRequest`. */
+export function encodeRegisterEnrollmentRingRequest(
+  value: RegisterEnrollmentRingRequest,
+): WireObject {
+  return {
+    ring: checkedAddress(value.ring, "ring"),
+    auth: encodePolicyAuthorityAuth(value.auth),
+  };
+}
+
+/** Rust `RegisterEnrollmentRingResponse`, empty. */
+export function decodeRegisterEnrollmentRingResponse(value: unknown): void {
+  object(value, "$", []);
+}
+
 /** Rust `CreateRecordsRegistryResponse`. */
 export function decodeRecordsRegistry(value: unknown): RecordsRegistry {
   const row = object(value, "$", ["registry", "storageAuthority"]);
@@ -421,6 +453,83 @@ export function decodePendingListApprovalsPage(value: unknown): PendingListAppro
   return nextCursor === undefined
     ? { pending: rows }
     : { pending: rows, nextCursor: checkedHash(nextCursor, "nextCursor") };
+}
+
+/** Rust `CoSignTransactionRequest`. */
+export function encodeCoSignTransactionRequest(value: CoSignTransactionRequest): WireObject {
+  return {
+    ring: checkedAddress(value.ring, "ring"),
+    message: checkedBase64(value.message, "message"),
+  };
+}
+
+/** Rust `CoSignTransactionResponse`. */
+export function decodeCoSignTransactionResponse(value: unknown): CoSignTransactionResponse {
+  const row = object(value, "$", ["signer", "signature"]);
+  return {
+    signer: checkedAddress(row["signer"], "signer"),
+    signature: checkedSignature(row["signature"], "signature"),
+  };
+}
+
+/** Rust `EditCoSignListRequest`. */
+export function encodeEditCoSignListRequest(value: EditCoSignListRequest): WireObject {
+  return {
+    ring: checkedAddress(value.ring, "ring"),
+    edit: oneOf(CO_SIGN_LIST_EDITS, value.edit, "edit", "a co-sign list edit"),
+    list: oneOf(CO_SIGN_LISTS, value.list, "list", "a co-sign list"),
+    kind: oneOf(CO_SIGN_SUBJECT_KINDS, value.kind, "kind", "a co-sign subject kind"),
+    address: checkedAddress(value.address, "address"),
+    auth: encodePolicyAuthorityAuth(value.auth),
+  };
+}
+
+/** Rust `GetCoSignListsRequest`. */
+export function encodeGetCoSignListsRequest(value: GetCoSignListsRequest): WireObject {
+  return {
+    ring: checkedAddress(value.ring, "ring"),
+    ...(value.cursor === undefined ? {} : { cursor: coSignListEntry(value.cursor, "cursor") }),
+    auth: encodePolicyAuthorityAuth(value.auth),
+  };
+}
+
+/** Rust `CoSignListEntry`. */
+export function decodeCoSignListEntry(value: unknown): CoSignListEntry {
+  return coSignListEntry(value, "$");
+}
+
+/** Rust `GetCoSignListsResponse`. */
+export function decodeCoSignListsPage(value: unknown): CoSignListsPage {
+  const page = object(value, "$", ["entries", "nextCursor"]);
+  const entries = page["entries"];
+  if (!Array.isArray(entries))
+    return schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", "entries", "an array", entries);
+  const rows = entries.map((entry: unknown, index) =>
+    coSignListEntry(entry, `entries[${String(index)}]`),
+  );
+  const nextCursor = page["nextCursor"];
+  return nextCursor === undefined
+    ? { entries: rows }
+    : { entries: rows, nextCursor: coSignListEntry(nextCursor, "nextCursor") };
+}
+
+function coSignListEntry(value: unknown, path: string): CoSignListEntry {
+  const row = object(value, path, ["list", "kind", "subject"]);
+  return {
+    list: oneOf(CO_SIGN_LISTS, row["list"], `${path}.list`, "a co-sign list"),
+    kind: oneOf(CO_SIGN_SUBJECT_KINDS, row["kind"], `${path}.kind`, "a co-sign subject kind"),
+    subject: checkedHash(row["subject"], `${path}.subject`),
+  };
+}
+
+function oneOf<Name extends string>(
+  names: readonly Name[],
+  value: unknown,
+  path: string,
+  expected: string,
+): Name {
+  const name = names.find((candidate) => candidate === value);
+  return name ?? schemaFailure("INDEXER_SCHEMA_INVALID_TYPE", path, expected, value);
 }
 
 function encodePolicyAuthorityAuth(value: PolicyAuthorityAuth): WireObject {

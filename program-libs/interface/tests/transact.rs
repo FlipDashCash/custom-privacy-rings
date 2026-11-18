@@ -698,20 +698,6 @@ fn flags_the_rail_forbids_are_refused() {
     );
 }
 
-/// A delegate exit takes SPP's authority exit selector, a move keeps the authority rail.
-#[test]
-fn a_delegate_exit_selects_the_exit_circuit() {
-    let fixture = Fixture::new();
-    let mut exit = fixture.delegate();
-    assert_eq!(exit.circuit(), CircuitId::RingAuthority(2, 2, 3));
-    exit.outputs[1] = fixture.exit(1, &fixture.payload);
-    let compact = fixture.with_audit_stream(exit).encode().unwrap();
-    let parsed = RingTransactData::parse(&compact, RingRail::Delegate)
-        .unwrap()
-        .into_data();
-    assert_eq!(parsed.circuit(), CircuitId::RingAuthorityExit(2, 2, 3));
-}
-
 #[test]
 fn the_rail_follows_the_instruction_and_the_ring_mode() {
     use custom_ring_interface::{InstructionTag, RingMode};

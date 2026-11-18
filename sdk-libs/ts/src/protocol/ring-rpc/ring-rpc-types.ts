@@ -22,8 +22,12 @@ export const RingRpcMethod = Object.freeze({
   getPendingListApprovals: "getPendingListApprovals",
   refuseListApproval: "refuseListApproval",
   createRecordsRegistry: "createRecordsRegistry",
+  registerEnrollmentRing: "registerEnrollmentRing",
   setReaderGrant: "setReaderGrant",
   submitEnrollment: "submitEnrollment",
+  coSignTransaction: "coSignTransaction",
+  editCoSignList: "editCoSignList",
+  getCoSignLists: "getCoSignLists",
 } as const);
 export type RingRpcMethod = (typeof RingRpcMethod)[keyof typeof RingRpcMethod];
 
@@ -182,6 +186,12 @@ export interface CreateRecordsRegistryRequest {
   readonly auth: PolicyAuthorityAuth;
 }
 
+/** Rust `RegisterEnrollmentRingRequest`, signed by the policy authority alone. */
+export interface RegisterEnrollmentRingRequest {
+  readonly ring: Address;
+  readonly auth: PolicyAuthorityAuth;
+}
+
 /** Rust `CreateRecordsRegistryResponse`, `registry` is the ring's records under `storageAuthority`. */
 export interface RecordsRegistry {
   readonly registry: Address;
@@ -201,6 +211,57 @@ export interface PendingListApproval {
   readonly member: Hash;
   readonly awaitedLists: bigint;
   readonly validUntilSlot: bigint;
+}
+
+/** Rust `CoSignTransactionRequest`, `message` is the serialized v1 message of one ring transfer. */
+export interface CoSignTransactionRequest {
+  readonly ring: Address;
+  readonly message: Base64String;
+}
+
+/** Rust `CoSignTransactionResponse`, `signature` signs the request message under `signer`. */
+export interface CoSignTransactionResponse {
+  readonly signer: Address;
+  readonly signature: Signature;
+}
+
+/** Rust `CoSignList`, a kind with one allow entry admits only its allowed subjects. */
+export type CoSignList = "allow" | "block" | "freeze";
+
+/** Rust `CoSignSubjectKind`. */
+export type CoSignSubjectKind = "owner" | "asset" | "destination";
+
+/** Rust `CoSignListEdit`. */
+export type CoSignListEdit = "set" | "remove";
+
+/** Rust `CoSignListEntry`, `subject` is the owner identity of an owner entry, the address of any other. */
+export interface CoSignListEntry {
+  readonly list: CoSignList;
+  readonly kind: CoSignSubjectKind;
+  readonly subject: Hash;
+}
+
+/** Rust `EditCoSignListRequest`. */
+export interface EditCoSignListRequest {
+  readonly ring: Address;
+  readonly edit: CoSignListEdit;
+  readonly list: CoSignList;
+  readonly kind: CoSignSubjectKind;
+  readonly address: Address;
+  readonly auth: PolicyAuthorityAuth;
+}
+
+/** Rust `GetCoSignListsRequest`, `cursor` is the last entry of the previous page. */
+export interface GetCoSignListsRequest {
+  readonly ring: Address;
+  readonly cursor?: CoSignListEntry;
+  readonly auth: PolicyAuthorityAuth;
+}
+
+/** Rust `GetCoSignListsResponse`, `nextCursor` absent on the last page. */
+export interface CoSignListsPage {
+  readonly entries: readonly CoSignListEntry[];
+  readonly nextCursor?: CoSignListEntry;
 }
 
 /** Rust `ReaderGrantAction`. */

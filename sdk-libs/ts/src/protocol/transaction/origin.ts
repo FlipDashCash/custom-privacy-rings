@@ -40,7 +40,6 @@ import {
   decodeRingMergeRequest,
   forwardedMergeData,
   sppMergeBody,
-  type MergeRingAuthority,
   type SealedMergeRecord,
 } from "../../crypto/audit/merge-disclosure.js";
 import { RingTransactData, landedRingRail, type RingRail } from "./transact.js";
@@ -71,7 +70,6 @@ export type ConfirmedRingTransaction =
       transaction: IndexedShieldedTransaction;
       /** The record whose proof the direct ring caller verified. */
       sealedRecord: Pick<SealedMergeRecord, "ephemeralPublicKey" | "envelope" | "record">;
-      authority: MergeRingAuthority;
     }>;
 
 /** Mirrors Rust `TransactionOrigin`, an unknown signature is an error, never absent. */
@@ -87,7 +85,7 @@ export interface TransactionOrigin {
 /** Tag 57's record, its forwarded bytes the SPP data the program verified. */
 function confirmedMergeRecordOf(
   found: TrustedEvent,
-): Pick<Extract<ConfirmedRingTransaction, { kind: "merge" }>, "sealedRecord" | "authority"> {
+): Pick<Extract<ConfirmedRingTransaction, { kind: "merge" }>, "sealedRecord"> {
   const wrapper = found.wrapper;
   if (
     found.source.data[0] !== InstructionTag.ringMergeTransact ||
@@ -104,7 +102,6 @@ function confirmedMergeRecordOf(
   const { ephemeralPublicKey, envelope, record } = request.sealed;
   return {
     sealedRecord: Object.freeze({ ephemeralPublicKey, envelope, record }),
-    authority: request.authority,
   };
 }
 
@@ -540,7 +537,6 @@ function readConfirmedEvent(
     if (kind !== 3) throw invalid("event.kind");
     const data = new Reader(source.data.slice(1));
     const ringDataHash = data.bytes(32, "merge.ringDataHash") as Bytes32;
-    data.u8("merge.authority");
     const merge = readMergeData(data);
     data.done();
     const { salt, ciphertext } = merge.outputEncryption;

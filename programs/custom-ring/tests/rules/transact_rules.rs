@@ -8,8 +8,8 @@ use custom_ring_interface::{
     shape_flag, spl_withdrawal_count, tag, transact_flag, AnonymousProofData, CoSignScope,
     CustomRingError, CustomRingProof, FramedSenderBundle, InputTrees, PlainGroth16Proof,
     PolicyProof, RingOutput, RingPolicy, RingRail, RingRole, RingTransactData, RootRead, SlotBody,
-    CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN, RING_RECORD_LEN,
-    RING_TRANSACT_RING_CONFIG_INDEX, SENDER_BUNDLE_LEN, TRANSACT_PAYER_INDEX,
+    EXIT_RECORD_LEN, RING_RECORD_LEN, RING_TRANSACT_RING_CONFIG_INDEX, SENDER_BUNDLE_LEN,
+    TRANSACT_PAYER_INDEX,
 };
 use solana_address::Address;
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
@@ -1586,25 +1586,6 @@ fn a_delegate_reads_no_policy_root_and_keeps_the_tracking_root() {
         delegate_move(&mut ring, &delegate, &data, with_own),
         CustomRingError::FlagNotAllowed,
     );
-}
-
-#[test]
-fn a_delegate_exit_selects_the_exit_circuit_and_reaches_its_key() {
-    let fixture = Fixture::new();
-    let delegate = Keypair::new();
-    let mut ring = delegate_ring(&delegate);
-    let mut data = fixture.transfer(RingRail::Delegate, 2, 2, false);
-    let kept = data.circuit();
-    assert!(matches!(kept, CircuitId::RingAuthority(2, 2, _)));
-    let payload = [0x77; CONFIDENTIAL_DATA_FREE_BODY_LEN];
-    data.outputs[1].body = SlotBody::Exit(&payload);
-    data.outputs[1].record = &fixture.records[1];
-    assert!(matches!(
-        data.circuit(),
-        CircuitId::RingAuthorityExit(2, 2, _)
-    ));
-    let bytes = data.encode().unwrap();
-    reaches_verification(delegate_move(&mut ring, &delegate, &data, bytes));
 }
 
 #[test]

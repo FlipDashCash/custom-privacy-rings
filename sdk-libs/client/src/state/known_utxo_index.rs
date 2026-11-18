@@ -5,19 +5,17 @@ use std::{
     collections::{hash_map::Entry, HashMap},
 };
 
-use crate::{types::KnownUtxo, ConfirmedMerge, MergeLedger};
+use crate::types::KnownUtxo;
 
 #[derive(Clone, Debug)]
 pub struct KnownUtxoIndex<T = KnownUtxo> {
     utxos: HashMap<[u8; 32], T>,
-    merges: MergeLedger,
 }
 
 impl<T> Default for KnownUtxoIndex<T> {
     fn default() -> Self {
         Self {
             utxos: HashMap::new(),
-            merges: MergeLedger::default(),
         }
     }
 }
@@ -35,10 +33,6 @@ impl<T: Borrow<KnownUtxo>> KnownUtxoIndex<T> {
                 free.insert(record);
             }
         }
-    }
-
-    pub fn apply_merge(&mut self, merge: ConfirmedMerge) {
-        self.merges.apply(merge);
     }
 
     pub fn get(&self, commitment: &[u8; 32]) -> Option<&T> {

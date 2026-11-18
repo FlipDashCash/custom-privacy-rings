@@ -448,35 +448,35 @@
     }
   },
   "custom-ring-merge": {
-    "statement": "0x1333a7c79830ed5e27bc932e26b1fbe0e5cde5bd9337007d536d9ad02d92638b",
+    "statement": "0x17fdbc349ecfc6f1bc39e8bde443f6aea1909a5a6cc5595b7bd981bc9ef05723",
     "proof": {
       "ar": [
-        "0x10af529e9e9ba38099a1397b817761c275296091f23a010c00473869962cb644",
-        "0x277bae19ef22d205a63a5660d98ae986efa70ecfde00978e496ef53da62c0d23"
+        "0x03e959c5c07f2ec39bd311642cdf24a6493c826724eb52cefcf7439edd702c20",
+        "0x305fdf5254b255dc2c1ca1ffcad3a728efac2302fc0851eae715c38916d6e68a"
       ],
       "bs": [
         [
-          "0x0d223a83c1a8d3a0e481989c9cf48bc109595dc2d4a6880ab704f5ce2039524a",
-          "0x1d469a2bdc9a7169474354d298a6f846eae42bb9973d746f120abc4e4a6d223c"
+          "0x01a6c3622a110da1f85748e5b9614b9482facc9f15d488979e6c03b1fb63de80",
+          "0x27cdf6ec6e4dc5fae104a72ae764f60f44f98fb278471612f8c32ef75d677d7c"
         ],
         [
-          "0x0088f87086f8f2711df6bf79055d02545b8ef30a8a15d09c56d86a4d008be4d6",
-          "0x235f605c96dd7835517a16c51ed2151c59dcd1a1ac623ed74e3b79dbbd1d81e2"
+          "0x0d097f4c6cabdd879c076ad9e556d2caa2f2d2bd779cf3df4d13ff2e7f9c7f41",
+          "0x23c122cc7f696001ac5ee54905d2fe261453585ae2aa79250c645b29faa0cbba"
         ]
       ],
       "krs": [
-        "0x0d71f14e22d479b59ed1a949f5300ca81cd524c3038c53cd476b2a5adc2d91a8",
-        "0x2ebe0b9e15bb4781de46a1474dda55578dae36d976cf332012edf624ba4eb2f1"
+        "0x12d21cef11178eb3846acfec6aaff16cda9f6650385c0d40fcf6b146fdf8d973",
+        "0x038c9ce2c1797ca75b2ab5bea17b3e2bf69cf095742dc9cc4e8837ed58d80659"
       ],
       "proofCommitment": [
-        "0x1fd8a18984377744496c31b339ee05e256087c9c4847c74eb3ff8b30d0aba2b8",
-        "0x0e4044e43a1e701ae77cc7341b88c3aa32a3ebaa7573627e083486e0250bbe38"
+        "0x131ef8825356ad0368c0cd507a627a3502a5477a7ef9fa238848f87fa0adfaeb",
+        "0x2b90a3c9d825d0deb209accd8a05da3eec1c22bcc85e6d3f2acf838c4f4a33d5"
       ],
       "proofCommitmentPok": [
-        "0x23ec7c65734d7529287c7538f5398e9d36c3ac846d685fb2cec6f6d414583bf1",
-        "0x20004fa1d8c0c6f6776f1a6f4afbb48600bc7afc62d1a26d5087dc5d3ca14247"
+        "0x12ff49785b8d77b00c46192242a501931c687f9710f9530352b2db4350d2ad67",
+        "0x16f4bbb2d548f58ecd7515b8debadd6509979c509d0c5bbb92c457bc8a32b3ec"
       ],
-      "provingKeySha256": "3350d9a88f41b322faa5461064dab5742403d5e39cdabeb5b9f50e0c62ef32b3"
+      "provingKeySha256": "64a8ab474e1ad0aeb2a520cd21fab2bbef75c7b6e7a8ae506c18980bc893db2f"
     }
   },
   "custom-ring-register-key": {

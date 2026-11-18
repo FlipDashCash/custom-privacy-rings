@@ -55,6 +55,7 @@ import {
   type OutputPayloadErrorKind,
 } from "../operations/audit/audit.js";
 import { RingError } from "../protocol/error.js";
+import { decodeRingRpcHealth, type RingRpcHealth } from "../protocol/ring-rpc/health.js";
 import { ringRecordsAddress } from "../protocol/pda/index.js";
 import {
   checkedReaderKey,
@@ -64,17 +65,24 @@ import {
 } from "../operations/management/reader-access.js";
 import { verifyRecordUpdate } from "../protocol/ring-rpc/record-update.js";
 import {
+  decodeCoSignListEntry,
+  decodeCoSignListsPage,
+  decodeCoSignTransactionResponse,
   decodeMergeSettings,
   decodeSubmitEnrollmentResponse,
   decodePendingListApprovalsPage,
   decodeRecordsRegistry,
   decodeRecordUpdateStatus,
+  decodeRegisterEnrollmentRingResponse,
   decodeRelayQuote,
   decodeRelayStatus,
   decodeReaderGrantAction,
   decodeRelayStep,
   decodeSubmitRecordUpdate,
+  encodeCoSignTransactionRequest,
   encodeCreateRecordsRegistryRequest,
+  encodeEditCoSignListRequest,
+  encodeGetCoSignListsRequest,
   encodeGetPendingListApprovalsRequest,
   encodeGetListSaltRequest,
   encodeMergeSettings,
@@ -82,6 +90,7 @@ import {
   encodePrepareRelayRequest,
   encodeRecordUpdateStatusRequest,
   encodeRefuseListApprovalRequest,
+  encodeRegisterEnrollmentRingRequest,
   encodeRelayQuoteRequest,
   encodeRelayStatusRequest,
   encodeSetMergeSettingsRequest,
@@ -95,7 +104,16 @@ import {
   RingRpcMethod,
   type AuthorityTransfer,
   type PolicyAuthorityAuth,
+  type CoSignList,
+  type CoSignListEdit,
+  type CoSignListEntry,
+  type CoSignListsPage,
+  type CoSignSubjectKind,
+  type CoSignTransactionRequest,
+  type CoSignTransactionResponse,
   type CreateRecordsRegistryRequest,
+  type EditCoSignListRequest,
+  type GetCoSignListsRequest,
   type GetPendingListApprovalsRequest,
   type PendingListApprovalsPage,
   type GetListSaltRequest,
@@ -106,6 +124,7 @@ import {
   type RecordsRegistry,
   type RecordUpdateStatus,
   type RefuseListApprovalRequest,
+  type RegisterEnrollmentRingRequest,
   type RelayQuote,
   type RelayQuoteRequest,
   type RelayStatus,
@@ -117,6 +136,7 @@ import {
   type SubmitRelayRequest,
 } from "../protocol/ring-rpc/ring-rpc-types.js";
 import { ringRpcRefusalName } from "../protocol/ring-rpc/ring-rpc-refusal.js";
+import type { RelayLeg } from "../protocol/ring-rpc/relay-proof-inputs.js";
 
 type Hash = indexerTypes.Hash;
 
@@ -150,6 +170,8 @@ const LIST_SALT_DOMAIN = "zolana/ring-rpc-list-salt";
 const MERGE_SETTINGS_DOMAIN = "zolana/ring-rpc-merge-settings";
 const POLICY_AUTHORITY_DOMAIN = "zolana/ring-rpc-policy-authority";
 const READER_GRANT_DOMAIN = "zolana/ring-rpc-reader-grant";
+const RELAY_DEPOSIT_DOMAIN = "zolana/ring-rpc-relay-deposit";
+const RELAY_MERGE_DOMAIN = "zolana/ring-rpc-relay-merge";
 const WALLET_STATUS_DOMAIN = "zolana/ring-rpc-wallet-status";
 const SPEND_COVERAGE_DOMAIN = "zolana/ring-rpc-spend-coverage";
 /** Rust `AUDIT_PAGE_LIMIT`. */
@@ -169,6 +191,40 @@ export interface RingReadTarget {
   /** The service key the caller pinned, never one the service reports. */
   readonly service: Address;
   readonly ringProgramId: Address;
+}
+
+/** Rust `ServiceTarget`, one ring rpc on one cluster, a relayed deposit or merge names it beside the ring. */
+export type RingServiceTarget = Omit<RingReadTarget, "ringProgramId">;
+
+/** Rust `RelayRequest`, `digest` is `depositRequestDigest` or `mergeRequestDigest` of the proof inputs. */
+export type RelayRequest =
+  | Readonly<{ kind: "deposit"; digest: Bytes32; legs: readonly RelayLeg[] }>
+  | Readonly<{ kind: "merge"; digest: Bytes32 }>;
+
+/** Mirrors Rust `RelayRequestAttestation::message`, the depositor or merge owner signs these bytes raw. */
+export function relayRequestAttestation(
+  input: Readonly<{ target: RingReadTarget; signer: Address; request: RelayRequest }>,
+): Uint8Array {
+  const { request } = input;
+  const legs = request.kind === "deposit" ? request.legs : [];
+  return encoder.encode(
+    [
+      request.kind === "deposit" ? RELAY_DEPOSIT_DOMAIN : RELAY_MERGE_DOMAIN,
+      ...targetLines(checkedReadTarget(input.target)),
+      `signer: ${requestAddress(input.signer, "signer")}`,
+      ...legs.map(
+        (leg) =>
+          `${leg.isDeposit ? "deposit" : "withdrawal"}: ${requestAddress(leg.mint, "mint")} ${checkedU64(leg.amount, "amount")}`,
+      ),
+      `request: ${base58Decoder.decode(copyBytes(request.digest, 32, "digest"))}`,
+    ].join("\n"),
+  );
+}
+
+function checkedU64(value: bigint, field: string): bigint {
+  if (typeof value !== "bigint" || value < 0n || value > 0xffff_ffff_ffff_ffffn)
+    throw invalidRequest(field);
+  return value;
 }
 
 /** Rust `ReadTarget::lines`. */
@@ -547,11 +603,22 @@ export class RingListSaltRequest {
   }
 }
 
-/** Rust `ListPendingApprovals`, `RefuseListApproval` or `CreateRecords`, the action the policy authority signs. */
+/** Rust `ListPendingApprovals`, `RefuseListApproval`, `CreateRecords` or `RegisterEnrollment`, the action the policy authority signs. */
 export type PolicyAuthorityAction =
   | Readonly<{ kind: "list"; registry: Address; cursor?: Hash }>
   | Readonly<{ kind: "refuse"; registry: Address; updateId: Hash }>
-  | Readonly<{ kind: "createRecords" }>;
+  | Readonly<{ kind: "createRecords" }>
+  | Readonly<{ kind: "registerEnrollment"; writer: Address }>
+  /** Rust `EditCoSignList`. */
+  | Readonly<{
+      kind: "editCoSignList";
+      edit: CoSignListEdit;
+      list: CoSignList;
+      subjectKind: CoSignSubjectKind;
+      address: Address;
+    }>
+  /** Rust `ReadCoSignLists`. */
+  | Readonly<{ kind: "readCoSignLists"; cursor?: CoSignListEntry }>;
 
 export type ListApprovalTarget = RingReadTarget & Readonly<{ registry: Address }>;
 
@@ -584,10 +651,18 @@ function policyAuthorityActionLine(action: PolicyAuthorityAction): string {
       return `refuse ${address(action.registry, "registry")} ${indexerScalars.checkedHash(action.updateId, "updateId")}`;
     case "createRecords":
       return "create records";
+    case "registerEnrollment":
+      return `register enrollments by ${address(action.writer, "writer")}`;
     case "list":
       return action.cursor === undefined
         ? `list ${address(action.registry, "registry")}`
         : `list ${address(action.registry, "registry")} after ${indexerScalars.checkedHash(action.cursor, "cursor")}`;
+    case "editCoSignList":
+      return `${action.edit} co-sign ${action.list} ${action.subjectKind} ${address(action.address, "address")}`;
+    case "readCoSignLists":
+      return action.cursor === undefined
+        ? "read co-sign lists"
+        : `read co-sign lists after ${action.cursor.list} ${action.cursor.kind} ${indexerScalars.checkedHash(action.cursor.subject, "cursor.subject")}`;
   }
 }
 
@@ -641,6 +716,76 @@ export async function signCreateRecordsRegistryRequest(
   return Object.freeze({
     ring: checked.ringProgramId,
     auth: await policyAuthorityAuth(checked, authority, { kind: "createRecords" }, timestamp),
+  });
+}
+
+/** Rust `RegisterEnrollmentRingRequest::register` signed by the policy authority, `writer` is the `enrollmentWriterPublicKey` of the service's health. */
+export async function signRegisterEnrollmentRingRequest(
+  target: RingReadTarget,
+  authority: MessagePartialSigner,
+  writer: Address,
+  timestamp?: bigint,
+): Promise<RegisterEnrollmentRingRequest> {
+  const checked = checkedReadTarget(target);
+  return Object.freeze({
+    ring: checked.ringProgramId,
+    auth: await policyAuthorityAuth(
+      checked,
+      authority,
+      { kind: "registerEnrollment", writer: address(writer, "writer") },
+      timestamp,
+    ),
+  });
+}
+
+/** Rust `EditCoSignListRequest::edit` signed by the policy authority. */
+export async function signEditCoSignListRequest(
+  target: RingReadTarget,
+  authority: MessagePartialSigner,
+  edit: Pick<EditCoSignListRequest, "edit" | "list" | "kind" | "address">,
+  timestamp?: bigint,
+): Promise<EditCoSignListRequest> {
+  const checked = checkedReadTarget(target);
+  const subject = address(edit.address, "address");
+  return Object.freeze({
+    ring: checked.ringProgramId,
+    edit: edit.edit,
+    list: edit.list,
+    kind: edit.kind,
+    address: subject,
+    auth: await policyAuthorityAuth(
+      checked,
+      authority,
+      {
+        kind: "editCoSignList",
+        edit: edit.edit,
+        list: edit.list,
+        subjectKind: edit.kind,
+        address: subject,
+      },
+      timestamp,
+    ),
+  });
+}
+
+/** Rust `GetCoSignListsRequest::read` signed by the policy authority, the page after `cursor`. */
+export async function signCoSignListsRequest(
+  target: RingReadTarget,
+  authority: MessagePartialSigner,
+  cursor?: CoSignListEntry,
+  timestamp?: bigint,
+): Promise<GetCoSignListsRequest> {
+  const checked = checkedReadTarget(target);
+  const page = cursor === undefined ? {} : { cursor: decodeCoSignListEntry(cursor) };
+  return Object.freeze({
+    ring: checked.ringProgramId,
+    ...page,
+    auth: await policyAuthorityAuth(
+      checked,
+      authority,
+      { kind: "readCoSignLists", ...page },
+      timestamp,
+    ),
   });
 }
 
@@ -1038,12 +1183,11 @@ export class RingAuditorKeyRequest {
   }
 }
 
-export type RingKeyMode = "local" | "derived";
-
-export interface RingRpcHealth {
-  readonly mode: RingKeyMode;
-  readonly servicePublicKey: Address;
-}
+export type {
+  RingKeyMode,
+  RingReaderGrantMode,
+  RingRpcHealth,
+} from "../protocol/ring-rpc/health.js";
 
 /** Mirrors Rust `CreateAuditorKeyResponse`, the signature covers `auditorKeyAttestation`. */
 export interface RingAuditorKey {
@@ -1126,7 +1270,7 @@ export interface DecryptedRingTransaction {
   /** Ordinal of the confirmed SPP event within this Solana transaction. */
   readonly eventIndex: number;
   readonly txViewingPublicKey: X25519PublicKey;
-  /** Published order, every slot sits here or in `payloadErrors` exactly once. */
+  /** Published order, a slot sits here, in `payloadErrors`, or in both when its record stands and its payload failed. */
   readonly outputs: readonly DecryptedRingOutput[];
   readonly payloadErrors: readonly OutputPayloadError[];
   /** `R`, the notes the proof spent, their nullifiers sit among `nullifiers` at unnamed positions. */
@@ -1409,13 +1553,7 @@ export class RingRpc {
   }
 
   async health(context?: RequestContext): Promise<RingRpcHealth> {
-    const wire = record(await this.#call("health", undefined, context), "result");
-    const mode = wire["mode"];
-    if (mode !== "local" && mode !== "derived") throw invalid("result.mode");
-    return Object.freeze({
-      mode,
-      servicePublicKey: address(wire["servicePubkey"], "result.servicePubkey"),
-    });
+    return decodeRingRpcHealth(await this.#call("health", undefined, context));
   }
 
   /** Verified under the pinned `servicePublicKey` before the key is returned. */
@@ -1631,6 +1769,40 @@ export class RingRpc {
     );
   }
 
+  /** The service's signature over `message`, for a wallet sending the transaction itself. */
+  async coSignTransaction(
+    request: CoSignTransactionRequest,
+    context?: RequestContext,
+  ): Promise<CoSignTransactionResponse> {
+    return decodeCoSignTransactionResponse(
+      await this.#call(
+        RingRpcMethod.coSignTransaction,
+        encodeCoSignTransactionRequest(request),
+        context,
+      ),
+    );
+  }
+
+  /** Answered with the entry the edit set or removed. */
+  async editCoSignList(
+    request: EditCoSignListRequest,
+    context?: RequestContext,
+  ): Promise<CoSignListEntry> {
+    return decodeCoSignListEntry(
+      await this.#call(RingRpcMethod.editCoSignList, encodeEditCoSignListRequest(request), context),
+    );
+  }
+
+  /** One page of the lists the ring's co-signer screens against. */
+  async getCoSignLists(
+    request: GetCoSignListsRequest,
+    context?: RequestContext,
+  ): Promise<CoSignListsPage> {
+    return decodeCoSignListsPage(
+      await this.#call(RingRpcMethod.getCoSignLists, encodeGetCoSignListsRequest(request), context),
+    );
+  }
+
   /** Idempotent, the ring's records under the service's storage authority. */
   async createRecordsRegistry(
     request: CreateRecordsRegistryRequest,
@@ -1652,6 +1824,20 @@ export class RingRpc {
       });
     }
     return records;
+  }
+
+  /** Ring RPC's enrollment writer serves the ring from then on, while the ring policy names its key. */
+  async registerEnrollmentRing(
+    request: RegisterEnrollmentRingRequest,
+    context?: RequestContext,
+  ): Promise<void> {
+    decodeRegisterEnrollmentRingResponse(
+      await this.#call(
+        RingRpcMethod.registerEnrollmentRing,
+        encodeRegisterEnrollmentRingRequest(request),
+        context,
+      ),
+    );
   }
 
   /** Each page is signed again, the attestation binds the nonce, the cursor and the time. */
@@ -2307,10 +2493,10 @@ export async function signMessage(
 function decodeTransaction(wire: Record<string, unknown>): DecryptedRingTransaction {
   const outputs = decodeOutputs(wire["outputs"]);
   const payloadErrors = decodePayloadErrors(wire["payloadErrors"]);
-  checkSlotCoverage([
-    ...outputs.map((output) => output.slotIndex),
-    ...payloadErrors.map((error) => error.slotIndex),
-  ]);
+  checkSlotCoverage(
+    outputs.map((output) => output.slotIndex),
+    payloadErrors.map((error) => error.slotIndex),
+  );
   const nullifiers = list(wire["nullifiers"], "nullifiers").map((nullifier, index) =>
     hash(nullifier, `nullifiers[${index}]`),
   );
@@ -2528,11 +2714,12 @@ function decodeWithdrawals(
   );
 }
 
-/** Rust `TransactionAudit` records every published slot as an output or as one payload error. */
-function checkSlotCoverage(indexes: readonly number[]): void {
-  const seen = new Set(indexes);
-  if (seen.size !== indexes.length || indexes.some((index) => index >= indexes.length))
-    throw invalid("payloadErrors");
+/** Rust `AuditedTransaction::place`, a kept record whose payload failed sits in both lists. */
+function checkSlotCoverage(outputs: readonly number[], errors: readonly number[]): void {
+  if (new Set(outputs).size !== outputs.length) throw invalid("outputs");
+  if (new Set(errors).size !== errors.length) throw invalid("payloadErrors");
+  const slots = new Set([...outputs, ...errors]);
+  if ([...slots].some((index) => index >= slots.size)) throw invalid("payloadErrors");
 }
 
 function decodeOutput(wire: Record<string, unknown>, path: string): DecryptedRingOutput {

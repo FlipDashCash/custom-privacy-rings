@@ -6,7 +6,7 @@ import {
   encodeBase58,
   prepareTransfer,
 } from "@heliuslabs/spr/internal";
-import type { NoteData } from "../../../src/operations/payments/anonymous.js";
+import type { NoteData, OwnerExposure } from "../../../src/operations/payments/anonymous.js";
 import { EMPTY_MINT_POLICY } from "../../../src/protocol/membership/mint-policy.js";
 import { policyWithdrawalHash } from "../../../src/proof/withdrawals.js";
 import { AccountState, getTokenEncoder } from "@solana-program/token";
@@ -629,7 +629,6 @@ describe("anonymous ring payment", () => {
       transactionKeys: (requests) => track("transactionKeys", local.transactionKeys(requests)),
       ringDeliverySecrets: (requests) =>
         track("ringDeliverySecrets", local.ringDeliverySecrets(requests)),
-      mergeSeeds: (requests) => track("mergeSeeds", local.mergeSeeds(requests)),
       listSalt: (ring) => track("listSalt", local.listSalt(ring)),
       ringTagMatches: (frames) => track("ringTagMatches", local.ringTagMatches(frames)),
       viewTags: (requests) => track("viewTags", local.viewTags(requests)),
@@ -1523,6 +1522,7 @@ describe("anonymous ring relay", () => {
       policy?: boolean;
       withdraw?: boolean;
       entry?: boolean;
+      ownerExposure?: OwnerExposure;
     }>,
   ) {
     const sender = anonymousSender();
@@ -1613,6 +1613,7 @@ describe("anonymous ring relay", () => {
         nullifierKey: sender.keypair.nullifierKey(),
         signer: signingKeySpendSigner(sender.signing),
         reply: null,
+        ...(input.ownerExposure === undefined ? {} : { ownerExposure: input.ownerExposure }),
       },
     };
     const relay =
@@ -1716,6 +1717,20 @@ describe("anonymous ring relay", () => {
         sender.keypair.signingPublicKey().ed25519(),
       ),
     ).toBe(true);
+  });
+
+  it("sends the owner exposure the caller names and refuses it by default", async () => {
+    const exposure = async (ownerExposure?: OwnerExposure) => {
+      const { relay } = await anonymousSpend({
+        notes: 2,
+        amount: 5n,
+        ...(ownerExposure === undefined ? {} : { ownerExposure }),
+      });
+      return (await payload(await relay)).rail;
+    };
+    expect(await exposure()).toMatchObject({ kind: "anonymous", ownerExposed: false });
+    expect(await exposure("refused")).toMatchObject({ kind: "anonymous", ownerExposed: false });
+    expect(await exposure("accepted")).toMatchObject({ kind: "anonymous", ownerExposed: true });
   });
 
   describe("an entry of 25 out of a default note of 40", () => {

@@ -122,7 +122,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The circuit opens each slot once in `OpenSlots`, then hands one `shared.Output` to the tracking checks, the policy and the stream.
 - The circuit reopens `private_tx_hash` in `bindTransaction`. A note relabelled as an address changes the note chain, and `private_tx_hash` fails.
 - The circuit holds every output slot to the UTXO or the dummy domain, dummies last, and a dummy to zero fields but its blinding. Ring slot `i` is then SPP slot `i` with no output hash in the statement.
-- SPP holds each output's ring id to 0 or the ring's in `AssertRingMemberOrFree`. Its authority rail holds it to the ring's in `AssertRingMember`, and its exit selector lets an output leave.
+- SPP holds each output's ring id to 0 or the ring's in `AssertRingMemberOrFree`. Its authority rail holds it to the ring's in `AssertRingMember`.
 - The data hashes enter no ring constraint but the UTXO hash, and no layout bit reads them. A malformed payload loses them for the recipient and the auditor.
 - The tests are `TestDataOutputs`, and `TestOutputSlotsKeepSppForm` and `TestDataHashesNeedNoLayoutBit` in `prover/circuits/audit`.
 

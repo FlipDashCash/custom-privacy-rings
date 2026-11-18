@@ -6,14 +6,17 @@ use sea_orm::{ConnectionTrait, Statement};
 use solana_instruction::AccountMeta;
 use spr_keypair::{ShieldedKeypair, SigningKey};
 use zolana_ring_client::rpc::{
-    GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest, RelayId, RelayProofInputs,
-    RelayQuote, RelayRail, RelayStatus, RelayStep, SubmitRelayRequest, GET_RELAY_QUOTE,
+    CoSignList, CoSignListEdit, CoSignListEntry, CoSignSubjectKind, CoSignTransactionRequest,
+    CoSignTransactionResponse, EditCoSignList, EditCoSignListRequest, GetCoSignListsRequest,
+    GetCoSignListsResponse, GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest,
+    ReadCoSignLists, RelayId, RelayProofInputs, RelayQuote, RelayRail, RelayStatus, RelayStep,
+    SubmitRelayRequest, CO_SIGN_TRANSACTION, EDIT_CO_SIGN_LIST, GET_CO_SIGN_LISTS, GET_RELAY_QUOTE,
     GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
 };
 use zolana_ring_policy::{AssetLimits, MintPolicy};
 use zolana_ring_rpc::{
-    ChainOutcome, DelegateSeal, ProvenRelay, RelayError, RelayParties, RelayParts, RelayPayload,
-    RelayProofRequest, RelayProver,
+    ChainOutcome, CoSignError, DelegateSeal, ProvenRelay, RelayError, RelayParties, RelayParts,
+    RelayPayload, RelayProofRequest, RelayProver,
 };
 
 use super::transfer::{Frame as TransferFrame, Publish, Rail};
@@ -148,6 +151,13 @@ struct CappedRelay {
     rail: fn() -> RelayRail,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SenderNote {
+    Ingested,
+    /// The service has not read the note the transfer spends.
+    Lagging,
+}
+
 impl CappedRelay {
     async fn new(rail: fn() -> RelayRail) -> Self {
         Self::naming(rail, None, sender_capped()).await
@@ -155,6 +165,15 @@ impl CappedRelay {
 
     /// `named` replaces the hub's co-signer in the proof.
     async fn naming(rail: fn() -> RelayRail, named: Option<Address>, limits: AssetLimits) -> Self {
+        Self::built(rail, named, limits, SenderNote::Ingested).await
+    }
+
+    async fn built(
+        rail: fn() -> RelayRail,
+        named: Option<Address>,
+        limits: AssetLimits,
+        note: SenderNote,
+    ) -> Self {
         let fixture = Fixture::new();
         // The note a capped transfer spends, the co-signer reads its owner from the store.
         let sender = owner();
@@ -214,11 +233,13 @@ impl CappedRelay {
             })
             .local(RING, fixture.auditor.clone())
             .expect("hub");
-        hub.service(None)
-            .expect("service")
-            .backfill_utxos()
-            .await
-            .expect("the note opens");
+        if note == SenderNote::Ingested {
+            hub.service(None)
+                .expect("service")
+                .backfill_utxos()
+                .await
+                .expect("the note opens");
+        }
         let hub = Arc::new(hub);
         let module = rpc_module(hub.clone()).expect("module");
         let quote = module
@@ -315,7 +336,12 @@ impl CappedRelay {
             .module
             .call(
                 PREPARE_RELAY,
-                as_object(deposit_request(self.quote.clone(), RING, depositor, amount)),
+                as_object(deposit_request(
+                    target(RING),
+                    self.quote.clone(),
+                    depositor,
+                    amount,
+                )),
             )
             .await
             .expect("prepared deposit");
@@ -870,4 +896,208 @@ async fn a_failed_reservation_release_is_retried_by_status() {
     assert_eq!(relay.status(relay_id).await, status);
     *relay.chain.outcome.lock().expect("outcome") = None;
     relay.second_cap_fits().await;
+}
+
+fn recipient() -> spr_keypair::ShieldedAddress {
+    ShieldedKeypair::from_keypair(SigningKey::from_ed25519_bytes(&[47; 32]))
+        .expect("recipient")
+        .shielded_address()
+        .expect("recipient address")
+}
+
+fn wallet(address: &spr_keypair::ShieldedAddress) -> Address {
+    Address::new_from_array(address.signing_pubkey.as_ed25519().expect("ed25519"))
+}
+
+impl CappedRelay {
+    async fn edit_list(
+        &self,
+        signer: &Keypair,
+        action: EditCoSignList,
+    ) -> Result<CoSignListEntry, jsonrpsee::MethodsError> {
+        let target = ReadTarget {
+            cluster: GENESIS,
+            service: self.hub.service_pubkey(),
+            ring: RING,
+        };
+        let request = EditCoSignListRequest::edit(target, signer.pubkey(), action)
+            .sign(signer)
+            .expect("signed edit");
+        self.module
+            .call(EDIT_CO_SIGN_LIST, as_object(request))
+            .await
+    }
+
+    /// A transfer of `seed` to `recipient()` inside the cap.
+    async fn pays(&self, seed: u8) -> Result<RelayStep, jsonrpsee::MethodsError> {
+        let mut inputs = proof_inputs(RING, (self.rail)());
+        inputs.outputs[0].owner_address = Some(recipient());
+        inputs.outputs[0].amount = 1;
+        inputs.blinding_seed = [seed; 32];
+        self.module
+            .call(
+                PREPARE_RELAY,
+                as_object(signed_request(self.quote.clone(), &inputs)),
+            )
+            .await
+    }
+}
+
+fn listing(list: CoSignList, kind: CoSignSubjectKind, address: Address) -> EditCoSignList {
+    EditCoSignList {
+        edit: CoSignListEdit::Set,
+        list,
+        kind,
+        address,
+    }
+}
+
+#[tokio::test]
+async fn a_frozen_sender_is_refused_on_both_rails_until_the_freeze_is_removed() {
+    let sender = wallet(&owner().shielded_address().expect("sender"));
+    for rail in [anonymous_rail, || RelayRail::Confidential] {
+        let relay = CappedRelay::new(rail).await;
+        let freeze = listing(CoSignList::Freeze, CoSignSubjectKind::Owner, sender);
+        relay
+            .edit_list(&authority(), freeze)
+            .await
+            .expect("the policy authority freezes");
+
+        assert_eq!(refusal(relay.pays(1).await), CoSignError::Frozen.code());
+        assert!(relay.chain.sent().is_empty());
+
+        let lifted = EditCoSignList {
+            edit: CoSignListEdit::Remove,
+            ..freeze
+        };
+        relay.edit_list(&authority(), lifted).await.expect("lifted");
+        let step = relay.pays(2).await.expect("the sender pays again");
+        assert!(matches!(step, RelayStep::Submitted { .. }), "{step:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_frozen_recipient_receives_and_a_blocked_one_does_not() {
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    let paid = wallet(&recipient());
+    let list = |list| listing(list, CoSignSubjectKind::Owner, paid);
+    relay
+        .edit_list(&authority(), list(CoSignList::Freeze))
+        .await
+        .expect("frozen");
+    let step = relay.pays(1).await.expect("a frozen owner receives");
+    assert!(matches!(step, RelayStep::Submitted { .. }), "{step:?}");
+
+    relay
+        .edit_list(&authority(), list(CoSignList::Block))
+        .await
+        .expect("blocked");
+    assert_eq!(refusal(relay.pays(2).await), CoSignError::Blocked.code());
+}
+
+#[tokio::test]
+async fn an_allow_list_and_a_blocked_asset_bind_the_transfer() {
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    let sender = wallet(&owner().shielded_address().expect("sender"));
+    let allow = |address| listing(CoSignList::Allow, CoSignSubjectKind::Owner, address);
+    relay
+        .edit_list(&authority(), allow(sender))
+        .await
+        .expect("allowed sender");
+    assert_eq!(refusal(relay.pays(1).await), CoSignError::NotAllowed.code());
+    relay
+        .edit_list(&authority(), allow(wallet(&recipient())))
+        .await
+        .expect("allowed recipient");
+    let step = relay.pays(2).await.expect("both owners are allowed");
+    assert!(matches!(step, RelayStep::Submitted { .. }), "{step:?}");
+
+    let asset = listing(CoSignList::Block, CoSignSubjectKind::Asset, SOL_MINT);
+    relay
+        .edit_list(&authority(), asset)
+        .await
+        .expect("blocked asset");
+    assert_eq!(refusal(relay.pays(3).await), CoSignError::Blocked.code());
+}
+
+#[tokio::test]
+async fn only_the_policy_authority_edits_and_reads_the_lists() {
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    let block = listing(CoSignList::Block, CoSignSubjectKind::Asset, SOL_MINT);
+    assert!(relay.edit_list(&Keypair::new(), block).await.is_err());
+
+    let entry = relay.edit_list(&authority(), block).await.expect("blocked");
+    let target = ReadTarget {
+        cluster: GENESIS,
+        service: relay.hub.service_pubkey(),
+        ring: RING,
+    };
+    let read = |signer: &Keypair| {
+        let request =
+            GetCoSignListsRequest::read(target, signer.pubkey(), ReadCoSignLists::default())
+                .sign(signer)
+                .expect("signed read");
+        relay
+            .module
+            .call::<_, GetCoSignListsResponse>(GET_CO_SIGN_LISTS, as_object(request))
+    };
+    assert!(read(&Keypair::new()).await.is_err());
+    let lists = read(&authority()).await.expect("lists");
+    assert_eq!(lists.entries, [entry]);
+    assert_eq!(lists.next_cursor, None);
+}
+
+#[tokio::test]
+async fn a_direct_request_is_simulated_then_signed_under_the_same_rules() {
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    let step = relay.pays(1).await.expect("relayed");
+    assert!(matches!(step, RelayStep::Submitted { .. }), "{step:?}");
+    let [sent] = relay.chain.sent().try_into().expect("one sent transaction");
+    let direct = || {
+        relay.module.call::<_, CoSignTransactionResponse>(
+            CO_SIGN_TRANSACTION,
+            as_object(CoSignTransactionRequest {
+                ring: RING.into(),
+                message: sent.message.serialize().into(),
+            }),
+        )
+    };
+
+    // The same message holds its reservation, the answer is the signature the relay sent.
+    let signed = direct().await.expect("co-signed");
+    assert_eq!(signed.signer.0, relay.co_signer);
+    assert_eq!(signed.signature.0, sent.signatures[1]);
+
+    *relay.chain.simulation_refusal.lock().expect("refusal") = Some("proof".to_owned());
+    assert_eq!(
+        refusal(direct().await),
+        RelayError::SendRefused {
+            reason: String::new()
+        }
+        .code()
+    );
+    *relay.chain.simulation_refusal.lock().expect("refusal") = None;
+
+    let sender = wallet(&owner().shielded_address().expect("sender"));
+    let freeze = listing(CoSignList::Freeze, CoSignSubjectKind::Owner, sender);
+    relay.edit_list(&authority(), freeze).await.expect("frozen");
+    assert_eq!(refusal(direct().await), CoSignError::Frozen.code());
+}
+
+#[tokio::test]
+async fn the_lists_decide_before_the_service_ingests_the_spent_note() {
+    let confidential: fn() -> RelayRail = || RelayRail::Confidential;
+    let relay = CappedRelay::built(confidential, None, sender_capped(), SenderNote::Lagging).await;
+    assert_eq!(
+        refusal(relay.pays(1).await),
+        CoSignError::LimitsUnavailable.code()
+    );
+
+    let block = listing(
+        CoSignList::Block,
+        CoSignSubjectKind::Owner,
+        wallet(&recipient()),
+    );
+    relay.edit_list(&authority(), block).await.expect("blocked");
+    assert_eq!(refusal(relay.pays(2).await), CoSignError::Blocked.code());
 }

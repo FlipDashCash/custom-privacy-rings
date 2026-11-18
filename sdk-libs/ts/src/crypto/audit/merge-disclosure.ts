@@ -1,18 +1,22 @@
 /** The ring merge's sealed record and statement, Rust `custom_ring_interface::merge`. */
 import {
   bytesToBigInt,
-  equalBytes,
   hashBytes,
   hashChain,
   Reader,
   rightAlign,
   Writer,
   checkedBytes,
-  ZERO_32,
-  ZERO_NULLIFIER_PK,
 } from "@heliuslabs/spr/internal";
 import { pack33 } from "@heliuslabs/spr/interface";
-import type { Address, Bytes32, Bytes33, Bytes64, RequestContext } from "@heliuslabs/spr/interface";
+import type {
+  Address,
+  Bytes32,
+  Bytes33,
+  Bytes64,
+  MergeOutputEncryption,
+  RequestContext,
+} from "@heliuslabs/spr/interface";
 import { X25519Keypair, X25519PublicKey } from "@heliuslabs/spr/keypair";
 import type { Bytes16, NullifierKey, ViewingKey } from "@heliuslabs/spr/keypair";
 
@@ -46,10 +50,6 @@ import {
   auditSharedSecret,
 } from "./audit.js";
 
-/** Who admits a merge, the wincode tag SPP's `MergeRingIxData` reads. */
-export const MergeRingAuthority = Object.freeze({ ring: 0, ownerSigned: 1 } as const);
-export type MergeRingAuthority = (typeof MergeRingAuthority)[keyof typeof MergeRingAuthority];
-
 /** The sealed half of tag 57, Rust `SealedMergeRecord`. */
 export interface SealedMergeRecord {
   readonly proof: Uint8Array;
@@ -62,10 +62,8 @@ export interface SealedMergeRecord {
 
 /** Tag 57 past its tag, Rust `CustomRingMergeIxData`. */
 export interface RingMergeRequest {
-  /** Read under the ring authority alone. */
   readonly trackingRevision: bigint;
   readonly outputRingDataHash: Bytes32;
-  readonly authority: MergeRingAuthority;
   readonly sealed: SealedMergeRecord;
   /** The SPP merge body with `proof.b` compressed. */
   readonly compactBody: Uint8Array;
@@ -84,30 +82,29 @@ export interface MergePublicInput {
   readonly record: Uint8Array;
   /** The payer's Solana owner identity. */
   readonly payer: Bytes32;
-  /** The signing owner's identity under `ownerSigned`, zero under the ring. */
-  readonly publishedOwner: Bytes32;
-  /** Zero under `ownerSigned`. */
   readonly trackingRoot: Bytes32;
+  /** SPP publishes it unproven, the ring proof alone binds it to the output. */
+  readonly outputEncryption: Pick<MergeOutputEncryption, "salt" | "ciphertext">;
 }
 
 /** `expiry_unix_ts u64 ‖ proof.a` ahead of `proof.b`, Rust `MERGE_B_OFFSET`. */
 const MERGE_B_OFFSET = 8 + 32;
-/** `tracking_revision ‖ output_ring_data_hash ‖ authority ‖ proof ‖ eph_pk ‖ envelope ‖ record`. */
+/** `tracking_revision ‖ output_ring_data_hash ‖ proof ‖ eph_pk ‖ envelope ‖ record`. */
 const REQUEST_HEAD_LEN =
-  8 + 32 + 1 + CUSTOM_RING_PROOF_LENGTH + 33 + MERGE_ENVELOPE_LEN + MERGE_RECORD_LEN;
+  8 + 32 + CUSTOM_RING_PROOF_LENGTH + 33 + MERGE_ENVELOPE_LEN + MERGE_RECORD_LEN;
 /** A merge seals at slot index 0 under a zero salt, its ephemeral is fresh per call. */
 const MERGE_SALT = new Uint8Array(16) as Bytes16;
 const COMPRESSED_G2_LEN = 64;
 const DECOMPRESSED_G2_LEN = 128;
-/** `tag ‖ output_ring_data_hash ‖ authority` ahead of the SPP body. */
-export const MERGE_RING_DATA_PREFIX_LEN = 1 + 32 + 1;
+/** `tag ‖ output_ring_data_hash` ahead of the SPP body. */
+export const MERGE_RING_DATA_PREFIX_LEN = 1 + 32;
 
 /** The merge request short of what sealing yields, its seed known to the holder alone. */
 export type RingMergeDisclosureRequest = Omit<
   MergeProofRequest,
-  "publicInputHash" | "ephSk" | "seed"
+  "publicInputHash" | "ephSk" | "seed" | "outputCiphertextSalt"
 > &
-  Readonly<{ mint: Address }>;
+  Readonly<{ mint: Address; outputEncryption: MergePublicInput["outputEncryption"] }>;
 
 /** What one merge seals, the record to `V` and `eph_sk ‖ V` to the auditor. */
 export interface MergeSeal {
@@ -118,7 +115,7 @@ export interface MergeSeal {
   readonly firstNullifier: Bytes32;
 }
 
-/** The nullifier secret is the seed off the zero key, so its holder seals and proves. */
+/** The nullifier secret is the seed, so its holder seals and proves. */
 export interface RingMergeSealer {
   sealRingMerge(
     request: RingMergeDisclosureRequest,
@@ -148,7 +145,7 @@ export function completeRingMerge(
     auditorPublicKey: x25519FromU(request.auditorPk),
     firstNullifier: request.firstNullifier,
   });
-  const { mint: _mint, ...fields } = request;
+  const { mint: _mint, outputEncryption, ...fields } = request;
   return Object.freeze({
     request: Object.freeze({
       ...fields,
@@ -161,13 +158,12 @@ export function completeRingMerge(
         envelope: sealed.envelope,
         record: sealed.record,
         payer: request.payer,
-        publishedOwner: equalBytes(request.nullifierPk, ZERO_NULLIFIER_PK)
-          ? request.ownerPkHash
-          : ZERO_32,
         trackingRoot: request.trackingRoot,
+        outputEncryption,
       }),
       ephSk: ephemeralSecret,
       seed,
+      outputCiphertextSalt: rightAlign(outputEncryption.salt) as Bytes32,
     }),
     sealed,
   });
@@ -339,8 +335,9 @@ function streamApply(secret: Bytes32, label: Uint8Array, data: Uint8Array): Uint
   }
 }
 
-/** `[CRMG, output, n0, ring_id, aud0, aud1, eph0, eph1, hash_bytes(envelope_ct), hash_bytes(record_ct), payer, published_owner, tracking_root]`. */
+/** `[CRMG, output, n0, ring_id, aud0, aud1, eph0, eph1, hash_bytes(envelope_ct), hash_bytes(record_ct), payer, tracking_root, salt, ct0, ct1, ct2]`. */
 export function mergePublicInputElements(input: MergePublicInput): readonly Bytes32[] {
+  const { salt, ciphertext } = input.outputEncryption;
   return [
     domainField(RingDomain.mergeStatement),
     checkedBytes<Bytes32>(input.outputUtxoHash, 32, "output utxo hash"),
@@ -351,8 +348,9 @@ export function mergePublicInputElements(input: MergePublicInput): readonly Byte
     hashBytes(checkedBytes(input.envelope, MERGE_ENVELOPE_LEN, "envelope")) as Bytes32,
     hashBytes(checkedBytes(input.record, MERGE_RECORD_LEN, "record")) as Bytes32,
     checkedBytes<Bytes32>(input.payer, 32, "payer"),
-    checkedBytes<Bytes32>(input.publishedOwner, 32, "published owner"),
     checkedBytes<Bytes32>(input.trackingRoot, 32, "tracking root"),
+    rightAlign(checkedBytes(salt, 16, "output ciphertext salt")) as Bytes32,
+    ...ciphertext.map((element) => checkedBytes<Bytes32>(element, 32, "output ciphertext")),
   ];
 }
 
@@ -366,7 +364,6 @@ export function encodeRingMergeRequest(request: RingMergeRequest): Uint8Array {
   return new Writer()
     .u64(request.trackingRevision, "merge.trackingRevision")
     .bytes(request.outputRingDataHash, 32, "merge.outputRingDataHash")
-    .u8(request.authority, "merge.authority")
     .bytes(sealed.proof, CUSTOM_RING_PROOF_LENGTH, "merge.proof")
     .bytes(sealed.ephemeralPublicKey, 33, "merge.ephemeralPublicKey")
     .bytes(sealed.envelope, MERGE_ENVELOPE_LEN, "merge.envelope")
@@ -375,14 +372,11 @@ export function encodeRingMergeRequest(request: RingMergeRequest): Uint8Array {
     .finish();
 }
 
-/** Refuses an authority byte off the two, Rust `CustomRingMergeIxDataRef::from_bytes`. */
+/** Rust `CustomRingMergeIxDataRef::from_bytes`. */
 export function decodeRingMergeRequest(data: Uint8Array): RingMergeRequest {
   const reader = new Reader(data);
   const trackingRevision = reader.u64("merge.trackingRevision");
   const outputRingDataHash = reader.bytes(32, "merge.outputRingDataHash") as Bytes32;
-  const authority = reader.u8("merge.authority");
-  if (authority !== MergeRingAuthority.ring && authority !== MergeRingAuthority.ownerSigned)
-    throw invalid("merge.authority");
   const proof = reader.bytes(CUSTOM_RING_PROOF_LENGTH, "merge.proof");
   const ephemeralPublicKey = reader.bytes(33, "merge.ephemeralPublicKey") as Bytes33;
   const envelope = reader.bytes(MERGE_ENVELOPE_LEN, "merge.envelope");
@@ -391,7 +385,6 @@ export function decodeRingMergeRequest(data: Uint8Array): RingMergeRequest {
   return Object.freeze({
     trackingRevision,
     outputRingDataHash,
-    authority,
     sealed: Object.freeze({ proof, ephemeralPublicKey, envelope, record }),
     compactBody,
   });
@@ -423,16 +416,15 @@ export function sppMergeBody(compact: Uint8Array): Uint8Array {
   return body;
 }
 
-/** Rust `CustomRingMergeIxDataRef::forwarded`, `[tag, output_ring_data_hash, authority, body]`. */
+/** Rust `CustomRingMergeIxDataRef::forwarded`, `[tag, output_ring_data_hash, body]`. */
 export function forwardedMergeData(
-  request: Pick<RingMergeRequest, "outputRingDataHash" | "authority">,
+  request: Pick<RingMergeRequest, "outputRingDataHash">,
   sppBody: Uint8Array,
   sppTag: number,
 ): Uint8Array {
   const out = new Uint8Array(MERGE_RING_DATA_PREFIX_LEN + sppBody.length);
   out[0] = sppTag;
   out.set(request.outputRingDataHash, 1);
-  out[33] = request.authority;
   out.set(sppBody, MERGE_RING_DATA_PREFIX_LEN);
   return out;
 }

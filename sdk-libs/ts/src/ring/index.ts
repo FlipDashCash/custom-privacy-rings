@@ -191,7 +191,6 @@ export { openRingNotes, syncRingWallet } from "../state/ring-sync.js";
 export type { RingNotes, RingSyncClient, RingSyncInput } from "../state/ring-sync.js";
 export { LocalRingKeys, isRingKeys, ringWalletKeys } from "../state/ring-keys.js";
 export type {
-  MergeSeedRequest,
   RingDeliveryRequest,
   RingKeys,
   RingTagFrame,
@@ -288,7 +287,17 @@ export type {
   AuthorityWithdrawal,
   AuthorityTransfer,
   PolicyAuthorityAuth,
+  CoSignList,
+  CoSignListEdit,
+  CoSignListEntry,
+  CoSignListsPage,
+  CoSignSubjectKind,
+  CoSignTransactionRequest,
+  CoSignTransactionResponse,
   CreateRecordsRegistryRequest,
+  EditCoSignListRequest,
+  GetCoSignListsRequest,
+  RegisterEnrollmentRingRequest,
   GetPendingListApprovalsRequest,
   PendingListApproval,
   PendingListApprovalsPage,
@@ -445,7 +454,6 @@ export type {
   RingMergeAuditReader,
 } from "../operations/audit/audit-merge.js";
 export {
-  MergeRingAuthority,
   decodeRingMergeRequest,
   encodeRingMergeRequest,
   forwardedMergeData,
@@ -507,23 +515,32 @@ export {
   policyAuthorityAttestation,
   messageSignerReader,
   readerGrantAttestation,
+  relayRequestAttestation,
   ringReadAttestation,
   walletStatusAttestation,
   walletSnapshotReleaseAttestation,
   delegateNoteKey,
   delegateNotesAttestation,
   delegateSnapshotReleaseAttestation,
+  signCoSignListsRequest,
   signCreateRecordsRegistryRequest,
+  signEditCoSignListRequest,
+  signRegisterEnrollmentRingRequest,
   signPendingListApprovalsRequest,
   signRefuseListApprovalRequest,
 } from "../rpc/ring-rpc.js";
+export { ringRpcCoSigner } from "../rpc/ring-rpc-co-signer.js";
+export type { RingRpcCoSignerInput } from "../rpc/ring-rpc-co-signer.js";
 export type {
   DelegateNotesAttestationInput,
   ListApprovalTarget,
   PolicyAuthorityAction,
+  RelayRequest,
   RingReaderGrant,
+  RingServiceTarget,
   WalletStatusAttestationInput,
 } from "../rpc/ring-rpc.js";
+export type { RelayLeg } from "../protocol/ring-rpc/relay-proof-inputs.js";
 export type {
   AuditedMergesPage,
   AuditedRingMerge,
@@ -541,6 +558,7 @@ export type {
   RingDepositsPage,
   RingKeyMode,
   RingPagedRead,
+  RingReaderGrantMode,
   RingReadSigner,
   RingReadTarget,
   RingRpcHealth,
@@ -628,9 +646,9 @@ export { privateListKey, publicListKey } from "../protocol/membership/private-li
 export { listSaltOf, listTagOf } from "../crypto/keys/list-salt.js";
 export {
   ENROLLMENT_BATCH,
-  ENROLLMENT_SIGNATURE_LABEL,
+  ENROLLMENT_SIGNATURE_DOMAIN,
   EnrollmentKind,
-  SIGNED_MESSAGE_LEN,
+  SIGNED_MESSAGE_MAX_LEN,
   encodeEnrollmentRecord,
   encodeEnrollmentWrite,
   signedWrite,
@@ -650,7 +668,6 @@ export {
   type Fit,
   type FitBudget,
   type FitSigners,
-  type MergeCapacity,
   type MergeGroup,
   type SetupEffect,
   type SpentInput,
@@ -658,7 +675,6 @@ export {
 export type { RingListSalt } from "../proof/policy-proof.js";
 export type { RingPublicSpend } from "../operations/payments/transfer.js";
 export type { RingMergeSealer } from "../crypto/audit/merge-disclosure.js";
-export { openZeroKeyMerges, type OpenedZeroKeyMerge } from "../state/zero-key-merge.js";
 export {
   isZeroKeyNote,
   mintBalances,
@@ -682,7 +698,7 @@ export type {
   TrackingRecordPoolRequest,
   TrackingSeal,
 } from "../protocol/indexer/tracking-codec.js";
-export { ownerGrantPda } from "../protocol/pda/index.js";
+export { STORAGE_PROGRAM_ID, ownerGrantPda } from "../protocol/pda/index.js";
 export type { ReplyMetadata } from "../protocol/codec/anonymous-delivery.js";
 export {
   checkCoOwnerKeys,

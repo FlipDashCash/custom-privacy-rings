@@ -442,7 +442,8 @@ describe("delegate sources", () => {
       };
     };
 
-    it("funds every mint of a move across at most two trees", async () => {
+    // Zolana takes the inputs of an authority transfer from one tree.
+    it.skip("funds every mint of a move across at most two trees", async () => {
       const [member, payee] = [ShieldedKeypair.generate(), ShieldedKeypair.generate()];
       const { fixture, delegate } = await moveRing("confidential", [member, payee]);
       const { second, client } = await withSecondTree(fixture);
@@ -523,7 +524,8 @@ describe("delegate sources", () => {
       expect(spent?.map((input) => input.utxo.data.memo())).toEqual([Uint8Array.of(3)]);
     });
 
-    it("pays the change to the owner of the smallest note across tree runs", async () => {
+    // Zolana takes the inputs of an authority transfer from one tree.
+    it.skip("pays the change to the owner of the smallest note across tree runs", async () => {
       const [member, other, payee] = [
         ShieldedKeypair.generate(),
         ShieldedKeypair.generate(),

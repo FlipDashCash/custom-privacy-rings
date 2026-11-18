@@ -7,6 +7,7 @@ use custom_ring_interface::{
 };
 use serde::Deserialize;
 use spr_hasher::{hash_chain::create_hash_chain_4_from_slice, primitives::right_align};
+use spr_interface::instruction::instruction_data::merge_transact::MergeOutputEncryption;
 
 fn vector<T: for<'de> Deserialize<'de>>(name: &str) -> T {
     let path = format!("{}/../../test-vectors/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -253,9 +254,17 @@ fn merge_statement_matches_the_go_vector() {
         let request = &case.request;
         let record = MergeRecord::decode(&bytes(&case.record)).unwrap();
         assert_eq!(record.record.kind, RecordKind::Ring);
-        // Element 11 is what the program computes from the signer under a zero key.
         let elements = arrays::<32>(&case.elements);
-        assert_eq!(elements[11] == [0; 32], case.name == "nonzero");
+        // The program reads the salt and ciphertext from SPP's merge body.
+        let [.., salt, amount, mint_lo, mint_hi] = elements[..] else {
+            panic!("{} holds {} elements", case.name, elements.len());
+        };
+        let (lead, salt) = salt.split_at(16);
+        assert_eq!(lead, [0; 16]);
+        let output_encryption = MergeOutputEncryption::PoseidonCtrV1 {
+            salt: salt.try_into().unwrap(),
+            ciphertext: [amount, mint_lo, mint_hi],
+        };
         let statement = MergePublicInput {
             output_utxo_hash: &array(&request.output_utxo_hash),
             first_nullifier: &array(&request.first_nullifier),
@@ -265,8 +274,8 @@ fn merge_statement_matches_the_go_vector() {
             envelope: &array(&case.envelope_ciphertext),
             record: &array(&case.ciphertext),
             payer: &array(&request.payer),
-            published_owner: &elements[11],
             tracking_root: &array(&request.tracking_root),
+            output_encryption: &output_encryption,
         };
         assert_eq!(elements, statement.elements().unwrap());
         assert_eq!(

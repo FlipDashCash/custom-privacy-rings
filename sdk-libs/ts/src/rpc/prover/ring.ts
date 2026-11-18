@@ -293,8 +293,9 @@ export interface MergeProofRequest {
   readonly seed: Bytes32;
   readonly outputTreeId: Bytes32;
   readonly outputRingDataHash: Bytes32;
-  /** Undefined under a zero key. */
-  readonly tracking?: TrackingOpening;
+  /** SPP's 16-byte salt right-aligned. */
+  readonly outputCiphertextSalt: Bytes32;
+  readonly tracking: TrackingOpening;
 }
 
 export type RingProofRequest =
@@ -417,6 +418,7 @@ export function ringProofRequestBody(request: RingProofRequest): Readonly<Record
         seed: field(request.seed, "seed"),
         outputTreeId: field(request.outputTreeId, "outputTreeId"),
         outputRingDataHash: field(request.outputRingDataHash, "outputRingDataHash"),
+        outputCiphertextSalt: field(request.outputCiphertextSalt, "outputCiphertextSalt"),
         tracking: trackingOpeningJson(request.tracking, "tracking"),
       };
   }

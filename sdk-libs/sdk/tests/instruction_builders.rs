@@ -2,11 +2,10 @@
 
 use curve25519_dalek::constants::{ED25519_BASEPOINT_POINT, EIGHT_TORSION};
 use custom_ring_interface::{
-    tracking::TrackingRegistry, CustomRingMergeIxData, CustomRingMergeIxDataRef, InitializeIxData,
-    PolicyBindingIxData, PolicySourceIxData, RingPolicy, RingRole, RingRoles, SealedMergeRecord,
+    tracking::TrackingRegistry, CustomRingMergeIxData, InitializeIxData, PolicyBindingIxData,
+    PolicySourceIxData, RingPolicy, RingRole, RingRoles, SealedMergeRecord,
     SetCoSignerRecordIxData, SetPausedIxData, SourceSlot, SourceSpec, UpdateAuthorityIxData,
-    UpdatePolicyIxData, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, RING_MERGE_OWNER_INDEX,
-    STORAGE_PROGRAM_ID,
+    UpdatePolicyIxData, MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, STORAGE_PROGRAM_ID,
 };
 use custom_ring_sdk::{
     tag, ClearCoSigner, CoSignScope, CustomRing, CustomRingMergeInstruction, InitialPolicy,
@@ -15,7 +14,6 @@ use custom_ring_sdk::{
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
-use spr_interface::instruction::instruction_data::merge_ring::MergeRingAuthority;
 use spr_interface::{
     instruction::instruction_data::merge_transact::{
         MergeOutputEncryption, MergeProof, MergeTransactIxData,
@@ -528,7 +526,6 @@ fn a_keyed_merge_names_its_tracking_registry_ahead_of_spp() {
         output_tree,
         ring_program_id: program(),
         payer: payer(),
-        owner: None,
         data: merge.clone(),
         output_ring_data_hash: [0; 32],
         cache: None,
@@ -540,11 +537,9 @@ fn a_keyed_merge_names_its_tracking_registry_ahead_of_spp() {
         output_tree,
         payer: payer(),
         tracking_registry: tracking(),
-        owner: None,
         data: CustomRingMergeIxData {
             tracking_revision: Default::default(),
             output_ring_data_hash: [0; 32],
-            authority: MergeRingAuthority::Ring,
             sealed: zero_record(),
             merge,
         },
@@ -561,78 +556,6 @@ fn a_keyed_merge_names_its_tracking_registry_ahead_of_spp() {
             spp.accounts
         ]
         .concat()
-    );
-}
-
-#[test]
-fn a_zero_key_merge_puts_its_signing_owner_on_spp_and_reads_the_authority_back() {
-    let (input_tree, output_tree) = (pda::tree(1), pda::tree(2));
-    let owner = Address::new_from_array([50; 32]);
-    let data = CustomRingMergeIxData {
-        tracking_revision: 3.into(),
-        output_ring_data_hash: [9; 32],
-        authority: MergeRingAuthority::OwnerSigned,
-        sealed: zero_record(),
-        merge: MergeTransactIxData {
-            expiry_unix_ts: u64::MAX,
-            proof: MergeProof::zeroed(),
-            output_utxo_hash: [0; 32],
-            output_encryption: MergeOutputEncryption::PoseidonCtrV1 {
-                salt: [0; 16],
-                ciphertext: [[0; 32]; 3],
-            },
-            private_tx_hash: [0; 32],
-            nullifiers: vec![[1; 32], [2; 32]],
-            utxo_tree_root_index: 0,
-            nullifier_tree_root_index: 0,
-            cache_slot: None,
-        },
-    };
-    let spp = MergeRing {
-        input_tree,
-        output_tree,
-        ring_program_id: program(),
-        payer: payer(),
-        owner: Some(owner),
-        data: data.merge.clone(),
-        output_ring_data_hash: data.output_ring_data_hash,
-        cache: None,
-    }
-    .instruction();
-    let instruction = CustomRingMergeInstruction {
-        ring: ring(),
-        input_tree,
-        output_tree,
-        payer: payer(),
-        tracking_registry: tracking(),
-        owner: Some(owner),
-        data: data.clone(),
-    }
-    .instruction()
-    .unwrap();
-    let prefix = vec![
-        AccountMeta::new_readonly(ring().policy_pda(), false),
-        AccountMeta::new_readonly(tracking(), false),
-    ];
-    assert_eq!(
-        instruction.accounts,
-        [prefix, spp.accounts.clone()].concat()
-    );
-    assert!(instruction.accounts[2 + RING_MERGE_OWNER_INDEX].is_signer);
-    assert_eq!(
-        instruction.accounts[2 + RING_MERGE_OWNER_INDEX].pubkey,
-        owner
-    );
-    let (ix_tag, body) = split(&instruction);
-    assert_eq!(ix_tag, tag::MERGE);
-    let parsed = CustomRingMergeIxDataRef::from_bytes(body).unwrap();
-    assert_eq!(
-        (
-            parsed.tracking_revision.value(),
-            *parsed.output_ring_data_hash,
-            parsed.authority,
-        ),
-        (3, [9; 32], MergeRingAuthority::OwnerSigned)
     );
 }
 

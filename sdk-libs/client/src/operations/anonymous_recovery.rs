@@ -191,7 +191,7 @@ impl RecoverySession {
     }
 }
 
-impl<'a, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized> AnonymousSync<'a, K> {
+impl<'a, K: ShieldedKeys + RingKeys + ?Sized> AnonymousSync<'a, K> {
     pub fn with_page_budget(mut self, pages: usize) -> Result<Self, AnonymousError> {
         if pages == 0 {
             return Err(AnonymousError::RecoveryBudget);
@@ -362,9 +362,7 @@ impl<'a, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized> AnonymousSync<'a
     }
 }
 
-impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHolder + ?Sized>
-    Scan<'s, 'a, 'r, I, K>
-{
+impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'s, 'a, 'r, I, K> {
     async fn probe_target(&mut self, session: &RecoverySession) -> Result<u64, AnonymousError> {
         let floor = self
             .history
@@ -472,9 +470,6 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHol
                 .filter(|nf| session.known.contains(*nf))
                 .copied(),
         );
-        for entry in self.held_entries() {
-            self.open_owner_merges(entry, &rows)?;
-        }
         self.open_ring_merges(rows)?;
         if done {
             session.checked.extend(active.nullifiers);
@@ -551,7 +546,6 @@ impl<'s, 'a, 'r, I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + MergeSeedHol
                             }
                             offset.site = site + 1;
                         }
-                        self.open_owner_merges(entry, slice)?;
                         offset.entry = entry_offset + 1;
                         offset.site = 0;
                     }

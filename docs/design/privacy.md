@@ -38,7 +38,8 @@ The confidential mode and the anonymous mode differ at the sender and the recipi
 - A private write raises the source's tracking floor to the revision its rows open under. The floor shows that the written owner was enrolled by that revision.
 - A public record write names its member. A rule table is public, so observers see which lists a ring screens and who is on the public ones.
 - A deposit publishes the funder, the asset and each amount.
-- A merge links its input notes to one owner. A zero-key merge also publishes that owner.
+- A merge links its input notes to one owner.
+- A merge record carries the owner's nullifier secret. The auditor key and the owner's viewing key each open it. A viewing key rotation does not take back a secret already read.
 
 ## Private lists
 

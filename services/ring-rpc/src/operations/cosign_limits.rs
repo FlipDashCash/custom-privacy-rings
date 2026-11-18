@@ -18,13 +18,14 @@ use zolana_ring_policy::{
 
 use crate::{
     cosign::{
-        AssetFlow, CoSignDecision, CoSignError, CoSignFlows, CoSignPolicy, CoSignRefusal,
-        CoSignRequest, CoSignSettlement, CoSignerApproval, OwnerFlow,
+        AssetFlow, CoSignDecision, CoSignError, CoSignFlows, CoSignRefusal, CoSignSettlement,
+        CoSignerApproval, OwnerFlow,
     },
     cosign_usage::{
         AdmissionSlot, AssetScope, Measure, ReservationState, Reserve, UsageLedger, WindowSum,
         MAX_USAGE_FLOWS,
     },
+    cosigner::{CoSignRule, CoSigner, FrameParties, PartySource, Verdict},
     database::Store,
     error::RingRpcError,
     hub::Shared,
@@ -88,8 +89,11 @@ pub struct LimitedCoSignerInit<L> {
 }
 
 /// Window limits bind only the transactions that need its signature.
-pub struct LimitedCoSigner<L> {
-    signer: Keypair,
+pub type LimitedCoSigner<L> = CoSigner<WindowRule<L>>;
+
+/// The approval classes and the window caps of the ring's asset records.
+pub struct WindowRule<L> {
+    signer: Address,
     limits: L,
     store: Arc<Store>,
     approval: CoSignerApproval,
@@ -142,38 +146,34 @@ struct WindowCap {
     scope: Scope,
 }
 
-impl<L> LimitedCoSignerInit<L> {
+impl<L: AssetLimitSource> LimitedCoSignerInit<L> {
     pub fn build(self) -> LimitedCoSigner<L> {
-        LimitedCoSigner {
-            signer: self.signer,
+        let rule = WindowRule {
+            signer: self.signer.pubkey(),
             limits: self.limits,
             store: self.store,
             approval: self.approval,
-        }
+        };
+        CoSigner::new(self.signer, rule)
     }
 }
 
 #[async_trait]
-impl<L: AssetLimitSource> CoSignPolicy for LimitedCoSigner<L> {
-    fn signer(&self) -> Option<Address> {
-        Some(self.signer.pubkey())
-    }
-
-    async fn decide(&self, request: &CoSignRequest) -> Result<CoSignDecision, RingRpcError> {
+impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
+    async fn admit(
+        &self,
+        request: &crate::cosigner::Operation<'_>,
+    ) -> Result<Verdict, RingRpcError> {
         // 1. The frame names every transfer outflow, an owner and asset appears once.
-        let (flows, operation, run) = match &request.flows {
+        let (flows, operation, run) = match request.flows {
             CoSignFlows::Frame => {
                 match self
                     .limits
-                    .transfer_flows(request.ring, &request.message)
+                    .transfer_flows(request.ring, request.message)
                     .await?
                 {
                     // A delegate transfer demands no class, no limit reads it and nothing reserves.
-                    FrameRead::Delegate => {
-                        return Ok(CoSignDecision::Signed(
-                            self.signer.sign_message(&request.message.serialize()),
-                        ))
-                    }
+                    FrameRead::Delegate => return Ok(Verdict::Admitted),
                     FrameRead::Transfer(read) => (
                         read.flows,
                         Operation::Transfer {
@@ -227,7 +227,7 @@ impl<L: AssetLimitSource> CoSignPolicy for LimitedCoSigner<L> {
         }
         // 3. Demanded classes its record holds and the earlier run left, each explicitly approved.
         let mask = approval_mask(&flows, &checks);
-        let signer = self.signer.pubkey();
+        let signer = self.signer;
         let mut share = operation
             .demand(&flows, mask)
             .intersection(self.limits.co_signer_scope(request.ring, signer).await?);
@@ -238,9 +238,9 @@ impl<L: AssetLimitSource> CoSignPolicy for LimitedCoSigner<L> {
             || share.is_empty()
             || !self.approval.scope().contains(share)
         {
-            return Ok(CoSignDecision::Refused(CoSignRefusal::NotApproved));
+            return Ok(Verdict::Refused(CoSignRefusal::NotApproved));
         }
-        let signature = self.signer.sign_message(&request.message.serialize());
+        let signature = request.ticket;
 
         let transaction = self.store.connection().begin().await?;
         let ledger = UsageLedger { conn: &transaction };
@@ -251,7 +251,7 @@ impl<L: AssetLimitSource> CoSignPolicy for LimitedCoSigner<L> {
         ledger.admit(scope).await?;
         match ledger.reservation_state(&signature).await? {
             Some(ReservationState::Held | ReservationState::Confirmed) => {
-                return Ok(CoSignDecision::Signed(signature));
+                return Ok(Verdict::Admitted);
             }
             Some(ReservationState::Released) => return Err(CoSignError::ReleasedReservation.into()),
             None => {}
@@ -290,7 +290,10 @@ impl<L: AssetLimitSource> CoSignPolicy for LimitedCoSigner<L> {
             return Err(CoSignError::LimitsUnavailable.into());
         }
         transaction.commit().await?;
-        Ok(decision)
+        Ok(match decision {
+            CoSignDecision::Signed(_) => Verdict::Admitted,
+            CoSignDecision::Refused(refusal) => Verdict::Refused(refusal),
+        })
     }
 
     async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
@@ -371,6 +374,22 @@ impl<S: TransactionSource + 'static> AssetLimitSource for RecordLimits<S> {
             message,
         }
         .flows()
+        .await
+    }
+}
+
+impl<S: TransactionSource + 'static> PartySource for RecordLimits<S> {
+    async fn parties(
+        &self,
+        ring: Address,
+        message: &VersionedMessage,
+    ) -> Result<FrameParties, RingRpcError> {
+        TransferDebits {
+            shared: &self.0,
+            ring,
+            message,
+        }
+        .parties()
         .await
     }
 }
@@ -608,7 +627,7 @@ mod tests {
 
     use super::cosign_window_tests::clear_usage;
     use super::*;
-    use crate::cosign::ApproveClass;
+    use crate::cosign::{ApproveClass, CoSignPolicy, CoSignRequest};
 
     const ASSET: Address = Address::new_from_array([3; 32]);
     const SENDER_LIMITS: AssetLimits = AssetLimits {

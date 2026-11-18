@@ -6,11 +6,10 @@ use std::{
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use sea_orm::{ConnectionTrait, Statement};
 use solana_message::Message;
-use spr_test_utils::seed::random_seed;
 use zolana_ring_policy::AssetLimits;
 
 use super::*;
-use crate::cosign::ApproveClass;
+use crate::cosign::{ApproveClass, CoSignPolicy, CoSignRequest};
 
 const RING: Address = Address::new_from_array([9; 32]);
 const SOL: Address = Address::new_from_array([3; 32]);
@@ -157,7 +156,7 @@ impl Window {
     }
 
     fn limit(&self, limits: AssetLimits) {
-        *self.co_signer.limits.limits.lock().expect("limits") = limits;
+        *self.co_signer.rule.limits.limits.lock().expect("limits") = limits;
     }
 
     /// `(owner, slot, outflow)` of every reservation, confirmed or not.
@@ -374,7 +373,12 @@ async fn a_frame_read_past_a_repeated_message_never_moves_its_rows() {
         first
     );
     assert_eq!(
-        window.co_signer.limits.frame_reads.load(Ordering::Relaxed),
+        window
+            .co_signer
+            .rule
+            .limits
+            .frame_reads
+            .load(Ordering::Relaxed),
         2
     );
     assert_eq!(window.rows().await.len(), 1);
@@ -726,7 +730,7 @@ impl WindowOracle<'_> {
 #[tokio::test]
 async fn all_window_measures_match_an_immutable_ledger_after_out_of_order_refunds() {
     let mut window = Window::open("sqlite::memory:").await;
-    window.co_signer.approval = CoSignerApproval::new([
+    window.co_signer.rule.approval = CoSignerApproval::new([
         ApproveClass::Transfers,
         ApproveClass::Deposits,
         ApproveClass::Withdrawals,
@@ -787,9 +791,17 @@ async fn all_window_measures_match_an_immutable_ledger_after_out_of_order_refund
 
 #[tokio::test]
 async fn seeded_window_histories_match_direct_sums_through_refunds() {
-    let mut random = StdRng::seed_from_u64(random_seed().expect("ZOLANA_RANDOM_SEED"));
+    let seed = match std::env::var("ZOLANA_RANDOM_SEED") {
+        Ok(raw) => raw.trim().strip_prefix("0x").map_or_else(
+            || raw.trim().parse().expect("ZOLANA_RANDOM_SEED"),
+            |hex| u64::from_str_radix(hex, 16).expect("ZOLANA_RANDOM_SEED"),
+        ),
+        Err(_) => rand::random(),
+    };
+    println!("ZOLANA_RANDOM_SEED={seed}");
+    let mut random = StdRng::seed_from_u64(seed);
     let mut window = Window::open("sqlite::memory:").await;
-    window.co_signer.approval = CoSignerApproval::new([
+    window.co_signer.rule.approval = CoSignerApproval::new([
         ApproveClass::Transfers,
         ApproveClass::Deposits,
         ApproveClass::Withdrawals,

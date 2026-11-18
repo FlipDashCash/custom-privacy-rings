@@ -5,12 +5,12 @@ import { initializePoseidon } from "@heliuslabs/spr";
 import { ViewingKey, X25519Keypair, X25519PublicKey } from "@heliuslabs/spr/keypair";
 import { encodeBase58, hashChain } from "@heliuslabs/spr/internal";
 import type { Address, Bytes32, Bytes33 } from "@heliuslabs/spr/interface";
+import type { Bytes16 } from "@heliuslabs/spr/keypair";
 
 import vector from "../../../../test-vectors/merge/merge.json" with { type: "json" };
 import {
   decodeRingMergeRequest,
   encodeRingMergeRequest,
-  MergeRingAuthority,
   mergePublicInputElements,
   mergePublicInputHash,
   openMergeRecord,
@@ -65,7 +65,6 @@ describe("the merge record vector", () => {
 
     it(`${testCase.name} rebuilds the statement elements and hash`, async () => {
       await initializePoseidon();
-      const zeroMode = testCase.name === "zero";
       const input: MergePublicInput = {
         outputUtxoHash: hex(request.outputUtxoHash) as Bytes32,
         firstNullifier: hex(request.firstNullifier) as Bytes32,
@@ -75,11 +74,19 @@ describe("the merge record vector", () => {
         envelope: hex(testCase.envelope_ciphertext),
         record: hex(testCase.ciphertext),
         payer: hex(request.payer) as Bytes32,
-        publishedOwner: zeroMode
-          ? (hex(request.ownerPkHash) as Bytes32)
-          : (new Uint8Array(32) as Bytes32),
         trackingRoot: hex(request.trackingRoot) as Bytes32,
+        outputEncryption: {
+          salt: hex(testCase.output_ciphertext_salt).slice(16) as Bytes16,
+          ciphertext: [
+            hex(testCase.output_ciphertext[0] ?? "") as Bytes32,
+            hex(testCase.output_ciphertext[1] ?? "") as Bytes32,
+            hex(testCase.output_ciphertext[2] ?? "") as Bytes32,
+          ],
+        },
       };
+      expect(testCase.output_ciphertext).toHaveLength(3);
+      expect(testCase.elements).toHaveLength(16);
+      expect(request.outputCiphertextSalt).toBe(testCase.output_ciphertext_salt);
       expect(mergePublicInputElements(input).map((element) => `0x${unhex(element)}`)).toEqual(
         testCase.elements,
       );
@@ -187,7 +194,6 @@ describe("the tag 57 request", () => {
   const request = {
     trackingRevision: 3n,
     outputRingDataHash: new Uint8Array(32).fill(8) as Bytes32,
-    authority: MergeRingAuthority.ownerSigned,
     sealed: {
       proof: new Uint8Array(CUSTOM_RING_PROOF_LENGTH).fill(9),
       ephemeralPublicKey: new Uint8Array(33).fill(4) as Bytes33,
@@ -199,11 +205,5 @@ describe("the tag 57 request", () => {
 
   it("round trips", () => {
     expect(decodeRingMergeRequest(encodeRingMergeRequest(request))).toEqual(request);
-  });
-
-  it("refuses an authority byte off the two", () => {
-    const bytes = encodeRingMergeRequest(request);
-    bytes[40] = 2;
-    expect(() => decodeRingMergeRequest(bytes)).toThrow(RingError);
   });
 });

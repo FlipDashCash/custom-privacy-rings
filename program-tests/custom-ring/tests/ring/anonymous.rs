@@ -408,9 +408,6 @@ fn an_anonymous_ring_hides_owners_and_preserves_auditor_access() -> Result<()> {
         );
     }
 
-    if !custom_ring_test_validator::RING_MERGES_SETTLE {
-        return Ok(());
-    }
     // 9. The recipient merges both notes, a fresh wallet finds the merge from
     //    its own spends and sees both inputs spent.
     let merged_inputs: Vec<WalletUtxo> = recipient_wallet.unspent().cloned().collect();
@@ -419,14 +416,39 @@ fn an_anonymous_ring_hides_owners_and_preserves_auditor_access() -> Result<()> {
         .with_output_tree_id(tree_id)
         .encrypt(recipient_keys)?;
     let merged_hash = prepared.output().hash(tree_id)?;
-    let merge = RingMergeOperation::new(
-        prepared,
-        MergeProofInput {
-            nullifier_key: recipient_keys.nullifier_key.clone(),
-            input_tree: env.tree,
-            output_tree: env.tree,
-        },
-    );
+    let merge_input = MergeProofInput {
+        nullifier_key: recipient_keys.nullifier_key.clone(),
+        input_tree: env.tree,
+        output_tree: env.tree,
+    };
+    // SPP proves no ciphertext on a ring merge, the ring proof refuses each altered byte.
+    let proven = env.run(prepared.clone().prove(
+        merge_input.clone(),
+        payer.pubkey(),
+        env.client.ring_client(),
+    ))?;
+    let spr_interface::instruction::instruction_data::merge_transact::MergeOutputEncryption::PoseidonCtrV1 { salt, ciphertext } =
+        proven.data.merge.output_encryption;
+    let sealed = proven.instruction(payer.pubkey())?;
+    let tree_before = fetch_account(rpc, &env.tree)?;
+    for (published, altered) in [
+        (&ciphertext[0][..], &ciphertext[1][..]),
+        (&salt[..], &[0x5a; 16][..]),
+    ] {
+        let at = sealed
+            .data
+            .windows(published.len())
+            .position(|window| window == published)
+            .context("the merge publishes SPP's output ciphertext")?;
+        let mut tampered = sealed.clone();
+        tampered.data[at..at + altered.len()].copy_from_slice(altered);
+        let rejection = send_expecting_rejection(rpc, payer, tampered)?;
+        Rejection::custom(CustomRingError::ProofVerificationFailed as u32)
+            .at(0)
+            .assert_client(&rejection);
+        assert_account_unchanged(rpc, &env.tree, &tree_before)?;
+    }
+    let merge = RingMergeOperation::new(prepared, merge_input);
     land(&env, merge, payer, &[])?;
     let mut fresh_recipient = fresh_wallet(&env, recipient_keys, ring_program)?;
     fresh_recipient.sync(&env)?;

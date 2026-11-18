@@ -12,11 +12,8 @@ use spr_client::{AsyncRpc, AsyncWitnessReader, ComputeBudgetConfig, MergeProver,
 use spr_hasher::primitives::{hash_bytes, pack_be, right_align, solana_owner_identity};
 use spr_indexer_api::SerializablePubkey;
 use spr_interface::{
-    instruction::instruction_data::{
-        merge_ring::MergeRingAuthority,
-        merge_transact::{
-            MergeOutputEncryption, MergeProof, MergeTransactIxData, MERGE_SUPPORTED_INPUT_COUNTS,
-        },
+    instruction::instruction_data::merge_transact::{
+        MergeOutputEncryption, MergeProof, MergeTransactIxData, MERGE_SUPPORTED_INPUT_COUNTS,
     },
     tree_slot::tree_id_field,
     ZERO_NULLIFIER_PUBKEY,
@@ -31,10 +28,13 @@ use spr_transaction::{
 };
 use zeroize::Zeroizing;
 use zolana_ring_client::{
-    rpc::{PrepareRelayRequest, ProofInputBytes, RelayIntent, RelayMergeInputs, RelayQuote},
+    rpc::{
+        PrepareRelayRequest, ProofInputBytes, RelayIntent, RelayMergeInputs, RelayQuote,
+        RelayRequestAttestation, ServiceTarget,
+    },
     MergeRecordSeal,
 };
-use zolana_ring_keys::{MergeSeedHolder, MergeSeedRequest};
+use zolana_ring_transaction::MergeSeed;
 
 use crate::client::{RingClient, RingIndexerBackend};
 use crate::relay_message::MessageMismatch;
@@ -56,7 +56,6 @@ pub const MAX_RING_MERGE_INPUTS: usize = MERGE_SUPPORTED_INPUT_COUNTS[2];
 pub struct CustomRingMerge {
     ring: CustomRing,
     inner: MergeTransaction,
-    first_nullifier: [u8; 32],
 }
 
 /// The longest prefix of `inputs` whose merge fits one transaction, compact padding publishes nothing.
@@ -70,7 +69,7 @@ pub struct FittedMerge<'a, K: ?Sized> {
     pub payer: Address,
 }
 
-impl<K: ShieldedKeys + MergeSeedHolder + ?Sized> FittedMerge<'_, K> {
+impl<K: ShieldedKeys + ?Sized> FittedMerge<'_, K> {
     /// The size refusal of the shortest mergeable prefix when none fits.
     pub async fn prepare(
         self,
@@ -86,22 +85,14 @@ impl<K: ShieldedKeys + MergeSeedHolder + ?Sized> FittedMerge<'_, K> {
         };
         // 1. Every input is validated, a note past the fitted prefix refuses as one inside it would.
         let whole = CustomRingMerge::new(self.ring, self.inputs.clone(), None)?;
-        // 2. The first input's key picks the rail, a zero-key owner adds its signature and account.
-        let first = self.inputs.first().ok_or(TransactionError::NoInputs)?;
-        let zero_key = first.nullifier_pubkey == ZERO_NULLIFIER_PUBKEY;
-        let owner = match zero_key {
-            true => Some(public_owner(&first.utxo.owner)?),
-            false => None,
-        };
-        // 3. Only the published nullifiers and the owner account change the size, fitted before the
-        // holder derives a secret. A remote holder answers once for the chosen prefix.
+        // 2. Only the published nullifiers change the size, fitted before the holder derives a secret.
         let mut count = self.inputs.len();
         while count > MIN_MERGE_INPUTS {
             let nullifiers = self.inputs[..count]
                 .iter()
                 .map(|input| input.nullifier)
                 .collect();
-            match site.check_size(MergeLayout::unsealed(owner, nullifiers), budget) {
+            match site.check_size(MergeLayout::unsealed(nullifiers), budget) {
                 Ok(()) => break,
                 Err(RingError::TransactionTooLarge { .. } | RingError::TooManyAddresses { .. }) => {
                     count -= 1
@@ -118,17 +109,8 @@ impl<K: ShieldedKeys + MergeSeedHolder + ?Sized> FittedMerge<'_, K> {
             }
         }
         .with_output_tree_id(self.output_tree_id);
-        let prepared = match zero_key {
-            true => merge.encrypt_zero_key(
-                self.keys,
-                &ShieldedAddress {
-                    nullifier_pubkey: ZERO_NULLIFIER_PUBKEY,
-                    ..self.keys.address()?
-                },
-            )?,
-            false => merge.encrypt(self.keys)?,
-        };
-        // 4. One exact check of the sealed bytes, it also refuses the shortest prefix when none fits.
+        let prepared = merge.encrypt(self.keys)?;
+        // 3. One exact check of the sealed bytes, it also refuses the shortest prefix when none fits.
         site.check_size(prepared.layout()?, budget)?;
         Ok(prepared)
     }
@@ -142,14 +124,9 @@ impl CustomRingMerge {
         inputs: Vec<WalletUtxo>,
         output_ring_data_hash: Option<[u8; 32]>,
     ) -> Result<Self, TransactionError> {
-        let first_nullifier = inputs.first().ok_or(TransactionError::NoInputs)?.nullifier;
         let inner =
             MergeTransaction::new_with_ring(inputs, ring.program_id(), output_ring_data_hash)?;
-        Ok(Self {
-            ring,
-            inner,
-            first_nullifier,
-        })
+        Ok(Self { ring, inner })
     }
 
     pub fn with_expiry(mut self, expiry_unix_ts: u64) -> Self {
@@ -162,35 +139,17 @@ impl CustomRingMerge {
         self
     }
 
-    /// The key's secret seeds every derivation.
+    /// The key's secret seeds every derivation, a zero secret would make each one public.
     pub fn encrypt<K: ShieldedKeys + ?Sized>(
         self,
         keys: &K,
-    ) -> Result<PreparedCustomRingMerge, TransactionError> {
+    ) -> Result<PreparedCustomRingMerge, RingError> {
+        if keys.address()?.nullifier_pubkey == ZERO_NULLIFIER_PUBKEY {
+            return Err(RingError::MergeOwnerKey);
+        }
         Ok(PreparedCustomRingMerge {
             ring: self.ring,
             inner: self.inner.encrypt(keys)?,
-            priority_fee: None,
-        })
-    }
-
-    /// The owner signs the merge in public, nothing selects a zero-key merge.
-    pub fn encrypt_zero_key<H: MergeSeedHolder + ?Sized>(
-        self,
-        holder: &H,
-        owner: &ShieldedAddress,
-    ) -> Result<PreparedCustomRingMerge, RingError> {
-        if owner.nullifier_pubkey != ZERO_NULLIFIER_PUBKEY {
-            return Err(RingError::MergeOwnerKey);
-        }
-        let seed = zolana_ring_client::exactly_one(holder.merge_seeds(&[MergeSeedRequest {
-            viewing_pubkey: owner.viewing_pubkey,
-            ring_program_id: self.ring.program_id(),
-            first_nullifier: self.first_nullifier,
-        }])?)?;
-        Ok(PreparedCustomRingMerge {
-            ring: self.ring,
-            inner: self.inner.encrypt_zero_key(owner, seed)?,
             priority_fee: None,
         })
     }
@@ -217,10 +176,7 @@ pub struct ProvenCustomRingMerge {
     output_tree: Address,
     ring: CustomRing,
     tracking_registry: Address,
-    /// Signs a zero-key merge.
-    owner: Option<Address>,
-    /// `None` under a zero key, the program reads no tracking root.
-    bound: Option<BoundRoot>,
+    bound: BoundRoot,
     pub data: CustomRingMergeIxData,
     pub output_hash: [u8; 32],
     pub input_count: usize,
@@ -254,24 +210,16 @@ impl PreparedCustomRingMerge {
         &self.inner.output_utxo
     }
 
-    /// The zero-key owner signs in public, a keyed owner stays hidden on an anonymous ring.
+    /// The owner stays hidden on an anonymous ring.
     pub(crate) fn check_public_signers(
         &self,
         signers: impl IntoIterator<Item = Address>,
         config: &CustomRingConfig,
     ) -> Result<(), RingError> {
-        if config.mode != RingMode::Anonymous || self.signing_owner()?.is_some() {
+        if config.mode != RingMode::Anonymous {
             return Ok(());
         }
         self.hidden_owner()?.check_signers(signers)
-    }
-
-    /// `Some` exactly on the zero-key rail.
-    pub(crate) fn signing_owner(&self) -> Result<Option<Address>, RingError> {
-        match self.inner.merge_seed {
-            Some(_) => public_owner(&self.inner.signing_pubkey).map(Some),
-            None => Ok(None),
-        }
     }
 
     /// A keyed merge proves the nullifier secret and no EdDSA signature, a PDA owner qualifies.
@@ -306,7 +254,6 @@ impl PreparedCustomRingMerge {
     fn layout(&self) -> Result<MergeLayout, RingError> {
         let inner = &self.inner;
         Ok(MergeLayout {
-            owner: self.signing_owner()?,
             nullifiers: inner
                 .input_utxos
                 .iter()
@@ -330,11 +277,7 @@ impl PreparedCustomRingMerge {
     ) -> Result<ProvenCustomRingMerge, RingError> {
         let config = self.ring.require_config(client.zolana()).await?;
         self.ring.require_active(client.zolana()).await?;
-        let owner = self.signing_owner()?;
-        // A keyed owner stays apart from the payer.
-        if owner.is_none() {
-            self.hidden_owner()?.check_signers([payer])?;
-        }
+        self.hidden_owner()?.check_signers([payer])?;
         self.check_width()?;
         check_transaction_size(
             &payer,
@@ -342,19 +285,13 @@ impl PreparedCustomRingMerge {
             send_budget(InstructionTag::Merge, self.priority_fee),
         )?;
         let owner_pk_hash = self.inner.signing_pubkey.owner_proof_input_hash()?;
-        let tracking = match owner {
-            Some(_) => None,
-            None => {
-                let root = BoundRoot::tracking(config.account(), client.zolana()).await?;
-                let opening = TrackingMemberRead {
-                    root,
-                    member: owner_pk_hash,
-                }
-                .read(client.zolana())
-                .await?;
-                Some((root, opening))
-            }
-        };
+        let root = BoundRoot::tracking(config.account(), client.zolana()).await?;
+        let opening = TrackingMemberRead {
+            root,
+            member: owner_pk_hash,
+        }
+        .read(client.zolana())
+        .await?;
         let input_tree_id = tree_id(client.zolana(), input.input_tree).await?;
         if self
             .inner
@@ -388,7 +325,7 @@ impl PreparedCustomRingMerge {
         let output = &inner.output_utxo;
         let mint = output.asset.asset.to_bytes();
         let owner_key = request::owner_key(&inner.signing_pubkey)?;
-        let seed = inner.seed(&input.nullifier_key)?;
+        let seed = MergeSeed::from_nullifier_key(&input.nullifier_key);
         let first_nullifier = *data
             .merge
             .nullifiers
@@ -408,7 +345,7 @@ impl PreparedCustomRingMerge {
                     blinding: seed.output_blinding(&first_nullifier)?,
                     key: zolana_ring_transaction::carried_key(merged_owner.nullifier_pubkey),
                 },
-                seed: *seed.as_bytes(),
+                seed: seed.to_bytes(),
             },
             recipient: merged_owner.viewing_pubkey,
             first_nullifier,
@@ -416,11 +353,6 @@ impl PreparedCustomRingMerge {
         .seal(&config.auditor_pubkey)?;
         let ring_id = self.ring.ring_id()?;
         let payer_identity = solana_owner_identity(payer.as_array())?;
-        let tracking_root = tracking.as_ref().map_or([0; 32], |(root, _)| root.root);
-        let published_owner = match owner {
-            Some(_) => owner_pk_hash,
-            None => [0; 32],
-        };
         let auditor = config.auditor_pubkey;
         let public_input_hash = MergePublicInput {
             output_utxo_hash: &data.merge.output_utxo_hash,
@@ -431,8 +363,8 @@ impl PreparedCustomRingMerge {
             envelope: &sealed.envelope,
             record: &sealed.record,
             payer: &payer_identity,
-            published_owner: &published_owner,
-            tracking_root: &tracking_root,
+            tracking_root: &root.root,
+            output_encryption: &data.merge.output_encryption,
         }
         .hash()?;
         let body = MergeRequest {
@@ -442,7 +374,7 @@ impl PreparedCustomRingMerge {
             ring_program_id: ring_id,
             auditor_pk: auditor,
             payer: payer_identity,
-            tracking_root,
+            tracking_root: root.root,
             eph_sk: sealed.ephemeral_sk,
             recipient_key: merged_owner.viewing_pubkey.u(),
             owner_key,
@@ -454,12 +386,11 @@ impl PreparedCustomRingMerge {
                 .owner_address
                 .map(|owner| owner.nullifier_pubkey)
                 .unwrap_or_default(),
-            seed: Zeroizing::new(*seed.as_bytes()),
+            seed: Zeroizing::new(seed.to_bytes()),
             output_tree_id: tree_id_field(inner.output_tree_id),
             output_ring_data_hash: output.ring_data_hash.unwrap_or_default(),
-            tracking: tracking
-                .as_ref()
-                .map(|(_, opening)| TrackingOpeningRequest::from(opening)),
+            output_ciphertext_salt: right_align(&inner.output_ciphertext_salt),
+            tracking: TrackingOpeningRequest::from(&opening),
         };
         let proof = RingRequest::new(RingCircuit::Merge, &body)?
             .prove(client, public_input_hash)
@@ -469,14 +400,10 @@ impl PreparedCustomRingMerge {
             output_tree: input.output_tree,
             ring: self.ring,
             tracking_registry: config.account().tracking,
-            owner,
-            bound: tracking.as_ref().map(|(root, _)| *root),
+            bound: root,
             data: CustomRingMergeIxData {
-                tracking_revision: tracking
-                    .as_ref()
-                    .map_or_else(Default::default, |(root, _)| root.revision),
+                tracking_revision: root.revision,
                 output_ring_data_hash: data.output_ring_data_hash,
-                authority: data.authority,
                 sealed: SealedMergeRecord {
                     proof: to_instruction_proof(proof)?,
                     eph_pk: *sealed.eph_pk.as_bytes(),
@@ -506,8 +433,6 @@ struct MergeSite<'a> {
 
 /// Every proof, hash and record beside these fields is fixed width.
 struct MergeLayout {
-    /// Signs a zero-key merge.
-    owner: Option<Address>,
     nullifiers: Vec<[u8; 32]>,
     expiry_unix_ts: u64,
     output_ring_data_hash: [u8; 32],
@@ -516,9 +441,8 @@ struct MergeLayout {
 
 impl MergeLayout {
     /// Sealed fields at their fixed width, values arbitrary.
-    fn unsealed(owner: Option<Address>, nullifiers: Vec<[u8; 32]>) -> Self {
+    fn unsealed(nullifiers: Vec<[u8; 32]>) -> Self {
         Self {
-            owner,
             nullifiers,
             expiry_unix_ts: u64::MAX,
             output_ring_data_hash: [0; 32],
@@ -539,11 +463,9 @@ impl MergeSite<'_> {
             output_tree: self.input.output_tree,
             payer: self.payer,
             tracking_registry: self.config.account().tracking,
-            owner: layout.owner,
             data: CustomRingMergeIxData {
                 tracking_revision: Default::default(),
                 output_ring_data_hash: layout.output_ring_data_hash,
-                authority: authority_of(layout.owner),
                 sealed: SealedMergeRecord {
                     proof: bytemuck::Zeroable::zeroed(),
                     eph_pk: [0; TAGGED_X25519_KEY_LEN],
@@ -571,16 +493,9 @@ impl MergeSite<'_> {
     }
 }
 
-/// Either key class, a PDA owner authorizes through CPI.
+/// Either key class.
 fn public_owner(key: &PublicKey) -> Result<Address, RingError> {
     Ok(Address::new_from_array(request::owner_key(key)?))
-}
-
-const fn authority_of(owner: Option<Address>) -> MergeRingAuthority {
-    match owner {
-        Some(_) => MergeRingAuthority::OwnerSigned,
-        None => MergeRingAuthority::Ring,
-    }
 }
 
 impl ProvenCustomRingMerge {
@@ -589,12 +504,7 @@ impl ProvenCustomRingMerge {
         [self.input_tree, self.output_tree]
     }
 
-    /// `Some` on a zero-key merge.
-    pub fn owner_signer(&self) -> Option<Address> {
-        self.owner
-    }
-
-    pub(crate) fn bound_root(&self) -> Option<BoundRoot> {
+    pub(crate) const fn bound_root(&self) -> BoundRoot {
         self.bound
     }
 
@@ -605,7 +515,6 @@ impl ProvenCustomRingMerge {
             output_tree: self.output_tree,
             payer,
             tracking_registry: self.tracking_registry,
-            owner: self.owner,
             data: self.data.clone(),
         }
         .instruction()
@@ -632,8 +541,6 @@ pub struct CustomRingMergeInstruction {
     pub output_tree: Address,
     pub payer: Address,
     pub tracking_registry: Address,
-    /// Signs a zero-key merge.
-    pub owner: Option<Address>,
     pub data: CustomRingMergeIxData,
 }
 
@@ -646,7 +553,6 @@ impl CustomRingMergeInstruction {
             output_tree: self.output_tree,
             ring_program_id: self.ring.program_id(),
             payer: self.payer,
-            owner: self.owner,
             data: self.data.merge,
             output_ring_data_hash: self.data.output_ring_data_hash,
             cache: None,
@@ -665,6 +571,7 @@ impl CustomRingMergeInstruction {
 #[must_use]
 pub struct MergeRelay<'a> {
     pub ring: CustomRing,
+    pub service: ServiceTarget,
     /// Owns every input.
     pub sender: ShieldedAddress,
     /// Signs the request, the relay proves nothing for a stranger.
@@ -677,7 +584,8 @@ impl MergeRelay<'_> {
     /// Ring RPC derives the merged note from the nullifier key, no signed message follows.
     pub fn prepare(self, quote: RelayQuote) -> Result<PreparedRelay, RingError> {
         let ring = self.ring.program_id();
-        if self.owner.try_pubkey()?.to_bytes() != self.sender.signing_pubkey.as_ed25519()? {
+        let owner = self.owner.try_pubkey()?;
+        if owner.to_bytes() != self.sender.signing_pubkey.as_ed25519()? {
             return Err(MessageMismatch::Signer.into());
         }
         let proof_inputs = RelayMergeInputs {
@@ -688,10 +596,9 @@ impl MergeRelay<'_> {
         }
         .encode()?;
         let proof_inputs = ProofInputBytes::new(proof_inputs);
-        let owner_signature = self
-            .owner
-            .try_sign_message(&proof_inputs.merge_request_digest())?
-            .into();
+        let attestation =
+            RelayRequestAttestation::merge(self.service.ring(ring), owner, &proof_inputs);
+        let owner_signature = self.owner.try_sign_message(&attestation.message())?.into();
         Ok(PreparedRelay::new(PrepareRelayRequest {
             ring: SerializablePubkey(ring),
             quote,

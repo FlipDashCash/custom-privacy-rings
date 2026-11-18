@@ -18,7 +18,7 @@ use thiserror::Error;
 use tokio::sync::{watch, Mutex as AsyncMutex, Semaphore, SemaphorePermit};
 use zolana_ring_client::{
     auditor_view_tag,
-    rpc::{unix_now, KeyMode},
+    rpc::{unix_now, KeyMode, ServiceTarget},
     ReaderKey,
 };
 use zolana_ring_transaction::RingAssets;
@@ -29,6 +29,7 @@ use crate::{
     config::{GrantRowsSecret, ReaderGrantStore, RootSecret},
     cosign::{CoSignPolicy, CoSignerApproval, RefusingCoSigner},
     cosign_limits::{LimitedCoSignerInit, RecordLimits},
+    cosigner::{CoSignRule, ListRule, StoredLists},
     database::Store,
     enrollment_applier::{EnrollmentApplier, EnrollmentRefusal},
     error::{redacted, RingRpcError},
@@ -137,6 +138,7 @@ pub struct HubBuilder<S> {
     grant_rows: Option<GrantRowsSecret>,
     co_signer: Option<Keypair>,
     co_signer_approval: CoSignerApproval,
+    co_signer_rule: Option<Arc<dyn CoSignRule>>,
     relay_budget: RelayBudget,
     relay: Option<RelayParts>,
     merge: Option<MergeParts>,
@@ -403,6 +405,7 @@ impl<S: TransactionSource> Hub<S> {
             grant_rows: None,
             co_signer: None,
             co_signer_approval: CoSignerApproval::default(),
+            co_signer_rule: None,
             relay_budget: RelayBudget::default(),
             relay: None,
             merge: None,
@@ -751,6 +754,13 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
+    /// Judges after the lists and before the window limits.
+    #[must_use = "use the updated builder"]
+    pub fn with_co_signer_rule(mut self, rule: Arc<dyn CoSignRule>) -> Self {
+        self.co_signer_rule = Some(rule);
+        self
+    }
+
     /// Without it the relay funds no enrollment and no token account.
     #[must_use = "use the updated builder"]
     pub const fn with_relay_budget(mut self, budget: RelayBudget) -> Self {
@@ -858,23 +868,33 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         };
         let shared = Arc::new(shared);
         let co_signer: Arc<dyn CoSignPolicy> = match self.co_signer {
-            Some(signer) => Arc::new(
-                LimitedCoSignerInit {
+            Some(signer) => {
+                let store = Arc::new(self.store.ok_or(RingRpcError::CoSignerStoreMissing)?);
+                let lists = ListRule::new(RecordLimits(shared.clone()), StoredLists(store.clone()));
+                let limited = LimitedCoSignerInit {
                     signer,
                     limits: RecordLimits(shared.clone()),
-                    store: Arc::new(self.store.ok_or(RingRpcError::CoSignerStoreMissing)?),
+                    store,
                     approval: self.co_signer_approval,
                 }
-                .build(),
-            ),
+                .build();
+                // The window rule reserves, it runs last.
+                Arc::new(limited.after(lists.then(self.co_signer_rule)))
+            }
             None => Arc::new(RefusingCoSigner),
         };
         let relay = self.relay.map(|parts| {
             Arc::new(
-                Relay::new(parts)
-                    .with_budget(self.relay_budget)
-                    .with_co_signer(co_signer.clone())
-                    .with_rings(Arc::new(HubRings(shared.clone()))),
+                Relay::new(
+                    parts,
+                    ServiceTarget {
+                        cluster: shared.genesis_hash,
+                        service: shared.service,
+                    },
+                )
+                .with_budget(self.relay_budget)
+                .with_co_signer(co_signer.clone())
+                .with_rings(Arc::new(HubRings(shared.clone()))),
             )
         });
         Ok(Hub {

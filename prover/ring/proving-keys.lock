@@ -1,5 +1,5 @@
 {
-  "release": "https://github.com/helius-labs/zolana-custom-rings/releases/download/ring-production-keys-v15",
+  "release": "https://github.com/helius-labs/zolana-custom-rings/releases/download/ring-production-keys-v16",
   "keys": {
     "custom_ring_apply_enrollments_1.key": {
       "sha256": "3d238da30b162fd46e4725b58af2ded1d25112766a1e25cc8dedd1d634e8193b",
@@ -72,8 +72,8 @@
       "source": "release"
     },
     "custom_ring_merge.key": {
-      "sha256": "3350d9a88f41b322faa5461064dab5742403d5e39cdabeb5b9f50e0c62ef32b3",
-      "size": 37612565,
+      "sha256": "64a8ab474e1ad0aeb2a520cd21fab2bbef75c7b6e7a8ae506c18980bc893db2f",
+      "size": 38162616,
       "source": "release"
     },
     "custom_ring_register_key.key": {

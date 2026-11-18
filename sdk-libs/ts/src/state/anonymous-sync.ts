@@ -63,7 +63,6 @@ import {
 } from "./recovery-session.js";
 import { answered, decoded, unseen } from "./batch.js";
 import { isZeroKeyNote as isExposedNote, zeroKeyNullifier } from "./exposed-notes.js";
-import { openZeroKeyMerges, type OpenedZeroKeyMerge } from "./zero-key-merge.js";
 import { registeredMint } from "../operations/workflow/recover.js";
 import { openRingMerges } from "./ring-sync.js";
 import type { RingKeys, RingTagFrame } from "./ring-keys.js";
@@ -756,10 +755,6 @@ class Scan {
     this.#validatePage(response, active);
     const rows = response.data.flatMap((item) => item.events);
     await keepRingMerges(this.#mergeReads(), rows);
-    this.#ledger.keepZeroKeyMerges(
-      await openZeroKeyMerges({ keys: this.#sync.keys, owner: this.#address, rows }, this.#context),
-      this.#sync.assets,
-    );
     await this.#ledger.assignNullifiers(this.#context);
     this.#ledger.noteSpends(rows);
     active.token = response.paginationToken;
@@ -789,10 +784,6 @@ class Scan {
       else await this.#testTags(viewingPublicKey, rows);
     }
     if (this.#workOffset !== task.workOffset) throw new RingError("RING_HISTORY_PAGE_INVALID");
-    this.#ledger.keepZeroKeyMerges(
-      await openZeroKeyMerges({ keys: this.#sync.keys, owner: this.#address, rows }, this.#context),
-      this.#sync.assets,
-    );
     if (session.mode === "everySite") await keepRingMerges(this.#mergeReads(), rows);
     await this.#ledger.assignNullifiers(this.#context);
     this.#ledger.noteSpends(rows);
@@ -938,14 +929,6 @@ class Scan {
           else await this.#tryEverySite(viewingPublicKey, rows);
         // 2. A recovery reads every merge in its pages, a tag sync finds ring merges by nullifier.
         if (trial === "everySite") await keepRingMerges(this.#mergeReads(), rows);
-        // 3. A zero-key merge tags its owner's identity and opens under the viewing key alone.
-        this.#ledger.keepZeroKeyMerges(
-          await openZeroKeyMerges(
-            { keys: this.#sync.keys, owner: this.#address, rows },
-            this.#context,
-          ),
-          this.#sync.assets,
-        );
         await this.#ledger.assignNullifiers(this.#context);
         this.#ledger.noteSpends(rows);
         if (trial === "everySite") this.#diagnostics(rows);
@@ -1158,8 +1141,6 @@ export class NoteLedger {
   readonly #streams: AnonymousRingUtxo[] = [];
   /** Kept apart from `#streams`, a recovery opens merges page by page yet lists them after every body. */
   readonly #mergeStreams: AnonymousRingUtxo[] = [];
-  /** Each beside its key's index, the list stays ordered by held key. */
-  readonly #zeroKeyStreams: (readonly [number, AnonymousRingUtxo])[] = [];
   readonly #spent = new Map<string, Bytes32>();
   readonly #ownedNullifiers = new Set<string>();
   #newNullifiers: Bytes32[] = [];
@@ -1226,35 +1207,6 @@ export class NoteLedger {
     this.#unknownMints.add(mint);
   }
 
-  keepZeroKeyMerges(opened: readonly OpenedZeroKeyMerge[], assets: AssetRegistry): void {
-    const held = this.#keys.viewingPublicKeys();
-    for (const { utxo, row, position, viewingPublicKey } of opened) {
-      const hash = utxo.outputContext.hash;
-      if (this.isFound(hash)) continue;
-      const firstNullifier = row.nullifiers[0];
-      if (firstNullifier === undefined) continue;
-      this.#known.add(bytesKey(hash));
-      this.#observedSlot = maxSlot(this.#observedSlot, row.slot);
-      const pending = registeredMint(assets, utxo.utxo.asset) === undefined;
-      if (pending) this.unknownMint(utxo.utxo.asset);
-      this.#ownedNullifiers.add(bytesKey(utxo.nullifier));
-      if (!utxo.spent) this.#newNullifiers.push(utxo.nullifier);
-      (pending ? this.#pending : this.#decrypted).push({
-        utxo,
-        order: publication(row, position),
-      });
-      this.#zeroKeyStreams.push([
-        held.findIndex((key) => key.equals(viewingPublicKey)),
-        Object.freeze({
-          utxoHash: hash,
-          viewingPublicKey,
-          nullifierPublicKey: ZERO_NULLIFIER_PK as Bytes32,
-          stream: Object.freeze({ kind: "merge" as const, firstNullifier }),
-        }),
-      ]);
-    }
-  }
-
   isFound(hash: Bytes32): boolean {
     return this.#known.has(bytesKey(hash));
   }
@@ -1315,13 +1267,7 @@ export class NoteLedger {
           ({ utxo: { nullifier } }) => (this.#spent.has(bytesKey(nullifier)) ? [nullifier] : []),
         ),
       ),
-      found: Object.freeze([
-        ...this.#streams,
-        ...this.#mergeStreams,
-        ...this.#zeroKeyStreams
-          .toSorted(([left], [right]) => left - right)
-          .map(([, stream]) => stream),
-      ]),
+      found: Object.freeze([...this.#streams, ...this.#mergeStreams]),
       senderClaims: Object.freeze([...this.#senderClaims]),
       sent: Object.freeze([...this.#sent]),
       unknownMints: Object.freeze([...this.#unknownMints]),

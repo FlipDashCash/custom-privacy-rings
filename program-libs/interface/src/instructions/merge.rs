@@ -9,11 +9,11 @@
 
 use spr_hasher::{
     hash_chain::create_hash_chain_from_slice,
-    primitives::{hash_bytes, pack_be},
+    primitives::{hash_bytes, pack_be, right_align},
     HasherError,
 };
 use spr_interface::instruction::{
-    instruction_data::{merge_ring::MergeRingAuthority, merge_transact::MergeTransactIxData},
+    instruction_data::merge_transact::{MergeOutputEncryption, MergeTransactIxData},
     tag::RING_MERGE_TRANSACT,
 };
 use wincode::{SchemaRead, SchemaWrite};
@@ -23,9 +23,7 @@ use crate::{
     MERGE_RECORD_LEN, TAGGED_X25519_KEY_LEN,
 };
 
-pub const MERGE_PUBLIC_INPUT_ELEMENTS: usize = 13;
-/// The owner's slot in an SPP `merge_ring` account list under `OwnerSigned`, past `ring_config`, payer and the two programs.
-pub const RING_MERGE_OWNER_INDEX: usize = 6;
+pub const MERGE_PUBLIC_INPUT_ELEMENTS: usize = 16;
 /// `expiry_unix_ts u64 || proof.a` open the SPP merge body ahead of `proof.b`.
 const MERGE_B_OFFSET: usize = core::mem::size_of::<u64>() + 32;
 
@@ -41,10 +39,8 @@ pub struct SealedMergeRecord {
 /// Tag 57, the SPP merge body with `proof.b` compressed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CustomRingMergeIxData {
-    /// Read under `MergeRingAuthority::Ring` alone.
     pub tracking_revision: Revision,
     pub output_ring_data_hash: [u8; 32],
-    pub authority: MergeRingAuthority,
     pub sealed: SealedMergeRecord,
     pub merge: MergeTransactIxData,
 }
@@ -65,7 +61,6 @@ impl CustomRingMergeIxData {
         Ok([
             &self.tracking_revision.0[..],
             &self.output_ring_data_hash,
-            &[authority_byte(self.authority)],
             &wincode::serialize(&self.sealed).map_err(invalid_data)?,
             head,
             &b,
@@ -84,7 +79,6 @@ fn invalid_data<E>(_: E) -> CustomRingError {
 pub struct CustomRingMergeIxDataRef<'a> {
     pub tracking_revision: Revision,
     pub output_ring_data_hash: &'a [u8; 32],
-    pub authority: MergeRingAuthority,
     pub proof: &'a CustomRingProof,
     pub eph_pk: &'a [u8; TAGGED_X25519_KEY_LEN],
     pub envelope: &'a [u8; MERGE_ENVELOPE_LEN],
@@ -98,11 +92,6 @@ impl<'a> CustomRingMergeIxDataRef<'a> {
         Ok(Self {
             tracking_revision: *bytes.pod()?,
             output_ring_data_hash: bytes.array()?,
-            authority: match bytes.byte()? {
-                0 => MergeRingAuthority::Ring,
-                1 => MergeRingAuthority::OwnerSigned,
-                _ => return Err(CustomRingError::InvalidInstructionData),
-            },
             proof: bytes.pod()?,
             eph_pk: bytes.array()?,
             envelope: bytes.array()?,
@@ -121,18 +110,9 @@ impl<'a> CustomRingMergeIxDataRef<'a> {
         [
             &[RING_MERGE_TRANSACT][..],
             self.output_ring_data_hash,
-            &[authority_byte(self.authority)],
             spp_body,
         ]
         .concat()
-    }
-}
-
-/// The wincode tag SPP's `MergeRingIxData` reads.
-const fn authority_byte(authority: MergeRingAuthority) -> u8 {
-    match authority {
-        MergeRingAuthority::Ring => 0,
-        MergeRingAuthority::OwnerSigned => 1,
     }
 }
 
@@ -171,10 +151,9 @@ pub struct MergePublicInput<'a> {
     pub record: &'a [u8; MERGE_RECORD_LEN],
     /// The payer's Solana owner identity.
     pub payer: &'a [u8; 32],
-    /// The signing owner's identity under `OwnerSigned`, zero under `Ring`.
-    pub published_owner: &'a [u8; 32],
-    /// Zero under `OwnerSigned`.
     pub tracking_root: &'a [u8; 32],
+    /// SPP publishes it unproven, the ring proof alone binds it to the output.
+    pub output_encryption: &'a MergeOutputEncryption,
 }
 
 impl MergePublicInput<'_> {
@@ -185,6 +164,8 @@ impl MergePublicInput<'_> {
     pub fn elements(&self) -> Result<[[u8; 32]; MERGE_PUBLIC_INPUT_ELEMENTS], HasherError> {
         let [auditor_lo, auditor_hi] = pack_be(self.auditor_pk);
         let [eph_lo, eph_hi] = pack_be(self.eph_pk);
+        let MergeOutputEncryption::PoseidonCtrV1 { salt, ciphertext } = self.output_encryption;
+        let [amount, mint_lo, mint_hi] = *ciphertext;
         Ok([
             crate::domain::field(crate::domain::MERGE_STATEMENT),
             *self.output_utxo_hash,
@@ -197,23 +178,11 @@ impl MergePublicInput<'_> {
             hash_bytes(self.envelope)?,
             hash_bytes(self.record)?,
             *self.payer,
-            *self.published_owner,
             *self.tracking_root,
+            right_align(salt),
+            amount,
+            mint_lo,
+            mint_hi,
         ])
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_unknown_authority_byte_is_refused() {
-        let mut data = vec![0; 8 + 32];
-        data.push(2);
-        assert!(matches!(
-            CustomRingMergeIxDataRef::from_bytes(&data),
-            Err(CustomRingError::InvalidInstructionData)
-        ));
     }
 }

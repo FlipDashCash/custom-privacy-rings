@@ -765,7 +765,6 @@ pub(crate) struct ApplyEnrollments {
     pub writes: Vec<Option<TrackingWrite>>,
 }
 
-/// `tracking` is `None` under a zero key.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MergeRequest {
@@ -806,7 +805,9 @@ pub(crate) struct MergeRequest {
     pub output_tree_id: [u8; 32],
     #[serde(with = "fe")]
     pub output_ring_data_hash: [u8; 32],
-    pub tracking: Option<TrackingOpeningRequest>,
+    #[serde(with = "fe")]
+    pub output_ciphertext_salt: [u8; 32],
+    pub tracking: TrackingOpeningRequest,
 }
 
 /// The Solana key an owner identity hashes, the disclosure names it.
