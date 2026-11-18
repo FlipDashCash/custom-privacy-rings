@@ -19,6 +19,7 @@ import {
   bytesKey,
   ZERO_NULLIFIER_PK,
   encodeBase58,
+  treeAddress,
   encodeMergeOutputData,
   encryptMergeOutput,
   mergeOutputBlinding,
@@ -46,7 +47,7 @@ import { ViewingHistory } from "../../src/state/viewing-history.js";
 import { sealedNote } from "../helpers/ring-scan.js";
 
 const RING = address("9vyTbYGyh3cwxkAQpjjFQGXmdJP6p9B6YcQ5pNuXPNbh");
-const TREE = address("3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3");
+const TREE = treeAddress(DEFAULT_TREE_ID);
 const SALT = new Uint8Array(16).fill(7) as Bytes16;
 const FIRST_NULLIFIER = new Uint8Array(32).fill(9) as Bytes32;
 const AMOUNT = 25_000n;

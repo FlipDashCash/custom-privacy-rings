@@ -810,7 +810,7 @@ describe("anonymous delivery slots", () => {
       utxos: [
         {
           utxo,
-          outputContext: { hash, tree: TREE, leafIndex: 0n },
+          outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: 0n },
           nullifier: utxo.nullifier(hash, sender.keypair.nullifierKey()),
           spent: false,
         },
@@ -1588,7 +1588,7 @@ describe("anonymous ring relay", () => {
         const hash = utxo.proofInput(nullifierPublicKey, TREE_ID, note.dataHash).hash();
         return {
           utxo,
-          outputContext: { hash, tree: TREE, leafIndex: BigInt(index) },
+          outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: BigInt(index) },
           nullifier: utxo.nullifier(hash, sender.keypair.nullifierKey()),
           ...(note.dataHash === undefined ? {} : { dataHash: note.dataHash }),
           spent: false,

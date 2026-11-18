@@ -443,7 +443,14 @@ fn an_anonymous_scan_adds_payments_and_the_change_of_a_default_ring_spend() {
         amount: 30,
         leaf: 20,
     });
-    let held = wallet.scan(&ledger.client());
+    let notes = wallet
+        .scan_in(&ledger.client(), RingMode::Anonymous)
+        .spendable;
+    assert!(
+        notes.utxos_with_data.is_empty(),
+        "ring notes sit under their ring"
+    );
+    let held: Vec<[u8; 32]> = notes.utxos().map(|utxo| utxo.utxo_hash).collect();
     assert!(held.contains(&paid), "the payment");
     assert!(held.contains(&change), "the change of the deposit's spend");
     assert!(!held.contains(&deposited.hash), "the spent deposit");

@@ -3,7 +3,7 @@
 //! Every ring mode keeps one ledger per identity, an anonymous ring adds the anonymous sync.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     fs, io,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -15,7 +15,7 @@ use custom_ring_sdk::CustomRingConfig;
 use solana_address::Address;
 use spr_client::{BlockingIndexer, BlockingRpc, IndexerRpcConfig, Rpc, UtxoScan};
 use spr_keypair::X25519Pubkey;
-use spr_transaction::{SpendableDecryptionResult, WalletUtxo};
+use spr_transaction::{OwnedUtxos, SpendableDecryptionResult, WalletUtxo};
 use zolana_ring_client::{
     verify_ring_owned, AnonymousSync, AnonymousWallet, RingConfidentialScan, RingSenderAudit,
     SenderAuditFrames, ViewingHistory,
@@ -191,7 +191,7 @@ impl ScanAt<'_> {
         let owned = UtxoScan::new(keys, self.assets.registry())
             .with_indexer_config(config)
             .fetch(zolana.indexer())?;
-        let mut spendable = owned.spendable;
+        let spendable = owned.spendable;
         let confidential = |assets: &RingAssets, wallet: &mut AnonymousWallet| {
             let scan = zolana.block_on(async {
                 RingConfidentialScan::new(keys, assets)
@@ -246,27 +246,20 @@ impl ScanAt<'_> {
         }
         let verified = verify_ring_owned(keys, &held)?;
         let found = verified.owned.spendable().with_transaction_keys(keys)?;
-        let spent = &held.spent_nullifiers;
-        for balance in &mut spendable.balances.assets {
-            balance
-                .utxos
-                .retain(|held| !spent.contains(&held.nullifier));
-            balance.amount = balance
-                .utxos
-                .iter()
-                .fold(0, |sum, held| sum.saturating_add(held.utxo.amount));
+        let mut seen = HashSet::new();
+        let utxos = spendable
+            .utxos()
+            .chain(found.utxos())
+            .filter(|utxo| seen.insert(utxo.utxo_hash))
+            .cloned()
+            .collect();
+        let mut spendable = OwnedUtxos {
+            utxos,
+            spent: held.spent_nullifiers,
+            unknown_asset_ids: spendable.unknown_asset_ids,
+            unknown_mints: spendable.unknown_mints,
         }
-        spendable
-            .utxos_with_data
-            .retain(|held| !spent.contains(&held.nullifier));
-        for utxo in found.utxos() {
-            if !spendable
-                .utxos()
-                .any(|held| held.utxo_hash == utxo.utxo_hash)
-            {
-                spendable.utxos_with_data.push(utxo.clone());
-            }
-        }
+        .spendable();
         spendable.unknown_mints.extend(unknown_mints);
         Ok(WalletNotes {
             spendable,

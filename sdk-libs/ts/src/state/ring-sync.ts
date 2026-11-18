@@ -11,6 +11,7 @@ import {
   fetchSplAssetRegistrations,
   createIndexerRpcConfig,
   isCanonicalField,
+  treeAddress,
   ZERO_NULLIFIER_PK,
   type CheckpointStream,
   type SyncCheckpointAdvances,
@@ -95,7 +96,8 @@ export async function openRingNotes(
       ...fields,
       outputContext: Object.freeze({
         hash: utxoHash,
-        tree: slot.outputContext.tree,
+        tree: treeAddress(slot.outputContext.treeId),
+        treeId: slot.outputContext.treeId,
         leafIndex: slot.outputContext.leafIndex,
       }),
       nullifier: nullifiers.get(note) ?? zeroKeyNullifier(utxoHash, note.utxo.blinding),

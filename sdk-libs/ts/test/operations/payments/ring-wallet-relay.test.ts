@@ -142,7 +142,7 @@ function owner(fixture: Fixture, count: number, asset: Address = SOL_MINT) {
       const hash = utxo.proofInput(keypair.nullifierPublicKey(), TREE_ID).hash();
       return {
         utxo,
-        outputContext: { hash, tree: TREE, leafIndex: BigInt(index) },
+        outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: BigInt(index) },
         nullifier: utxo.nullifier(hash, keypair.nullifierKey()),
         spent: false,
       };

@@ -14,6 +14,7 @@ import {
   isCanonicalField,
   isZero,
   PAGE_LIMIT,
+  treeAddress,
   ZERO_NULLIFIER_PK,
 } from "@heliuslabs/spr/internal";
 import type { Address, Bytes16, Bytes32, RequestContext } from "@heliuslabs/spr/interface";
@@ -1681,7 +1682,8 @@ function slotContext(tx: IndexedShieldedTransaction): SlotContext | undefined {
 function walletContext(slot: OutputSlot): WalletUtxo["outputContext"] {
   return Object.freeze({
     hash: slot.outputContext.hash,
-    tree: slot.outputContext.tree,
+    tree: treeAddress(slot.outputContext.treeId),
+    treeId: slot.outputContext.treeId,
     leafIndex: slot.outputContext.leafIndex,
   });
 }
