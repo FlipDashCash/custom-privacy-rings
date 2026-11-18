@@ -631,7 +631,7 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
     solana airdrop 100 "$enrollment_writer" --url {{localnet-rpc-url}} >/dev/null
     e2e_programs=()
     e2e_rings=()
-    for index in 1 2; do
+    for index in 1 2 3; do
       solana-keygen new --no-bip39-passphrase --silent --force -o "$ring_dir/e2e-ring-$index.json"
       e2e_programs+=("$PWD/$ring_dir/e2e-ring-$index.json")
       e2e_rings+=("$(solana-keygen pubkey "$ring_dir/e2e-ring-$index.json")")

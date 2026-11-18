@@ -36,7 +36,6 @@ import {
 import { anonymousSlotTag, txKeySlotSecret } from "../crypto/derivation/ring-stream.js";
 import { isSmallOrder, x25519FromU } from "../crypto/keys/x25519.js";
 import {
-  openReply,
   openSenderBundle,
   SENDER_BUNDLE_LEN,
   type ReplyClaim,
@@ -65,7 +64,7 @@ import {
 import { answered, decoded, unseen } from "./batch.js";
 import { isZeroKeyNote as isExposedNote, zeroKeyNullifier } from "./exposed-notes.js";
 import { registeredMint } from "../operations/workflow/recover.js";
-import { openRingMerges } from "./ring-sync.js";
+import { claimOf, openRingMerges } from "./ring-sync.js";
 import type { RingKeys, RingTagFrame } from "./ring-keys.js";
 import { RingError } from "../protocol/error.js";
 import { ViewingHistory, type ViewingKeyEntry } from "./viewing-history.js";
@@ -823,20 +822,9 @@ class Scan {
 
   /** Entries at one position of one ring share a read, a key added later is its own query. */
   async rings(): Promise<void> {
-    const reads = new Map<
-      string,
-      Readonly<{ ring: Address; afterSlot: bigint | null; keys: X25519PublicKey[] }>
-    >();
-    for (const entry of this.#history.entries.filter((held) => this.#holds(held)))
-      for (const { ring, afterSlot } of entry.ringPositions()) {
-        const position = this.#sync.fullRescan ? null : afterSlot;
-        const key = `${ring}:${String(position)}`;
-        const read = reads.get(key) ?? { ring, afterSlot: position, keys: [] };
-        read.keys.push(entry.viewingPublicKey);
-        reads.set(key, read);
-      }
-    for (const { ring, afterSlot, keys } of reads.values())
-      await this.#readRing({ ring, afterSlot, keys, trial: "tagHints" });
+    const held = this.#sync.keys.viewingPublicKeys();
+    for (const read of this.#history._ringReads(held, this.#sync.fullRescan))
+      await this.#readRing({ ...read, trial: "tagHints" });
   }
 
   /** Recovery, every site tried under every held key from the ring's start. */
@@ -1643,11 +1631,6 @@ function bodyAt(
   return bundle?.length === SENDER_BUNDLE_LEN
     ? { tx, site, ciphertext: bundle, reply: new Uint8Array(), context, found }
     : undefined;
-}
-
-/** `undefined` without a reply or on bytes that never decode. */
-function claimOf(reply: Uint8Array, secret: Bytes32): ReplyClaim | undefined {
-  return reply.length === 0 ? undefined : decoded(() => openReply(secret, reply));
 }
 
 /** A body at its position, a bundle at `m`, past every body's index. */
