@@ -1094,6 +1094,81 @@ fn only_the_enrollment_writer_reaches_storage_through_the_ring_pda() {
     );
 }
 
+#[test]
+fn a_pda_enrolls_and_rotates_through_its_program() {
+    let mut ring = Ring::new(Setup::AuditOnly);
+    let writer = ring.roles.enrollment_writer.pubkey();
+    let program = Address::new_from_array([0x63; 32]);
+    let owner = Address::find_program_address(&[b"owner"], &program).0;
+    ring.install_cpi_owner(program);
+    let vector: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../test-vectors/registry/pda-enrollment.json"
+    ))
+    .unwrap();
+    let mut apply = enroll_batch(&writer, tracking_registry());
+    apply.data = hex::decode(vector["enroll"].as_str().unwrap()).unwrap();
+    let send = |ring: &mut Ring, ix| ring.role_send(RingRole::EnrollmentWriter, ix);
+    for (authorization, error) in [
+        (owner, StorageError::MissingSignature),
+        (writer, StorageError::OwnerSignatureMismatch),
+    ] {
+        apply.accounts[4].pubkey = authorization;
+        refused_with(
+            send(&mut ring, apply.clone()),
+            InstructionError::Custom(error as u32),
+        );
+    }
+    for signer in [writer, ring_auth()] {
+        let mut alias = apply.clone();
+        alias.accounts[4].pubkey = signer;
+        let mut request = ApplyEnrollmentsRequest::parse(&apply.data[1..]).unwrap();
+        request.writes[0].owner = &signer;
+        alias.data = [&[tag::ENROLL_BATCH][..], &request.encode()].concat();
+        refused_with(
+            send(&mut ring, alias),
+            InstructionError::Custom(StorageError::OwnerSignatureMismatch as u32),
+        );
+    }
+    apply.program_id = program;
+    apply.accounts[4].pubkey = owner;
+    apply
+        .accounts
+        .push(AccountMeta::new_readonly(PROGRAM, false));
+    let mut other_owner = apply.clone();
+    let mut request = ApplyEnrollmentsRequest::parse(&apply.data[1..]).unwrap();
+    request.writes[0].owner = &writer;
+    other_owner.data = [&[tag::ENROLL_BATCH][..], &request.encode()].concat();
+    refused_with(
+        send(&mut ring, other_owner),
+        InstructionError::Custom(StorageError::OwnerSignatureMismatch as u32),
+    );
+    let rotation = hex::decode(vector["rotate"].as_str().unwrap()).unwrap();
+    let mut batch = ApplyEnrollmentsRequest::parse(&rotation[1..]).unwrap();
+    let header = ApplyEnrollmentsIxData {
+        count: 2,
+        ..*batch.ix
+    };
+    batch.ix = &header;
+    batch.writes.push(batch.writes[0]);
+    apply.data = [&[tag::ENROLL_BATCH][..], &batch.encode()].concat();
+    refused_with(
+        send(&mut ring, apply.clone()),
+        InstructionError::Custom(StorageError::UnsupportedBatch as u32),
+    );
+    for (action, revision) in [("enroll", 1), ("rotate", 2)] {
+        apply.data = hex::decode(vector[action].as_str().unwrap()).unwrap();
+        let expected = ApplyEnrollmentsRequest::parse(&apply.data[1..])
+            .unwrap()
+            .ix
+            .new_root;
+        send(&mut ring, apply.clone()).unwrap();
+        let registry = ring.read::<TrackingRegistry>(&tracking_registry());
+        assert_eq!(registry.newest().hash, expected);
+        assert_eq!(registry.newest().revision.value(), revision);
+        assert_eq!(registry.next_index(), 2);
+    }
+}
+
 fn set_paused(pauser: &Address, ring_auth: Address, spp: Address) -> Instruction {
     Instruction {
         program_id: PROGRAM,

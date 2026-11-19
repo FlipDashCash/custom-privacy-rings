@@ -212,6 +212,12 @@ impl Ring {
         ring
     }
 
+    pub fn install_cpi_owner(&mut self, program: Address) {
+        self.svm
+            .add_program(program, &deployed("storage_cpi_owner.so"))
+            .unwrap();
+    }
+
     /// The registry accounts `read` passes after the ring account.
     pub fn registries(&self, read: RootRead) -> Vec<AccountMeta> {
         self.read::<RingPolicy>(&policy_pda())

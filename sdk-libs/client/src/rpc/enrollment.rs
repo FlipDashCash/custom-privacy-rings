@@ -60,7 +60,6 @@ impl RpcMethod for SubmitEnrollment {
 }
 
 impl SignedEnrollment<'_> {
-    /// `owner` must be the write's owner, a PDA holds no key and cannot enroll.
     pub fn sign<S: Signer + ?Sized>(
         self,
         owner: &S,
