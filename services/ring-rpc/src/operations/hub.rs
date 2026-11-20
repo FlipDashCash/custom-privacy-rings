@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    net::IpAddr,
     sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
@@ -140,6 +141,7 @@ pub struct HubBuilder<S> {
     co_signer_approval: CoSignerApproval,
     co_signer_rule: Option<Arc<dyn CoSignRule>>,
     relay_budget: RelayBudget,
+    local_relay_rpc: Option<String>,
     relay: Option<RelayParts>,
     merge: Option<MergeParts>,
     enrollments: Option<Arc<EnrollmentApplier>>,
@@ -407,6 +409,7 @@ impl<S: TransactionSource> Hub<S> {
             co_signer_approval: CoSignerApproval::default(),
             co_signer_rule: None,
             relay_budget: RelayBudget::default(),
+            local_relay_rpc: None,
             relay: None,
             merge: None,
             enrollments: None,
@@ -768,6 +771,16 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
         self
     }
 
+    /// Local operator extensions never inherit ambient env on an ordinary
+    /// hub. Supply the server's actual bind and chain RPC before building it.
+    #[must_use = "use the updated builder"]
+    pub fn with_loopback_relay_extensions(mut self, bind: IpAddr, rpc: &str) -> Self {
+        self.local_relay_rpc =
+            crate::local_relay_host::origin(bind, rpc, self.identity.genesis_hash)
+                .map(str::to_owned);
+        self
+    }
+
     /// Serves `submitEnrollment` for the applier's rings.
     #[must_use = "use the updated builder"]
     pub fn with_enrollment_applier(mut self, applier: Arc<EnrollmentApplier>) -> Self {
@@ -884,18 +897,22 @@ impl<S: TransactionSource + 'static> HubBuilder<S> {
             None => Arc::new(RefusingCoSigner),
         };
         let relay = self.relay.map(|parts| {
-            Arc::new(
-                Relay::new(
-                    parts,
-                    ServiceTarget {
-                        cluster: shared.genesis_hash,
-                        service: shared.service,
-                    },
-                )
-                .with_budget(self.relay_budget)
-                .with_co_signer(co_signer.clone())
-                .with_rings(Arc::new(HubRings(shared.clone()))),
+            let relay = Relay::new(
+                parts,
+                ServiceTarget {
+                    cluster: shared.genesis_hash,
+                    service: shared.service,
+                },
             )
+            .with_budget(self.relay_budget)
+            .with_co_signer(co_signer.clone())
+            .with_rings(Arc::new(HubRings(shared.clone())));
+            Arc::new(match self.local_relay_rpc.as_deref() {
+                Some(rpc) => relay
+                    .with_local_composition_policy()
+                    .with_local_ordinary_proof_only_policy(rpc),
+                None => relay,
+            })
         });
         Ok(Hub {
             signer,

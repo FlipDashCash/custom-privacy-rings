@@ -22,6 +22,19 @@ pub(crate) struct RelayRecord {
     pub message: VersionedMessage,
     pub last_valid_block_height: u64,
     pub state: RelayState,
+    /// Public-wire authorization only; never an owner key or proof witness.
+    pub proof_only: Option<ProofOnlyAuthorization>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct ProofOnlyAuthorization {
+    pub authorization_public_key: SerializablePubkey,
+    pub policy_sha256: String,
+    pub ring: SerializablePubkey,
+    pub nullifiers: Vec<[u8; 32]>,
+    /// Set durably after admission/signing and before any prepare response.
+    pub transaction: Option<Base64String>,
 }
 
 #[derive(Clone)]
@@ -36,6 +49,8 @@ pub(crate) struct RelayRevision(u64);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RelayState {
+    /// No fabricated awaited signer. Tracking may observe, but never sends it.
+    PreparedProofOnly,
     AwaitingSignature(Awaiting),
     /// Stored before its first send, a restart resends the same transaction.
     Sent(SentAttempt),
@@ -83,6 +98,14 @@ pub(crate) struct Closing {
 }
 
 pub(crate) enum RelayEvent {
+    /// Authenticated off-chain commit after the client checkpoints exact wire.
+    CommitProofOnly {
+        fee_payer: CollectedSignature,
+    },
+    External {
+        signature: Signature,
+        outcome: crate::landing::ChainOutcome,
+    },
     /// The last awaited one carries the closing signatures.
     Signed {
         signature: CollectedSignature,
@@ -147,7 +170,7 @@ pub(crate) struct RelayStore<'a, C> {
     db: &'a C,
 }
 
-const PENDING: [&str; 2] = ["awaitingSignature", "sent"];
+const PENDING: [&str; 3] = ["awaitingSignature", "sent", "preparedProofOnly"];
 const CONFIRMED: &str = "confirmed";
 const FAILED: &str = "failed";
 
@@ -182,6 +205,20 @@ impl RelayState {
     pub fn apply(&self, event: RelayEvent) -> Result<Transition, TransitionError> {
         let next = match (self, event) {
             (Self::Confirmed { .. } | Self::Failed { .. }, _) => return Ok(Transition::Unchanged),
+            (Self::PreparedProofOnly, RelayEvent::CommitProofOnly { fee_payer }) => {
+                Self::Sent(SentAttempt {
+                    signature: fee_payer.signature,
+                    signatures: vec![fee_payer],
+                    co_signature: None,
+                })
+            }
+            (Self::Sent(_), RelayEvent::CommitProofOnly { .. }) => {
+                return Ok(Transition::Unchanged)
+            }
+            (Self::AwaitingSignature(_), RelayEvent::CommitProofOnly { .. })
+            | (Self::PreparedProofOnly, RelayEvent::Signed { .. }) => {
+                return Err(TransitionError::UnexpectedSigner)
+            }
             (Self::AwaitingSignature(awaiting), RelayEvent::Signed { signature, closing }) => {
                 if awaiting.admit(signature.signer)? == SignerAdmission::Collected {
                     return Ok(Transition::Unchanged);
@@ -193,6 +230,21 @@ impl RelayState {
                 signed.signatures.push(signature);
                 Self::open(signed, closing.map(|closing| *closing))?
             }
+            (
+                Self::AwaitingSignature(_) | Self::PreparedProofOnly,
+                RelayEvent::External { signature, outcome },
+            ) => match outcome {
+                crate::landing::ChainOutcome::Confirmed { slot } => Self::Confirmed {
+                    signature,
+                    slot,
+                    co_signature: None,
+                },
+                crate::landing::ChainOutcome::Failed { reason } => Self::Failed {
+                    reason,
+                    co_signature: None,
+                },
+            },
+            (Self::Sent(_), RelayEvent::External { .. }) => return Ok(Transition::Unchanged),
             (Self::Sent(_), RelayEvent::Signed { .. }) => return Ok(Transition::Unchanged),
             (Self::Sent(sent), RelayEvent::Landed { slot }) => Self::Confirmed {
                 signature: sent.signature,
@@ -207,12 +259,15 @@ impl RelayState {
                 co_signature: sent.co_signature,
             },
             // An expired message never reached the co-signer, it holds no allowance.
-            (Self::AwaitingSignature(_), RelayEvent::Dropped { reason }) => Self::Failed {
+            (
+                Self::AwaitingSignature(_) | Self::PreparedProofOnly,
+                RelayEvent::Dropped { reason },
+            ) => Self::Failed {
                 reason,
                 co_signature: None,
             },
             (
-                Self::AwaitingSignature(_),
+                Self::AwaitingSignature(_) | Self::PreparedProofOnly,
                 RelayEvent::Landed { .. } | RelayEvent::Reverted { .. },
             ) => return Err(TransitionError::Unsent),
         };
@@ -221,7 +276,7 @@ impl RelayState {
 
     pub fn co_signature(&self) -> Option<Signature> {
         match self {
-            Self::AwaitingSignature(_) => None,
+            Self::AwaitingSignature(_) | Self::PreparedProofOnly => None,
             Self::Sent(SentAttempt { co_signature, .. })
             | Self::Confirmed { co_signature, .. }
             | Self::Failed { co_signature, .. } => *co_signature,
@@ -232,6 +287,7 @@ impl RelayState {
         match self {
             Self::AwaitingSignature(_) => PENDING[0],
             Self::Sent(_) => PENDING[1],
+            Self::PreparedProofOnly => PENDING[2],
             Self::Confirmed { .. } => CONFIRMED,
             Self::Failed { .. } => FAILED,
         }
@@ -338,7 +394,7 @@ impl<'a, C: ConnectionTrait> RelayStore<'a, C> {
     }
 
     pub async fn pending(&self) -> Result<Vec<RelayId>, DbErr> {
-        let sql = "SELECT relay_id FROM relay_relays WHERE status IN ($1,$2)";
+        let sql = "SELECT relay_id FROM relay_relays WHERE status IN ($1,$2,$3)";
         let values = PENDING.map(Value::from).to_vec();
         self.db
             .query_all(self.statement(sql, values))
@@ -363,6 +419,8 @@ struct StoredRelay {
     message: Base64String,
     last_valid_block_height: u64,
     state: StoredState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proof_only: Option<ProofOnlyAuthorization>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -372,6 +430,7 @@ struct StoredRelay {
     rename_all_fields = "camelCase"
 )]
 enum StoredState {
+    PreparedProofOnly,
     AwaitingSignature {
         signatures: Vec<StoredSignature>,
         awaiting: Vec<SerializablePubkey>,
@@ -446,7 +505,9 @@ fn state(record: &RelayRecord) -> Result<Value, DbErr> {
     let stored = StoredRelay {
         message: record.message.serialize().into(),
         last_valid_block_height: record.last_valid_block_height,
+        proof_only: record.proof_only.clone(),
         state: match &record.state {
+            RelayState::PreparedProofOnly => StoredState::PreparedProofOnly,
             RelayState::AwaitingSignature(awaiting) => StoredState::AwaitingSignature {
                 signatures: stored_signatures(&awaiting.signatures),
                 awaiting: awaiting.awaiting.iter().copied().map(Into::into).collect(),
@@ -520,6 +581,7 @@ fn relay_row(row: &QueryResult) -> Result<RelayRow, DbErr> {
     Ok(RelayRow {
         revision: RelayRevision(u64::try_from(revision).map_err(|_| corrupt("revision"))?),
         record: RelayRecord {
+            proof_only: stored.proof_only,
             message: wincode::deserialize(&stored.message.0).map_err(|_| corrupt("message"))?,
             last_valid_block_height: stored.last_valid_block_height,
             state: relay_state(stored.state)?,
@@ -529,6 +591,7 @@ fn relay_row(row: &QueryResult) -> Result<RelayRow, DbErr> {
 
 fn relay_state(stored: StoredState) -> Result<RelayState, DbErr> {
     Ok(match stored {
+        StoredState::PreparedProofOnly => RelayState::PreparedProofOnly,
         // A relay awaiting nobody is sent before it is stored.
         StoredState::AwaitingSignature { awaiting, .. } if awaiting.is_empty() => {
             return Err(corrupt("state"))
@@ -652,6 +715,35 @@ mod tests {
     }
 
     #[test]
+    fn proof_only_never_uses_the_legacy_signed_transition() {
+        let prepared = RelayState::PreparedProofOnly;
+        assert_eq!(
+            prepared.apply(signed(FEE_PAYER, Some(closing()))),
+            Err(TransitionError::UnexpectedSigner)
+        );
+        assert_eq!(
+            prepared.apply(RelayEvent::Landed { slot: 1 }),
+            Err(TransitionError::Unsent)
+        );
+        assert!(matches!(
+            prepared.apply(RelayEvent::CommitProofOnly {
+                fee_payer: closing().fee_payer
+            }),
+            Ok(Transition::Next(RelayState::Sent(_)))
+        ));
+        assert_eq!(
+            awaiting(&[SIGNER]).apply(RelayEvent::CommitProofOnly {
+                fee_payer: closing().fee_payer
+            }),
+            Err(TransitionError::UnexpectedSigner)
+        );
+        assert_eq!(
+            RelayPhase::of_status("preparedProofOnly").unwrap(),
+            RelayPhase::Pending
+        );
+    }
+
+    #[test]
     fn the_last_awaited_signature_sends_only_with_the_closing_signatures() {
         let state = awaiting(&[SIGNER]);
 
@@ -695,6 +787,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepared_public_authorization_survives_storage_and_stale_signed_wire_write() {
+        let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let relays = RelayStore::new(store.connection());
+        let id = RelayId([10; 32].into());
+        let record = RelayRecord {
+            message: compile_message(
+                &FEE_PAYER,
+                &[],
+                Default::default(),
+                ComputeBudgetConfig::new(1),
+            )
+            .unwrap(),
+            last_valid_block_height: 500,
+            state: RelayState::PreparedProofOnly,
+            proof_only: Some(ProofOnlyAuthorization {
+                authorization_public_key: SIGNER.into(),
+                policy_sha256: "ab".repeat(32),
+                ring: Address::new_from_array([6; 32]).into(),
+                nullifiers: vec![[11; 32]],
+                transaction: None,
+            }),
+        };
+        assert!(relays.insert(&id, &record).await.unwrap());
+        let row = relays.get(&id).await.unwrap().unwrap();
+        assert_eq!(row.record.state, RelayState::PreparedProofOnly);
+        assert_eq!(
+            row.record
+                .proof_only
+                .as_ref()
+                .unwrap()
+                .authorization_public_key
+                .0,
+            SIGNER
+        );
+        let mut signed = row.record.clone();
+        signed.proof_only.as_mut().unwrap().transaction = Some(Base64String(vec![1, 2, 3]));
+        assert!(matches!(
+            relays.commit(&id, row.revision, &signed).await.unwrap(),
+            Committed::Written(_)
+        ));
+        assert_eq!(
+            relays.commit(&id, row.revision, &record).await.unwrap(),
+            Committed::Stale
+        );
+        let stored = relays.get(&id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.record.proof_only.unwrap().transaction.unwrap().0,
+            [1, 2, 3]
+        );
+        assert!(relays.pending().await.unwrap().contains(&id));
+    }
+
+    #[tokio::test]
     async fn a_commit_over_a_stale_revision_writes_nothing() {
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
         let relays = RelayStore::new(store.connection());
@@ -703,6 +848,7 @@ mod tests {
         let message =
             compile_message(&FEE_PAYER, &[], Default::default(), budget).expect("message");
         let record = |state| RelayRecord {
+            proof_only: None,
             message: message.clone(),
             last_valid_block_height: 1,
             state,
@@ -765,6 +911,7 @@ mod tests {
             }),
         });
         let record = RelayRecord {
+            proof_only: None,
             message,
             last_valid_block_height: 1,
             state: state.clone(),

@@ -405,6 +405,34 @@ pub fn relay_module(relay: Arc<Relay>) -> Result<RpcModule<Arc<Relay>>, Register
     let mut module = RpcModule::new(relay);
     method(
         &mut module,
+        "prepareOrdinaryProofOnly",
+        |relay, request: crate::relay::PrepareOrdinaryProofOnlyRequest| async move {
+            relay.prepare_ordinary_proof_only(&request).await
+        },
+    )?;
+    method(
+        &mut module,
+        "recoverOrdinaryProofOnly",
+        |relay, request: crate::relay::RecoverOrdinaryProofOnlyRequest| async move {
+            relay.recover_ordinary_proof_only(&request).await
+        },
+    )?;
+    method(
+        &mut module,
+        "commitOrdinaryProofOnly",
+        |relay, request: crate::relay::CommitOrdinaryProofOnlyRequest| async move {
+            relay.commit_ordinary_proof_only(&request).await
+        },
+    )?;
+    method(
+        &mut module,
+        "prepareComposition",
+        |relay, request: crate::relay::PrepareCompositionRequest| async move {
+            relay.prepare_composition(&request).await
+        },
+    )?;
+    method(
+        &mut module,
         GET_RELAY_QUOTE,
         |relay, request: GetRelayQuoteRequest| async move { relay.quote(&request).await },
     )?;

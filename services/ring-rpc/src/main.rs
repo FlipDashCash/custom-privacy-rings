@@ -143,7 +143,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             store: args.wallet_snapshots,
             principal_wallet: args.wallet_snapshots_per_principal,
         })
-        .with_relay_budget(relay_budget);
+        .with_relay_budget(relay_budget)
+        .with_loopback_relay_extensions(options.bind, &args.rpc_url);
     if let Some(store) = store.clone() {
         builder = builder.with_store(store);
     }

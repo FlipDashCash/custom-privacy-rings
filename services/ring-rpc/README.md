@@ -267,3 +267,44 @@ The bucket table has a fixed size. A bucket that has refilled to its burst is th
 | -32252 | The client is past its signed write rate |
 | -32253 | The key the write names as signer is past its signed write rate |
 | -32254 | The request names an API key whose digest is not configured |
+
+## Optional local proof-bearing relay adapters
+
+These service-only adapters are **off by default**. The binary does not load
+their environment configuration unless the actual listener binds loopback, the
+chain RPC is a literal `http://127.0.0.1:<port>` with a non-default port, and the
+boot genesis is not a known public Solana cluster. This is an owned Localnet
+boundary, not proof of deployment or permission to expose it through a proxy.
+Native relay methods and their service/cluster attestation continue to work
+under the stock configuration.
+
+- `ZOLANA_RING_LOCAL_COMPOSITION=1` and
+  `ZOLANA_RING_COMPOSITION_REVIEWER` enable `prepareComposition` with an
+  absolute, operator-owned reviewer executable. All original non-payer
+  signatures must bind the full message. Preparation verifies the result and
+  reserves the gross debit before signing, and does not broadcast. Its client
+  checkpoints the returned wire and can use the existing `submitRelay` for
+  the same original.
+- `ZOLANA_RING_LOCAL_ORDINARY_PROOF_ONLY=1`,
+  `ZOLANA_RING_ORDINARY_PROOF_ONLY_REVIEWER`, and
+  `ZOLANA_RING_ORDINARY_PROOF_ONLY_POLICY` separately enable
+  `prepareOrdinaryProofOnly`, `recoverOrdinaryProofOnly`, and
+  `commitOrdinaryProofOnly`. The public, operator-owned policy file must be
+  absolute, opt into development, name the same loopback RPC, and bind the
+  exact boot genesis and payer. Its exact file hash and the original's
+  authorization key/message bind its requests; this preserves the existing
+  wire-domain strings. The service receives finished public proofs and a
+  transaction, never a client's spend keys or proof witnesses. Admission
+  and budget holds are durable before payer-key use; recovery never signs.
+  An explicit authorized commit rechecks the same public message and persists
+  the send marker before the first broadcast. The tracker may retry only
+  identical signed bytes; it does not rebuild. The native submit/status
+  methods do not service the ordinary proof-only record.
+
+Both adapters require the stock relay's served-Ring check, simulation and
+reserve budgets. The fixed reviewer runs as the service user; a cleared
+environment and bounded stdin/stdout processing do not sandbox the filesystem
+or network. No reviewer policy implementation, endpoint credentials, enabled
+configuration, program or proving-key changes are supplied by this service
+patch. The service tests use synthetic chain/proof fixtures; they do not
+qualify a deployed validator, real money, or hosted multi-tenant service.

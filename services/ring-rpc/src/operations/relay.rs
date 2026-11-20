@@ -51,10 +51,26 @@ use crate::{
     },
     relay_submit::{presigned_transaction, CollectedSignature},
     relays::{
-        Awaiting, Closing, Committed, PendingCoSign, RelayEvent, RelayRecord, RelayRevision,
-        RelayRow, RelayState, RelayStore, SignerAdmission, Transition, TransitionError,
+        Awaiting, Closing, Committed, PendingCoSign, ProofOnlyAuthorization, RelayEvent,
+        RelayRecord, RelayRevision, RelayRow, RelayState, RelayStore, SignerAdmission, Transition,
+        TransitionError,
     },
     transfer_debits::deposit_flows,
+};
+
+#[path = "composition.rs"]
+mod composition;
+#[path = "proof_only.rs"]
+mod proof_only;
+pub use composition::{
+    CompositionPolicy, CompositionReview, LocalCompositionPolicy, PrepareCompositionRequest,
+    PreparedComposition,
+};
+pub use proof_only::{
+    CommitOrdinaryProofOnlyRequest, LocalOrdinaryProofOnlyPolicy, OrdinaryProofOnlyCommitted,
+    OrdinaryProofOnlyContext, OrdinaryProofOnlyPolicy, OrdinaryProofOnlyRecovery,
+    OrdinaryProofOnlyReview, PrepareOrdinaryProofOnlyRequest, PreparedOrdinaryProofOnly,
+    RecoverOrdinaryProofOnlyRequest,
 };
 
 pub const QUOTE_SLOTS: u64 = LEASE_SLOTS;
@@ -161,6 +177,8 @@ pub struct Relay {
     co_signer: Arc<dyn CoSignPolicy>,
     proofs: Semaphore,
     budget: RelayBudget,
+    composition: Option<Arc<dyn CompositionPolicy>>,
+    proof_only: Option<Arc<dyn OrdinaryProofOnlyPolicy>>,
 }
 
 /// Every signature except the fee payer's is collected.
@@ -304,6 +322,8 @@ impl Relay {
             co_signer: Arc::new(RefusingCoSigner),
             proofs: Semaphore::new(MAX_CONCURRENT_PROOFS),
             budget: RelayBudget::default(),
+            composition: None,
+            proof_only: None,
         }
     }
 
@@ -458,9 +478,9 @@ impl Relay {
         let row = self.row(&held.relay_id).await?;
         let RelayRow { record, .. } = self.advance(&held.relay_id, row).await?;
         match record.state {
-            RelayState::AwaitingSignature(_) | RelayState::Sent(_) => {
-                Err(RelayError::LiveAttempt.into())
-            }
+            RelayState::AwaitingSignature(_)
+            | RelayState::PreparedProofOnly
+            | RelayState::Sent(_) => Err(RelayError::LiveAttempt.into()),
             RelayState::Confirmed { .. } => self.release_landed(held, &record.message).await,
             RelayState::Failed { .. } => self.release(held).await,
         }
@@ -621,6 +641,7 @@ impl Relay {
         // The decoded secrets zeroize before the store and send awaits.
         drop(payload);
         let record = RelayRecord {
+            proof_only: None,
             state: self.open(&message, awaiting).await?,
             message,
             last_valid_block_height,
@@ -710,7 +731,18 @@ impl Relay {
                 })
                 .await?;
             Ok(match bound {
-                SpendCheck::Accepted => AttemptWrite::Stored,
+                SpendCheck::Accepted => {
+                    if let Some(proof_only) = &record.proof_only {
+                        MergeInputs { conn: &transaction }
+                            .hold(HoldInputs {
+                                ring: &proof_only.ring.0,
+                                relay_id,
+                                nullifiers: &proof_only.nullifiers,
+                            })
+                            .await?;
+                    }
+                    AttemptWrite::Stored
+                }
                 SpendCheck::OverAllowance => AttemptWrite::Refused(RelayError::Allowance.into()),
                 SpendCheck::LeaseLost => AttemptWrite::Refused(RingRpcError::RelayProverBusy),
             })
@@ -891,6 +923,7 @@ impl Relay {
             co_sign: None,
         };
         let record = RelayRecord {
+            proof_only: None,
             state: RelayState::open(unsigned, Some(closing))?,
             message: merge.message,
             last_valid_block_height: merge.last_valid_block_height,
@@ -967,6 +1000,9 @@ impl Relay {
             signature: request.signature.0,
         };
         let mut row = self.row(relay_id).await?;
+        if row.record.proof_only.is_some() {
+            return Err(RelayError::UnexpectedSigner.into());
+        }
         // 1. Each round reads one revision, a relay moves once per signer and once to its end.
         while let RelayState::AwaitingSignature(awaiting) = &row.record.state {
             let last = match awaiting.admit(signature.signer)? {
@@ -1006,7 +1042,7 @@ impl Relay {
         // 3. A stored failure frees the allowance an overtaken round decided again.
         let row = self.advance(relay_id, row).await?;
         self.release_failed(relay_id, &row.record.state).await?;
-        Ok(relay_status(&row.record.state))
+        relay_status(&row.record.state)
     }
 
     pub async fn status(
@@ -1014,10 +1050,13 @@ impl Relay {
         request: &GetRelayStatusRequest,
     ) -> Result<RelayStatus, RingRpcError> {
         let row = self.row(&request.relay_id).await?;
+        if row.record.proof_only.is_some() {
+            return Err(RelayError::UnexpectedSigner.into());
+        }
         let row = self.advance(&request.relay_id, row).await?;
         self.release_failed(&request.relay_id, &row.record.state)
             .await?;
-        Ok(relay_status(&row.record.state))
+        relay_status(&row.record.state)
     }
 
     /// A failed release stays for the next sweep.
@@ -1183,11 +1222,42 @@ impl Relay {
     async fn advance(&self, relay_id: &RelayId, row: RelayRow) -> Result<RelayRow, RingRpcError> {
         let last_valid_block_height = row.record.last_valid_block_height;
         let event = match &row.record.state {
-            RelayState::AwaitingSignature(_)
-                if self.chain.block_height().await? > last_valid_block_height =>
-            {
-                RelayEvent::Dropped {
-                    reason: EXPIRED.to_owned(),
+            RelayState::AwaitingSignature(_) | RelayState::PreparedProofOnly => {
+                // A prepared composition may be broadcast by its independent client.
+                let signature = if matches!(row.record.state, RelayState::PreparedProofOnly) {
+                    match proof_only::stored_signature(&row.record)? {
+                        Some(collected) => collected.signature,
+                        None => {
+                            if self.chain.block_height().await? <= last_valid_block_height {
+                                return Ok(row);
+                            }
+                            return Ok(self
+                                .transition(
+                                    relay_id,
+                                    row,
+                                    RelayEvent::Dropped {
+                                        reason: EXPIRED.to_owned(),
+                                    },
+                                )
+                                .await?
+                                .row());
+                        }
+                    }
+                } else {
+                    self.fee_payer_signs(&row.record.message).signature
+                };
+                match (Attempt {
+                    signature,
+                    last_valid_block_height,
+                })
+                .landing(self.chain.as_ref())
+                .await?
+                {
+                    Landing::Pending => return Ok(row),
+                    Landing::Expired => RelayEvent::Dropped {
+                        reason: EXPIRED.to_owned(),
+                    },
+                    Landing::Landed(outcome) => RelayEvent::External { signature, outcome },
                 }
             }
             RelayState::Sent(sent) => {
@@ -1208,7 +1278,7 @@ impl Relay {
                 self.settle(*co_signature, CoSignSettlement::Failed).await?;
                 return Ok(row);
             }
-            RelayState::AwaitingSignature(_) | RelayState::Confirmed { .. } => return Ok(row),
+            RelayState::Confirmed { .. } => return Ok(row),
         };
         Ok(self.transition(relay_id, row, event).await?.row())
     }
@@ -1222,8 +1292,15 @@ impl Relay {
         event: RelayEvent,
     ) -> Result<Applied, RingRpcError> {
         // 1. A failure the chain charged commits its fee with the failure, a crash cannot count it twice.
-        let landed_fee =
-            matches!(event, RelayEvent::Reverted { .. }).then(|| message_fee(&row.record.message));
+        let landed_fee = matches!(
+            event,
+            RelayEvent::Reverted { .. }
+                | RelayEvent::External {
+                    outcome: ChainOutcome::Failed { .. },
+                    ..
+                }
+        )
+        .then(|| message_fee(&row.record.message));
         let next = match row.record.state.apply(event)? {
             Transition::Unchanged => return Ok(Applied::Unchanged(row)),
             Transition::Next(next) => next,
@@ -1284,7 +1361,9 @@ impl Relay {
             RelayState::Failed { co_signature, .. } => {
                 self.settle(*co_signature, CoSignSettlement::Failed).await?;
             }
-            RelayState::AwaitingSignature(_) | RelayState::Sent(_) => {}
+            RelayState::AwaitingSignature(_)
+            | RelayState::PreparedProofOnly
+            | RelayState::Sent(_) => {}
         }
         Ok(Applied::Written(RelayRow { revision, record }))
     }
@@ -1774,8 +1853,9 @@ fn step(relay_id: RelayId, record: &RelayRecord) -> RelayStep {
     }
 }
 
-fn relay_status(state: &RelayState) -> RelayStatus {
-    match state {
+fn relay_status(state: &RelayState) -> Result<RelayStatus, RingRpcError> {
+    Ok(match state {
+        RelayState::PreparedProofOnly => return Err(RelayError::UnexpectedSigner.into()),
         RelayState::AwaitingSignature(_) => RelayStatus::AwaitingSignature,
         RelayState::Sent(sent) => RelayStatus::Sent {
             signature: sent.signature.into(),
@@ -1789,7 +1869,7 @@ fn relay_status(state: &RelayState) -> RelayStatus {
         RelayState::Failed { reason, .. } => RelayStatus::Failed {
             reason: reason.clone(),
         },
-    }
+    })
 }
 
 #[cfg(test)]
