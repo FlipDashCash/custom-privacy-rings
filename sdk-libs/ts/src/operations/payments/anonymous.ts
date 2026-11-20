@@ -1,3 +1,4 @@
+import type { PlannedSplExit } from "./planned-spl-exit.js";
 /** The hidden owner's rail of an anonymous ring, mirrors Rust `pipeline::anonymous`. */
 import {
   AccountState,
@@ -132,6 +133,7 @@ export async function anonymousExitTokenOwner(
     hiddenOwner?: Bytes32;
     /** A missing exit token account must be the owner's associated token account. */
     tokenOwner?: Address;
+    plannedSplExit?: PlannedSplExit;
   }>,
   context?: RequestContext,
 ): Promise<Address | undefined> {
@@ -149,10 +151,20 @@ export async function anonymousExitTokenOwner(
       );
       continue;
     }
-    const owner = await splExitOwner({ client: input.client, transfer, hidden, named }, context);
-    if (named !== undefined && named !== owner)
+    const selectedOwner = input.plannedSplExit?.companionOwner(transfer) ?? named;
+    const owner = await splExitOwner(
+      {
+        client: input.client,
+        transfer,
+        hidden,
+        named: selectedOwner,
+        ...(input.plannedSplExit === undefined ? {} : { plannedSplExit: input.plannedSplExit }),
+      },
+      context,
+    );
+    if (selectedOwner !== undefined && selectedOwner !== owner)
       throw new RingError("RING_ANONYMOUS_EXIT_NAMED_OWNER_MISMATCH", {
-        details: { destination: transfer.tokenAccount, named, owner },
+        details: { destination: transfer.tokenAccount, named: selectedOwner, owner },
       });
   }
   return named;
@@ -199,6 +211,7 @@ async function splExitOwner(
     transfer: Extract<SettlementTransfer, { kind: "spl" }>;
     hidden: Address | undefined;
     named: Address | undefined;
+    plannedSplExit?: PlannedSplExit;
   }>,
   context: RequestContext | undefined,
 ): Promise<Address> {
@@ -225,6 +238,7 @@ export async function splDestination(
     client: Pick<ChainReader, "getAccount">;
     transfer: Extract<SettlementTransfer, { kind: "spl" }>;
     named: Address | undefined;
+    plannedSplExit?: PlannedSplExit;
   }>,
   context: RequestContext | undefined,
 ): Promise<Readonly<{ control: TokenAccountControl; tokenProgram: Address }> | undefined> {
@@ -233,6 +247,11 @@ export async function splDestination(
   if (account !== undefined) {
     const control = tokenAccountControl(account, mint);
     return control === undefined ? undefined : { control, tokenProgram: account.owner };
+  }
+  if (input.plannedSplExit !== undefined) {
+    const owner = await input.plannedSplExit.resolveOwner(input.client, input.transfer, context);
+    if (owner === undefined || input.named !== owner) return undefined;
+    return { control: { kind: "soleOwner", owner }, tokenProgram: SPL_TOKEN_PROGRAM_ID };
   }
   if (input.named === undefined) return undefined;
   // The associated token program creates it with the named owner and no other authority.

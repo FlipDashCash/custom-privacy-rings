@@ -191,6 +191,32 @@ export class RingTransactionSubmission {
     this.#utxoHashes = (input.utxoHashes ?? []).map((hash) => new Uint8Array(hash) as Bytes32);
   }
 
+  /** Additive PYROL holder boundary. Copies only original submission metadata;
+   * no private proof inputs or authority key leave the wallet. May be read from
+   * the original transport sign callback, before the payer can sign remotely. */
+  preSignCheckpointIdentity(): Readonly<{
+    id: string;
+    intentHash: Bytes32;
+    utxoHashes: readonly Bytes32[];
+    lastValidBlockHeight: bigint;
+    messageBytes: Uint8Array;
+  }> {
+    if (
+      this.#terminal ||
+      this.#signed !== undefined ||
+      this.#record !== undefined ||
+      this.#attempts !== 0
+    )
+      throw new RingError("RING_SUBMISSION_PENDING");
+    return Object.freeze({
+      id: this.#id,
+      intentHash: new Uint8Array(this.#intent) as Bytes32,
+      utxoHashes: Object.freeze(this.#utxoHashes.map((hash) => new Uint8Array(hash) as Bytes32)),
+      lastValidBlockHeight: this.#attempt.lastValidBlockHeight,
+      messageBytes: new Uint8Array(this.#attempt.transaction.messageBytes),
+    });
+  }
+
   /** An anonymous depositor stores it before the first `send`. */
   get viewingHistory(): ViewingHistory | undefined {
     return this.#attempt.viewingHistory;
