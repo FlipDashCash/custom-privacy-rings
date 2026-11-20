@@ -212,10 +212,8 @@ impl Ring {
         ring
     }
 
-    pub fn install_cpi_owner(&mut self, program: Address) {
-        self.svm
-            .add_program(program, &deployed("storage_cpi_owner.so"))
-            .unwrap();
+    pub fn install_owner_program(&mut self, program: Address, binary: &str) {
+        self.svm.add_program(program, &deployed(binary)).unwrap();
     }
 
     /// The registry accounts `read` passes after the ring account.

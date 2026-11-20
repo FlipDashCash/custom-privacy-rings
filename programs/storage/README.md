@@ -34,6 +34,46 @@ The ring's enrollment writer signs `EnrollBatch`. Wallets can give the writer an
 
 Storage checks owner consent, verifies the tree update, and publishes the new root. A first enrollment also requires a `RegisterKey` proof for the sealed nullifier key and list salt. A rotation changes only the viewing key. Rebuild the apply proof if another write advances the registry revision. If storage returns `RootHistoryRetained`, wait for the oldest root to expire before retrying.
 
+### Enroll a vault PDA
+
+Enable the `enrollment-cpi` feature of `custom-ring-interface` in the vault program. Route the `ENROLL_PDA` discriminator to the enrollment handler.
+
+Check that the vault program owns `enrollment.vault()` before reading its manager, ring and tracking registry. Derive the expected vault address from your program's seeds. If the vault restricts enrollment keys, check `enrollment.change()` before signing.
+
+```rust
+use custom_ring_interface::pda_enrollment::{PdaEnrollment, VaultEnrollmentPolicy};
+
+let enrollment = PdaEnrollment::parse(accounts, data)?;
+enrollment.invoke_signed(
+    VaultEnrollmentPolicy {
+        manager: &vault.manager,
+        vault: &vault_address,
+        ring: &vault.ring,
+        tracking_registry: &vault.tracking_registry,
+    },
+    signer,
+)
+```
+
+Pass the vault's seeds and bump in the Pinocchio `Signer`. The helper requires the vault manager's signature before it invokes the ring. See the [vault program](../../examples/enrollment-vault/src/lib.rs).
+
+Set `Enroll::owner` to the vault PDA.
+
+```rust
+use custom_ring_sdk::EnrollVault;
+
+let signature = EnrollVault {
+    enrollment,
+    program: vault_program,
+    authority: &manager,
+    service: &ring_rpc,
+}
+.send(&client)
+.await?;
+```
+
+The manager signs the transaction after the SDK prepares the proof. Ring RPC adds the enrollment writer's signature and pays the fee. `send` returns the transaction signature after confirmation.
+
 ## Owner grants
 
 `OwnerGrant` lets a program owner name a reader through CPI, since a PDA cannot sign an off-chain read. A wallet signs its Reader grant, and the record writer takes that grant only on the wallet's signature. The owner alone writes the grant account and can revoke it. Ring RPC reads the account at the grant's address, which names the tracking registry, owner and reader.

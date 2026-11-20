@@ -529,11 +529,11 @@ impl OwnerEnrollment {
     }
 }
 
-struct EnrollmentAccounts {
-    ring: CustomRing,
-    writer: Address,
-    tracking_registry: Address,
-    authorization: AccountMeta,
+pub(super) struct EnrollmentAccounts {
+    pub(super) ring: CustomRing,
+    pub(super) writer: Address,
+    pub(super) tracking_registry: Address,
+    pub(super) authorization: AccountMeta,
 }
 
 impl EnrollmentAccounts {
@@ -597,19 +597,22 @@ impl EnrollmentAccounts {
     }
 
     fn instruction(self, request: ApplyEnrollmentsRequest<'_>) -> Instruction {
+        self.ring.ix(
+            self.metas(),
+            [&[ring_tag::ENROLL_BATCH][..], &request.encode()].concat(),
+        )
+    }
+
+    pub(super) fn metas(self) -> Vec<AccountMeta> {
         let ring = self.ring;
-        let accounts = vec![
+        vec![
             AccountMeta::new_readonly(self.writer, true),
             AccountMeta::new_readonly(ring.policy_pda(), false),
             AccountMeta::new(ring.ring_auth_pda(), false),
             AccountMeta::new(self.tracking_registry, false),
             self.authorization,
             AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false),
-        ];
-        ring.ix(
-            accounts,
-            [&[ring_tag::ENROLL_BATCH][..], &request.encode()].concat(),
-        )
+        ]
     }
 }
 

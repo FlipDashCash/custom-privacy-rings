@@ -101,3 +101,44 @@ impl SubmitEnrollmentRequest {
         Ok(write)
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct VaultEnrollmentRequest {
+    pub ring: SerializablePubkey,
+    pub program: SerializablePubkey,
+    pub authority: SerializablePubkey,
+    pub vault: SerializablePubkey,
+    pub payload: Base64String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct VaultEnrollmentBlock {
+    pub blockhash: spr_indexer_api::Hash,
+    pub last_valid_block_height: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SignedVaultEnrollment {
+    pub enrollment: VaultEnrollmentRequest,
+    pub block: VaultEnrollmentBlock,
+    pub signature: SerializableSignature,
+}
+
+pub struct PrepareVaultEnrollment;
+
+impl RpcMethod for PrepareVaultEnrollment {
+    const NAME: &'static str = "prepareVaultEnrollment";
+    type Request = VaultEnrollmentRequest;
+    type Response = VaultEnrollmentBlock;
+}
+
+pub struct SubmitVaultEnrollment;
+
+impl RpcMethod for SubmitVaultEnrollment {
+    const NAME: &'static str = "submitVaultEnrollment";
+    type Request = SignedVaultEnrollment;
+    type Response = SerializableSignature;
+}

@@ -1094,17 +1094,23 @@ fn only_the_enrollment_writer_reaches_storage_through_the_ring_pda() {
     );
 }
 
-#[test]
-fn a_pda_enrolls_and_rotates_through_its_program() {
-    let mut ring = Ring::new(Setup::AuditOnly);
-    let writer = ring.roles.enrollment_writer.pubkey();
-    let program = Address::new_from_array([0x63; 32]);
-    let owner = Address::find_program_address(&[b"owner"], &program).0;
-    ring.install_cpi_owner(program);
-    let vector: serde_json::Value = serde_json::from_str(include_str!(
+const PDA_OWNER_PROGRAM: Address = Address::new_from_array([0x63; 32]);
+
+fn pda_enrollment_vectors() -> serde_json::Value {
+    serde_json::from_str(include_str!(
         "../../../../test-vectors/registry/pda-enrollment.json"
     ))
-    .unwrap();
+    .unwrap()
+}
+
+#[test]
+fn pda_enrollment_requires_one_owner_signature_per_invocation() {
+    let mut ring = Ring::new(Setup::AuditOnly);
+    let writer = ring.roles.enrollment_writer.pubkey();
+    let program = PDA_OWNER_PROGRAM;
+    let owner = Address::find_program_address(&[b"owner"], &program).0;
+    ring.install_owner_program(program, "storage_cpi_owner.so");
+    let vector = pda_enrollment_vectors();
     let mut apply = enroll_batch(&writer, tracking_registry());
     apply.data = hex::decode(vector["enroll"].as_str().unwrap()).unwrap();
     let send = |ring: &mut Ring, ix| ring.role_send(RingRole::EnrollmentWriter, ix);
@@ -1155,13 +1161,53 @@ fn a_pda_enrolls_and_rotates_through_its_program() {
         send(&mut ring, apply.clone()),
         InstructionError::Custom(StorageError::UnsupportedBatch as u32),
     );
+}
+
+#[test]
+fn pda_enrollment_and_rotation_require_the_vault_manager() {
+    let mut ring = Ring::new(Setup::AuditOnly);
+    let program = PDA_OWNER_PROGRAM;
+    let owner = Address::find_program_address(&[b"owner"], &program).0;
+    let vector = pda_enrollment_vectors();
+    ring.install_owner_program(program, "enrollment_vault.so");
+    let manager = Keypair::new();
+    let writer = ring.holder(RingRole::EnrollmentWriter);
+    ring.store(
+        owner,
+        program,
+        [
+            manager.pubkey().as_ref(),
+            PROGRAM.as_ref(),
+            tracking_registry().as_ref(),
+        ]
+        .concat(),
+    );
+    let mut apply = enroll_batch(&writer.pubkey(), tracking_registry());
+    apply.program_id = program;
+    apply.accounts[4].pubkey = owner;
+    apply
+        .accounts
+        .push(AccountMeta::new_readonly(PROGRAM, false));
+    apply
+        .accounts
+        .insert(0, AccountMeta::new_readonly(manager.pubkey(), true));
     for (action, revision) in [("enroll", 1), ("rotate", 2)] {
-        apply.data = hex::decode(vector[action].as_str().unwrap()).unwrap();
-        let expected = ApplyEnrollmentsRequest::parse(&apply.data[1..])
-            .unwrap()
-            .ix
-            .new_root;
-        send(&mut ring, apply.clone()).unwrap();
+        let inner = hex::decode(vector[action].as_str().unwrap()).unwrap();
+        let payload = &inner[1..];
+        apply.data = [
+            custom_ring_interface::pda_enrollment::ENROLL_PDA.as_slice(),
+            &inner,
+        ]
+        .concat();
+        let expected = ApplyEnrollmentsRequest::parse(payload).unwrap().ix.new_root;
+        let impostor = Keypair::new();
+        let mut unauthorized = apply.clone();
+        unauthorized.accounts[0].pubkey = impostor.pubkey();
+        refused_with(
+            ring.send(unauthorized, &[&writer, &impostor]),
+            InstructionError::InvalidArgument,
+        );
+        ring.send(apply.clone(), &[&writer, &manager]).unwrap();
         let registry = ring.read::<TrackingRegistry>(&tracking_registry());
         assert_eq!(registry.newest().hash, expected);
         assert_eq!(registry.newest().revision.value(), revision);

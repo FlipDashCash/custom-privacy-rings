@@ -69,6 +69,7 @@ pub enum EnrollmentRefusal {
 
 /// Applies the held writes of each served ring, the payer is the ring's `EnrollmentWriter`.
 pub struct EnrollmentApplier {
+    vault_programs: HashSet<Address>,
     chain: Arc<dyn StorageChain>,
     payer: Keypair,
     /// Served without a registration and never dropped.
@@ -115,6 +116,7 @@ enum WriterRole {
 
 #[derive(Default)]
 struct RingState {
+    vault: vault::VaultAttempts,
     queued: VecDeque<HeldWrite>,
     in_flight: Option<InFlight>,
 }
@@ -163,6 +165,7 @@ impl EnrollmentApplierParts {
             None => Vec::new(),
         };
         Ok(EnrollmentApplier {
+            vault_programs: HashSet::new(),
             chain: self.chain,
             payer: self.payer,
             named: self.rings,
@@ -585,3 +588,6 @@ async fn ring_tracking(
 #[cfg(test)]
 #[path = "enrollment_applier_tests.rs"]
 mod enrollment_applier_tests;
+
+#[path = "vault_enrollment.rs"]
+mod vault;

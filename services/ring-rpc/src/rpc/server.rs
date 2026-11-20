@@ -22,6 +22,7 @@ use jsonrpsee::{
     RpcModule,
 };
 use serde::{de::DeserializeOwned, Serialize};
+use spr_indexer_api::RpcMethod;
 use spr_rpc_http::MethodPathLayer;
 use thiserror::Error;
 use tokio::net::TcpListener;
@@ -36,9 +37,10 @@ use zolana_ring_client::rpc::{
     GetPendingListApprovalsRequest, GetRecordUpdateStatusRequest, GetRelayQuoteRequest,
     GetRelayStatusRequest, GetSpendCoverageRequest, GetWalletActivityResponse,
     GetWalletStatusRequest, PagedRead, PrepareAuthorityTransferRequest, PrepareRelayRequest,
-    RefuseListApprovalRequest, RegisterEnrollmentRingRequest, RingState, RingStatusRequest,
-    RingStatusResponse, SetMergeSettingsRequest, SetReaderGrantRequest, SubmitEnrollmentRequest,
-    SubmitRecordUpdateRequest, SubmitRelayRequest, CO_SIGN_TRANSACTION, CREATE_AUDITOR_KEY,
+    PrepareVaultEnrollment, RefuseListApprovalRequest, RegisterEnrollmentRingRequest, RingState,
+    RingStatusRequest, RingStatusResponse, SetMergeSettingsRequest, SetReaderGrantRequest,
+    SignedVaultEnrollment, SubmitEnrollmentRequest, SubmitRecordUpdateRequest, SubmitRelayRequest,
+    SubmitVaultEnrollment, VaultEnrollmentRequest, CO_SIGN_TRANSACTION, CREATE_AUDITOR_KEY,
     CREATE_RECORDS_REGISTRY, EDIT_CO_SIGN_LIST, GET_AUDITED_UTXOS, GET_CO_SIGN_LISTS,
     GET_DELEGATE_NOTES, GET_LIST_SALT, GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS,
     GET_RELAY_QUOTE, GET_RELAY_STATUS, GET_SPEND_COVERAGE, GET_WALLET_STATUS, HEALTH,
@@ -304,6 +306,22 @@ pub fn rpc_module<S: TransactionSource + 'static>(
         |hub, request: SubmitRecordUpdateRequest| async move {
             let _slot = hub.admit(Lane::Authentication)?;
             hub.record_writer()?.submit(request).await
+        },
+    )?;
+    method(
+        &mut module,
+        PrepareVaultEnrollment::NAME,
+        |hub, request: VaultEnrollmentRequest| async move {
+            let _slot = hub.admit(Lane::Authentication)?;
+            hub.enrollment_applier()?.prepare_vault(request).await
+        },
+    )?;
+    method(
+        &mut module,
+        SubmitVaultEnrollment::NAME,
+        |hub, request: SignedVaultEnrollment| async move {
+            let _slot = hub.admit(Lane::Authentication)?;
+            hub.enrollment_applier()?.submit_vault(request).await
         },
     )?;
     method(

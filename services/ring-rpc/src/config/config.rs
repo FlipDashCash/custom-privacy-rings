@@ -191,6 +191,12 @@ pub struct ServeArgs {
         requires = "enrollment_applier_key_file"
     )]
     pub enrollment_apply_rings: Vec<Address>,
+    #[arg(
+        long = "enrollment-vault-program",
+        requires = "enrollment_applier_key_file",
+        help = "Allow a vault program to receive the enrollment writer's signature"
+    )]
+    pub enrollment_vault_programs: Vec<Address>,
     /// Serve plain HTTP on a public address and accept plain HTTP origins, test deployments only.
     #[arg(long, env = "RING_RPC_INSECURE_PUBLIC_BIND")]
     pub insecure_public_bind: bool,
