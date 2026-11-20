@@ -98,6 +98,31 @@ fn signer_identities(
 }
 
 impl TransferRequest<'_> {
+    /// Derive the statement from the SAME recipient witnesses the original encryption circuit opens.
+    pub(crate) fn bind_delivery(mut self) -> Result<(Self, [u8; 32]), RingError> {
+        let circuit = self
+            .circuit
+            .with_delivery_binding()
+            .ok_or(RingError::UncataloguedCircuit(self.circuit))?;
+        let count = usize::from(self.body.output_count);
+        let keys = self
+            .body
+            .outputs
+            .get(..count)
+            .ok_or(RingError::ExternalDataMismatch)?
+            .iter()
+            .map(|output| output.recipient_key)
+            .collect::<Vec<_>>();
+        let commitment =
+            custom_ring_interface::delivery::recipient_commitment(&keys, self.body.outputs.len())?;
+        let statement =
+            custom_ring_interface::delivery::statement(&self.public_input_hash, &commitment)?;
+        self.circuit = circuit;
+        self.public_input_hash = statement;
+        self.body.public_input_hash = statement;
+        Ok((self, commitment))
+    }
+
     pub async fn prove<R: AsyncRpc, I: RingIndexerBackend>(
         &self,
         client: &RingClient<R, I>,

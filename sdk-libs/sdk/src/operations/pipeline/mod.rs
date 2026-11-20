@@ -141,6 +141,8 @@ pub enum ApprovalDisclosure {
 
 #[must_use = "build or submit the proven transfer"]
 pub struct ProvenRingTransfer {
+    /// Present only for the separately keyed delivery-v1 ciphertext relation.
+    delivery_commitment: Option<[u8; 32]>,
     ring: CustomRing,
     config: Box<RingPolicy>,
     parts: TransactParts,
@@ -337,6 +339,19 @@ impl<R: Rail> RingTransfer<R> {
         retry_projection_lag(|| async {
             let assembled = boxed(|| self.assemble(client)).await?;
             boxed(|| assembled.prove(client)).await
+        })
+        .await
+    }
+
+    /// Prove the explicit delivery-v1 relation with independent pinned keys.
+    /// Existing `.prove()` always retains the classic v15 profile.
+    pub async fn prove_delivery_v1<P: AsyncRpc, I: RingIndexerBackend>(
+        &self,
+        client: &RingClient<P, I>,
+    ) -> Result<ProvenRingTransfer, RingError> {
+        retry_projection_lag(|| async {
+            let assembled = boxed(|| self.assemble(client)).await?;
+            boxed(|| assembled.prove_profile(client, true)).await
         })
         .await
     }
@@ -1142,14 +1157,34 @@ impl Assembled {
         self,
         client: &RingClient<P, I>,
     ) -> Result<ProvenRingTransfer, RingError> {
-        let (proven_spp, proof) = {
+        self.prove_profile(client, false).await
+    }
+
+    async fn prove_profile<P: AsyncRpc, I: RingIndexerBackend>(
+        self,
+        client: &RingClient<P, I>,
+        delivery_v1: bool,
+    ) -> Result<ProvenRingTransfer, RingError> {
+        if delivery_v1 && self.frame.parts.rail.is_delegate() {
+            return Err(RingError::ExternalDataMismatch);
+        }
+        let (request, delivery_commitment) = {
             let request = self.request()?;
+            if delivery_v1 {
+                let (request, commitment) = request.bind_delivery()?;
+                (request, Some(commitment))
+            } else {
+                (request, None)
+            }
+        };
+        let (proven_spp, proof) = {
             // Neither proof is an input to the other.
             futures::try_join!(
                 boxed(|| self.spp.prove(client, self.frame.published_inputs)),
                 boxed(|| request.prove(client)),
             )?
         };
+        drop(request);
         let Frame {
             ring,
             proof_inputs,
@@ -1181,6 +1216,7 @@ impl Assembled {
         }
         let co_signers = accounts.co_signers.clone();
         Ok(ProvenRingTransfer {
+            delivery_commitment,
             ring,
             config: self.config,
             bound: self.bound,
@@ -1201,9 +1237,30 @@ impl ProvenRingTransfer {
         self.bound.clone()
     }
 
+    pub fn delivery_commitment(&self) -> Option<[u8; 32]> {
+        self.delivery_commitment
+    }
+
     pub fn instruction(&self) -> Result<Instruction, RingError> {
-        self.accounts
-            .instruction(self.ring, &self.config, &self.parts)
+        let mut instruction = self
+            .accounts
+            .instruction(self.ring, &self.config, &self.parts)?;
+        if let Some(commitment) = self.delivery_commitment {
+            let (tag, frame) = instruction
+                .data
+                .split_first()
+                .ok_or(RingError::ExternalDataMismatch)?;
+            if *tag != custom_ring_interface::tag::TRANSFER {
+                return Err(RingError::ExternalDataMismatch);
+            }
+            instruction.data = [
+                vec![custom_ring_interface::tag::DELIVERY_TRANSFER_V1],
+                commitment.to_vec(),
+                frame.to_vec(),
+            ]
+            .concat();
+        }
+        Ok(instruction)
     }
 
     /// The owners who sign the transaction in public, none on the anonymous and in-proof owner rails.

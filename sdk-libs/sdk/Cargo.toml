@@ -5,6 +5,7 @@ edition.workspace = true
 publish = false
 
 [features]
+experimental-delivery-localnet = ["custom-ring-interface/experimental-delivery-localnet"]
 proofs = ["spr-client/proofs"]
 solana-rpc = ["spr-client/solana-rpc"]
 

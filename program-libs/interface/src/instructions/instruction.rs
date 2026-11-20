@@ -57,6 +57,8 @@ pub const PROOF_UNITS: u32 = 1_400_000;
 
 instruction_tags! {
     Transfer = TRANSFER: 55 => PROOF_UNITS,
+    /// Versioned relation over exact ciphertext recipient keys, with a 32-byte commitment before the unchanged frame.
+    DeliveryTransferV1 = DELIVERY_TRANSFER_V1: 67 => PROOF_UNITS,
     Merge = MERGE: 57 => PROOF_UNITS,
     UpdateAuthority = UPDATE_AUTHORITY: 6 => ACCOUNT_UNITS,
     SetPaused = SET_PAUSED: 11 => ACCOUNT_UNITS,

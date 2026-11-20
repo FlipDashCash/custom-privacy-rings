@@ -49,6 +49,7 @@ impl<'a, T: Serialize + Sync> RingRequest<'a, T> {
             .iter()
             .find(|(name, _)| *name == file)
             .map(|(_, sha256)| *sha256)
+            .or_else(|| custom_ring_interface::delivery::proving_key_sha256(circuit))
             .ok_or(RingError::UnpinnedProvingKey(circuit))?;
         Ok(Self {
             circuit,
@@ -117,6 +118,7 @@ fn ring_key(circuit: RingCircuit) -> Result<RingKey, RingError> {
         .iter()
         .find(|key| key.circuit == circuit)
         .copied()
+        .or_else(|| custom_ring_interface::delivery::ring_key(circuit))
         .ok_or(RingError::UncataloguedCircuit(circuit))
 }
 

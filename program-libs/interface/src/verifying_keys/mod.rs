@@ -296,6 +296,6 @@ pub fn verifying_key(
         }
         key_catalog::RingCircuit::RegisterKey => Some(&register_key_verifying_key::VERIFYINGKEY),
         key_catalog::RingCircuit::Merge => Some(&merge_verifying_key::VERIFYINGKEY),
-        _ => None,
+        _ => crate::delivery::verifying_key(circuit),
     }
 }

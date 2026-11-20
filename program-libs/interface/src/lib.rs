@@ -34,6 +34,8 @@ pub mod blinding;
 mod bytes;
 #[path = "instructions/cosign.rs"]
 pub mod cosign;
+#[path = "proof/delivery.rs"]
+pub mod delivery;
 #[path = "proof/disclosure.rs"]
 pub mod disclosure;
 #[path = "proof/domain.rs"]

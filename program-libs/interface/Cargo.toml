@@ -7,6 +7,8 @@ repository.workspace = true
 publish = false
 
 [features]
+insecure-test-setup = []
+experimental-delivery-localnet = ["insecure-test-setup"]
 default = ["verifying-keys"]
 verifying-keys = []
 

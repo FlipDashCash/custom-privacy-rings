@@ -72,11 +72,15 @@ func TestApplyRequestsDecodeOnlyUnderTheirMode(t *testing.T) {
 func hostRequest(t testing.TB, k Key) any {
 	t.Helper()
 	switch k.Family {
-	case Transfer:
+	case Transfer, DeliveryTransfer:
 		w := ringtransfer.Signed(k.transferShape())
 		w.Withdrawals, w.Public = fixtureLeg(t)
 		w.DefaultInput = k.Entry
-		return requestOf[TransferParams](t, k.Circuit, w.Build(t).Circuit)
+		c := w.Build(t).Circuit
+		if k.Family == DeliveryTransfer {
+			ringtransfer.BindDeliveryV1(t, c)
+		}
+		return requestOf[TransferParams](t, k.Circuit, c)
 	case ApplyRecords:
 		if k.Private {
 			return requestOf[PrivateApplyRecordsParams](t, k.Circuit, ringregistry.PrivateBatch(t, k.Inputs, ringregistry.PrivateBlockBit))

@@ -26,6 +26,32 @@ pub struct PublicOwners<'a> {
     zero_key_change: bool,
     /// In declared order, the order of their ring outputs.
     payments: Vec<AnonymousPayment>,
+    application: Option<PublicApplicationContext>,
+}
+
+/// Explicit caller-reviewed application binding for a public-owner composition.
+/// The salt fixes the official output rail before final commitments are proved;
+/// this is not an alternate encryption or authorization path.
+#[derive(Clone, Copy)]
+struct PublicApplicationContext {
+    salt: [u8; 16],
+    intent_hash: [u8; 32],
+    expiry_unix_ts: u32,
+}
+impl PublicApplicationContext {
+    fn new(salt: [u8; 16], intent_hash: [u8; 32], expiry_unix_ts: u32) -> Result<Self, RingError> {
+        let canonical_nonzero = |field: &[u8; 32]| {
+            *field != [0; 32] && *field < spr_hasher::primitives::BN254_SCALAR_MODULUS_BE
+        };
+        if !canonical_nonzero(&intent_hash) || expiry_unix_ts == 0 {
+            return Err(RingError::ExternalDataMismatch);
+        }
+        Ok(Self {
+            salt,
+            intent_hash,
+            expiry_unix_ts,
+        })
+    }
 }
 
 pub type PublicOwnerTransfer<'a> = RingTransfer<PublicOwners<'a>>;
@@ -54,6 +80,7 @@ impl<'a> RingTransfer<Owner<'a>> {
                 wallet,
                 zero_key_change: false,
                 payments: Vec::new(),
+                application: None,
             },
             list_salts: self.list_salts,
             approval: self.approval,
@@ -63,6 +90,22 @@ impl<'a> RingTransfer<Owner<'a>> {
 }
 
 impl RingTransfer<PublicOwners<'_>> {
+    /// Fix the official rail salt, application intent and bounded expiry before
+    /// proving. All Ring/SPP proofs, account checks, audit and owner-signature
+    /// requirements remain unchanged. No post-proof mutation or retry is added.
+    pub fn with_application_context(
+        mut self,
+        salt: [u8; 16],
+        intent_hash: [u8; 32],
+        expiry_unix_ts: u32,
+    ) -> Result<Self, RingError> {
+        self.rail.application = Some(PublicApplicationContext::new(
+            salt,
+            intent_hash,
+            expiry_unix_ts,
+        )?);
+        Ok(self)
+    }
     /// For a wallet with no tracking row, a keyed change refuses at the output check.
     #[must_use = "use the updated transfer"]
     pub fn with_zero_key_change(mut self) -> Self {
@@ -128,13 +171,23 @@ impl PublicOwners<'_> {
             None => canonical_shape(&transaction, &sender)?,
         };
         let first_nullifier = *transaction.first_nullifier();
-        let rail = RingOutputRail::new(
-            transaction_key(keys, first_nullifier)?,
-            config.auditor_pubkey,
-            RingDelivery::Anonymous(Box::new(anonymous_plan(&self.payments))),
-        );
+        let key = transaction_key(keys, first_nullifier)?;
+        let delivery = RingDelivery::Anonymous(Box::new(anonymous_plan(&self.payments)));
+        let rail = match self.application {
+            Some(application) => {
+                RingOutputRail::sealed(key, application.salt, config.auditor_pubkey, delivery)
+            }
+            None => RingOutputRail::new(key, config.auditor_pubkey, delivery),
+        };
         let transaction = pad_under_rail(transaction, &rail, shape, &sender)?;
-        let proof_inputs = rail.encrypt(transaction, &sender)?;
+        let mut proof_inputs = rail.encrypt(transaction, &sender)?;
+        if let Some(application) = self.application {
+            if proof_inputs.external_data.data_hash.is_some() {
+                return Err(RingError::ExternalDataMismatch);
+            }
+            proof_inputs.external_data.data_hash = Some(application.intent_hash);
+            proof_inputs.external_data.expiry_unix_ts = u64::from(application.expiry_unix_ts);
+        }
         Ok(Staged {
             authority: self.owner.authority()?,
             owner_signers: proof_inputs.owner_signer_pubkeys()?,
@@ -162,5 +215,28 @@ pub(super) fn check_zero_key_inputs(
     }) {
         Some(index) => Err(RingError::ZeroKeyInputUnnamed { index }),
         None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod application_context_tests {
+    use super::*;
+    #[test]
+    fn application_context_binds_exact_salt_intent_and_bounded_expiry() {
+        let mut intent = [0u8; 32];
+        intent[31] = 1;
+        let salt = [7u8; 16];
+        let context = PublicApplicationContext::new(salt, intent, u32::MAX).unwrap();
+        assert_eq!(context.salt, salt);
+        assert_eq!(context.intent_hash, intent);
+        assert_eq!(context.expiry_unix_ts, u32::MAX);
+        assert!(PublicApplicationContext::new(salt, [0; 32], 1).is_err());
+        assert!(PublicApplicationContext::new(
+            salt,
+            spr_hasher::primitives::BN254_SCALAR_MODULUS_BE,
+            1
+        )
+        .is_err());
+        assert!(PublicApplicationContext::new(salt, intent, 0).is_err());
     }
 }

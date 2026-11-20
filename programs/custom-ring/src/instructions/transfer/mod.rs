@@ -6,4 +6,4 @@ mod accounts;
 mod processor;
 mod verify;
 
-pub(crate) use processor::process_transfer_ix;
+pub(crate) use processor::{process_delivery_transfer_ix, process_transfer_ix};

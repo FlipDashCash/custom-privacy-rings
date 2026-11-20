@@ -11,6 +11,7 @@ fn ring_dispatch_tags_do_not_collide_with_forwarded_spp_tags() {
         tag::INITIALIZE,
         tag::UPDATE_POLICY,
         tag::TRANSFER,
+        tag::DELIVERY_TRANSFER_V1,
         tag::MERGE,
         tag::UPDATE_AUTHORITY,
         tag::SET_PAUSED,
@@ -25,6 +26,7 @@ fn ring_dispatch_tags_do_not_collide_with_forwarded_spp_tags() {
 
 #[test]
 fn frame_tags_stay_pinned() {
+    assert_eq!(tag::DELIVERY_TRANSFER_V1, 67);
     assert_eq!(
         (tag::TRANSFER, tag::AUTHORITY_TRANSFER, tag::MERGE),
         (55, 56, 57)

@@ -79,6 +79,9 @@ pub fn process_instruction(
         InstructionTag::Transfer | InstructionTag::AuthorityTransfer => {
             process_transfer_ix(program_id, accounts, ix_data, ix_tag)
         }
+        InstructionTag::DeliveryTransferV1 => {
+            process_delivery_transfer_ix(program_id, accounts, ix_data)
+        }
         // SPP proves that owner, asset, value and ring ownership stay unchanged.
         InstructionTag::Merge => process_merge_ix(program_id, accounts, ix_data),
         InstructionTag::UpdateAuthority => {

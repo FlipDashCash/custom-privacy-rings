@@ -230,8 +230,17 @@ fn spp_cpi_bytes(instruction: &Instruction) -> Result<Option<usize>, FitError> {
         return Ok(None);
     };
     let tag = match InstructionTag::try_from(*tag) {
-        Ok(tag @ (InstructionTag::Transfer | InstructionTag::AuthorityTransfer)) => tag,
+        Ok(
+            tag @ (InstructionTag::Transfer
+            | InstructionTag::AuthorityTransfer
+            | InstructionTag::DeliveryTransferV1),
+        ) => tag,
         _ => return Ok(None),
+    };
+    let frame = if tag == InstructionTag::DeliveryTransferV1 {
+        custom_ring_interface::delivery::split_frame(frame)?.1
+    } else {
+        frame
     };
     let ring = RingPolicy::zeroed();
     let expansion = |rail| -> Result<usize, CustomRingError> {

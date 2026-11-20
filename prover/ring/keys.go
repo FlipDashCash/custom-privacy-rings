@@ -18,6 +18,8 @@ const (
 	ApplyEnrollments
 	RegisterKey
 	Merge
+	// Distinct v1 delivery family; existing numeric families and key bytes stay unchanged.
+	DeliveryTransfer
 )
 
 type Key struct {
@@ -59,6 +61,9 @@ func keys() []Key {
 	}
 	add(Key{Family: RegisterKey})
 	add(Key{Family: Merge})
+	for _, key := range deliveryLocalKeys() {
+		add(key)
+	}
 	return keys
 }
 
@@ -80,6 +85,8 @@ func (k Key) circuitType() common.CircuitType {
 			family = "transfer-wide"
 		}
 		return named("%s-%d-in%d-w%d-s%d", family, k.Outputs, k.Inputs, k.Withdrawals, k.Owners)
+	case DeliveryTransfer:
+		return named("delivery-v1-transfer-%d-in%d-w%d-s%d", k.Outputs, k.Inputs, k.Withdrawals, k.Owners)
 	case ApplyRecords:
 		if k.Private {
 			return named("apply-records-private-%d", k.Inputs)

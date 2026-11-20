@@ -29,6 +29,13 @@ pub enum RingCircuit {
         /// A salted and a public record per owner fit.
         wide: bool,
     },
+    /// Delivery-v1 ciphertext recipient binding. No classic key verifies this relation.
+    DeliveryTransfer {
+        outputs: u8,
+        inputs: u8,
+        withdrawals: u8,
+        owners: u8,
+    },
     ApplyRecords {
         writes: u8,
         mode: ApplyMode,
@@ -202,7 +209,7 @@ impl TransferShape {
     pub fn of(circuit: RingCircuit) -> Option<Self> {
         TRANSFER_SHAPES
             .into_iter()
-            .find(|shape| shape.circuit() == circuit)
+            .find(|shape| shape.circuit() == circuit.classic_transfer())
     }
 
     const fn circuit(self) -> RingCircuit {
@@ -314,6 +321,49 @@ impl TransferSpend {
 }
 
 impl RingCircuit {
+    /// Select the separately keyed relation only for the supported narrow 4/8-output shapes.
+    pub fn with_delivery_binding(self) -> Option<Self> {
+        match self {
+            Self::Transfer {
+                outputs,
+                inputs,
+                withdrawals,
+                owners,
+                entry: false,
+                wide: false,
+            } if (outputs == 4 && inputs == 24 && withdrawals == 4 && owners == 4)
+                || (outputs == 8 && inputs == 16 && withdrawals == 4 && owners == 4) =>
+            {
+                Some(Self::DeliveryTransfer {
+                    outputs,
+                    inputs,
+                    withdrawals,
+                    owners,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub const fn classic_transfer(self) -> Self {
+        match self {
+            Self::DeliveryTransfer {
+                outputs,
+                inputs,
+                withdrawals,
+                owners,
+            } => Self::Transfer {
+                outputs,
+                inputs,
+                withdrawals,
+                owners,
+                entry: false,
+                wide: false,
+            },
+            _ => self,
+        }
+    }
+
     /// The one transfer key serving the spend, `None` when the catalog keys none.
     pub fn transfer(spend: TransferSpend) -> Option<Self> {
         spend
@@ -371,7 +421,7 @@ impl RecordPools {
 impl RingCircuit {
     /// The withdrawal slots of a transfer key, `None` outside the transfer keys.
     pub fn withdrawals(self) -> Option<u8> {
-        match self {
+        match self.classic_transfer() {
             Self::Transfer { withdrawals, .. } => Some(withdrawals),
             _ => None,
         }
@@ -379,7 +429,7 @@ impl RingCircuit {
 
     /// The owner rows of a transfer key, `None` outside the transfer keys.
     pub fn owners(self) -> Option<u8> {
-        match self {
+        match self.classic_transfer() {
             Self::Transfer { owners, .. } => Some(owners),
             _ => None,
         }

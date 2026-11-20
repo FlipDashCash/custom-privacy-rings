@@ -290,7 +290,11 @@ fn confirmed_transact(
     (caller.program_id == ring
         && matches!(
             caller.data.first(),
-            Some(&(ring_tag::TRANSFER | ring_tag::AUTHORITY_TRANSFER))
+            Some(
+                &(ring_tag::TRANSFER
+                    | ring_tag::AUTHORITY_TRANSFER
+                    | ring_tag::DELIVERY_TRANSFER_V1)
+            )
         ))
     .then(|| caller.data.clone())
 }
@@ -305,13 +309,25 @@ fn parse_frame(mode: RingMode, frame: &[u8]) -> Result<ParsedTransact<'_>, Audit
     let rail = InstructionTag::try_from(tag)
         .and_then(|tag| RingRail::of(tag, mode))
         .map_err(invalid)?;
+    let data = if tag == ring_tag::DELIVERY_TRANSFER_V1 {
+        custom_ring_interface::delivery::split_frame(data)
+            .map_err(invalid)?
+            .1
+    } else {
+        data
+    };
     RingTransactData::parse(data, rail).map_err(invalid)
 }
 
 /// An in-proof confidential frame forwards `AnonymousRingEddsa`, only its `OWNER_IN_PROOF` flag names the rail.
 fn forwarded_mode(spp: &TransactIxDataRef<'_>, frame: &[u8]) -> RingMode {
+    let prefix = if frame.first() == Some(&ring_tag::DELIVERY_TRANSFER_V1) {
+        1 + custom_ring_interface::delivery::PREFIX_LEN
+    } else {
+        1
+    };
     let in_proof = frame
-        .get(1 + transact_flag::BYTE)
+        .get(prefix + transact_flag::BYTE)
         .is_some_and(|flags| flags & transact_flag::OWNER_IN_PROOF != 0);
     match spp.circuit.is_anonymous() && !in_proof {
         true => RingMode::Anonymous,

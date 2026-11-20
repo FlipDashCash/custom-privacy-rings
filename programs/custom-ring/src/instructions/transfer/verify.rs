@@ -39,6 +39,7 @@ pub(super) struct RingStatements<'a> {
     pub ring: &'a RingPolicy,
     pub transfer: &'a ParsedTransact<'a>,
     pub accounts: &'a TransactAccounts,
+    pub delivery: Option<&'a [u8; 32]>,
 }
 
 impl RingStatements<'_> {
@@ -53,7 +54,7 @@ impl RingStatements<'_> {
         let withdrawal_hash =
             custom_ring_interface::policy_withdrawal_hash(&self.accounts.withdrawals)
                 .map_err(CustomRingError::from)?;
-        let statement = self
+        let mut statement = self
             .transfer
             .transfer_statement(TransferBinding {
                 ring_id: &ring_id,
@@ -70,11 +71,19 @@ impl RingStatements<'_> {
             })?
             .hash()
             .map_err(CustomRingError::from)?;
+        let mut circuit = data.transfer_circuit(self.accounts.withdrawals.len())?;
+        if let Some(recipients) = self.delivery {
+            circuit = circuit
+                .with_delivery_binding()
+                .ok_or(CustomRingError::UnsupportedCircuit)?;
+            statement = custom_ring_interface::delivery::statement(&statement, recipients)
+                .map_err(CustomRingError::from)?;
+        }
         // The frame and the screened withdrawal count select the key, each catalog key compiles `TransferCircuit` at one shape.
         RingProof {
             proof: data.proof,
             statement,
-            key: ring_key(data.transfer_circuit(self.accounts.withdrawals.len())?)?,
+            key: ring_key(circuit)?,
         }
         .verify()
     }

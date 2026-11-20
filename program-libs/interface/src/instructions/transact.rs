@@ -173,7 +173,9 @@ impl RingRail {
 
     pub fn of(tag: InstructionTag, mode: RingMode) -> Result<Self, CustomRingError> {
         match tag {
-            InstructionTag::Transfer => Ok(Self::transfer(mode)),
+            InstructionTag::Transfer | InstructionTag::DeliveryTransferV1 => {
+                Ok(Self::transfer(mode))
+            }
             InstructionTag::AuthorityTransfer => Ok(Self::delegate(mode)),
             _ => Err(CustomRingError::InvalidInstructionData),
         }

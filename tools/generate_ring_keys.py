@@ -17,7 +17,7 @@ def variant(k):
     mode = 'Private' if k['Private'] else 'Public'
     return [f'Transfer {{ outputs: {o}, inputs: {i}, withdrawals: {w}, owners: {s}, entry: {e}, wide: {d} }}',
             f'ApplyRecords {{ writes: {i}, mode: key_catalog::ApplyMode::{mode} }}',
-            f'ApplyEnrollments {{ writes: {i} }}', 'RegisterKey', 'Merge'][k['Family']]
+            f'ApplyEnrollments {{ writes: {i} }}', 'RegisterKey', 'Merge', f'DeliveryTransfer {{ outputs: {o}, inputs: {i}, withdrawals: {w}, owners: {s} }}'][k['Family']]
 
 def main():
     parser = argparse.ArgumentParser()
@@ -52,7 +52,7 @@ def main():
     rust += '];\npub fn verifying_key(circuit: key_catalog::RingCircuit) -> Option<&\'static groth16_solana::groth16::Groth16Verifyingkey<\'static>> {\nmatch circuit {\n'
     for k,module,_,_ in verifiers:
         rust += f'key_catalog::RingCircuit::{variant(k)} => Some(&{module}::VERIFYINGKEY),\n'
-    rust += '_ => None,\n}\n}\n'
+    rust += '_ => crate::delivery::verifying_key(circuit),\n}\n}\n'
     (verifier_directory/'mod.rs').write_text(rust)
     subprocess.run(['rustfmt', '--edition=2021', str(ring_keys), str(verifier_directory/'mod.rs')], check=True)
     lock = json.loads((ROOT/'prover/ring/proving-keys.lock').read_text())

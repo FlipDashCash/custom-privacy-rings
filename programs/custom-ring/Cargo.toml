@@ -9,6 +9,7 @@ name = "custom_ring_program"
 crate-type = ["cdylib", "lib"]
 
 [features]
+experimental-delivery-localnet = ["custom-ring-interface/experimental-delivery-localnet"]
 default = []
 bpf-entrypoint = []
 no-entrypoint = []

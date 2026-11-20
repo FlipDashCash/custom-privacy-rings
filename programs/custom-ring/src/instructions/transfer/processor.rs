@@ -30,6 +30,33 @@ pub fn process_transfer_ix(
     data: &[u8],
     tag: InstructionTag,
 ) -> ProgramResult {
+    process_transfer_profile(program_id, accounts, data, tag, None)
+}
+
+/// The versioned prefix is never parsed or verified as a classic frame.
+pub fn process_delivery_transfer_ix(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let (delivery, frame) = custom_ring_interface::delivery::split_frame(data)?;
+    process_transfer_profile(
+        program_id,
+        accounts,
+        frame,
+        InstructionTag::Transfer,
+        Some(delivery),
+    )
+}
+
+#[inline(never)]
+fn process_transfer_profile(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+    tag: InstructionTag,
+    delivery: Option<&[u8; 32]>,
+) -> ProgramResult {
     let slot = Clock::get()?.slot;
     // 1. The ring's mode and delegate fix the rail and the signer it trusts.
     let ring = load_policy(
@@ -58,6 +85,7 @@ pub fn process_transfer_ix(
         ring: &ring,
         transfer: &transfer,
         accounts: &validated,
+        delivery,
     }
     .verify()?;
     // 6. SPP verifies its own proof over the expanded data the ring PDA signs. The ring proof and

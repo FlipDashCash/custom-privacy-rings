@@ -76,6 +76,8 @@ import (
 // TransferCircuit serves every rail, a clear bit set is the signer rail.
 type TransferCircuit struct {
 	Shape Shape `gnark:"-"`
+	// DeliveryBound uses a distinct key and statement; classic transfer keys are unchanged.
+	DeliveryBound bool `gnark:"-"`
 	// Delegate is the authority rail.
 	InProof, Hidden, Delegate frontend.Variable
 	Sender                    frontend.Variable
@@ -96,6 +98,19 @@ func NewTransferCircuit(shape Shape) (*TransferCircuit, error) {
 		return nil, err
 	}
 	return &TransferCircuit{Shape: shape, Sections: wires}, nil
+}
+
+// NewDeliveryTransferCircuit extends the original ciphertext relation with the exact ordered recipient-key commitment.
+func NewDeliveryTransferCircuit(shape Shape) (*TransferCircuit, error) {
+	c, err := NewTransferCircuit(shape)
+	if err != nil {
+		return nil, err
+	}
+	if shape.Entry || shape.Wide || (shape.Outputs != 4 && shape.Outputs != 8) {
+		return nil, errors.New("delivery v1 supports narrow 4/8-output keys only")
+	}
+	c.DeliveryBound = true
+	return c, nil
 }
 
 // Sections are the wires every transfer key reads, the rail fills the rest of its statement.
@@ -221,7 +236,11 @@ func (c *TransferCircuit) Define(api frontend.API) error {
 	// 8. The auditor stream seals the recipient keys the records are sealed to. NoSpend is set exactly when no note is spent.
 	records := w.RecordChain(api, envelope, opened)
 	sealed := w.SealStream(api, rc, envelope, stream, opened, audit.SpentInputs{Slots: section.Slots, Count: section.Count, Entries: c.Entries})
-	api.AssertIsEqual(c.PublicInputHash, gadget.HashChain4(api, c.statement(envelope, w, sealed, records, signers)))
+	statement := gadget.HashChain4(api, c.statement(envelope, w, sealed, records, signers))
+	if c.DeliveryBound {
+		statement = DeliveryStatement(api, statement, DeliveryCommitment(api, c.Outputs, opened.Count))
+	}
+	api.AssertIsEqual(c.PublicInputHash, statement)
 	return nil
 }
 
