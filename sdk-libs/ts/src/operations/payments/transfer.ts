@@ -186,6 +186,9 @@ export interface RingExitTransactionParams extends RingSpendParams {
 }
 
 export interface RingWithdrawalTransactionParams extends RingSpendParams {
+  /** Omit ATA creation only after the caller validates the existing canonical
+   * recipient ATA. The public reviewer must independently validate it again. */
+  readonly existingSplRecipientOnly?: true;
   /** Any Solana account. It needs no registry record and need not exist yet. */
   readonly recipient: Address;
   /** SPL Token or Token-2022 for non-SOL assets, the settlement lands in the recipient's ATA. */
@@ -534,7 +537,10 @@ function entryStrategy(params: SpendBase): RingSpendStrategy<undefined> {
 }
 
 type WithdrawalParams = SpendBase &
-  Pick<RingWithdrawalTransactionParams, "recipient" | "splTokenProgram" | "feePayer">;
+  Pick<
+    RingWithdrawalTransactionParams,
+    "recipient" | "splTokenProgram" | "feePayer" | "existingSplRecipientOnly"
+  >;
 
 function withdrawalStrategy(params: WithdrawalParams): RingSpendStrategy<
   Readonly<{
@@ -549,14 +555,16 @@ function withdrawalStrategy(params: WithdrawalParams): RingSpendStrategy<
       const asset = params.asset ?? SOL_MINT;
       const [settlement, setupInstructions] = await Promise.all([
         resolveWithdrawalSettlement(params.recipient, asset, params.splTokenProgram),
-        withdrawalSetupInstructions({
-          payer: params.feePayer,
-          recipient: params.recipient,
-          asset,
-          ...(params.splTokenProgram === undefined
-            ? {}
-            : { splTokenProgram: params.splTokenProgram }),
-        }),
+        params.existingSplRecipientOnly === true
+          ? Promise.resolve([])
+          : withdrawalSetupInstructions({
+              payer: params.feePayer,
+              recipient: params.recipient,
+              asset,
+              ...(params.splTokenProgram === undefined
+                ? {}
+                : { splTokenProgram: params.splTokenProgram }),
+            }),
       ]);
       return { settlement, setupInstructions };
     },

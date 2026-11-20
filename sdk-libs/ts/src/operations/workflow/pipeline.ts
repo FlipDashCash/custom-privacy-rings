@@ -1,3 +1,4 @@
+import type { PlannedSplExit } from "../payments/planned-spl-exit.js";
 /**
  * One transfer pipeline for every rail, Rust `pipeline`. The rail seals the outputs, the ring proof
  * opens them to the auditor and screens the ring's table, the SPP proof spends.
@@ -139,6 +140,7 @@ export type RingProvingClient = TreeContext &
 /** What an anonymous frame adds to a staged transfer, Rust `AnonymousSpend`. */
 export interface AnonymousSpendValues {
   readonly tokenOwner?: Address;
+  readonly plannedSplExit?: PlannedSplExit;
   /** Binds the signing co-signers, each of `ANONYMOUS_PARTIES` zero when absent. */
   partyIdentities(coSigners: readonly Address[]): readonly Bytes32[];
 }
@@ -170,7 +172,7 @@ export interface StagedTransfer {
   readonly ownerSigners: readonly Address[];
   /** One per deposit leg in leg order, each funder signs. */
   readonly deposits?: readonly TransactDeposit[];
-  readonly withdrawal?: TransactWithdrawal;
+  readonly withdrawal?: TransactWithdrawal | readonly TransactWithdrawal[];
   /** The owner of the withdrawal's token account, named while the transaction creates it. */
   readonly withdrawalOwner?: Address;
   /** Empty unless the caller sets them. */
@@ -201,7 +203,7 @@ export interface RingTransactAccounts {
   readonly outputTree: Address;
   readonly ownerSigners: readonly Address[];
   readonly deposits?: readonly TransactDeposit[];
-  readonly withdrawal?: TransactWithdrawal;
+  readonly withdrawal?: TransactWithdrawal | readonly TransactWithdrawal[];
   /** Read only, right after the ring account, tracking last. */
   readonly registries: readonly Address[];
   readonly coSigners: readonly Address[];
@@ -417,6 +419,9 @@ async function selectStagedKey(input: StagedTransferInput, context: RequestConte
     proofInputs: staged.proofInputs,
     publicSlots: publicSlots(transfers),
     listSalts: input.listSalts ?? [],
+    ...(spend.anonymous?.plannedSplExit === undefined
+      ? {}
+      : { plannedSplExit: spend.anonymous.plannedSplExit }),
     ...tokenOwnerHint(spend.anonymous?.tokenOwner ?? staged.withdrawalOwner),
   };
   const demand = await policyDemand({ ...demandInput, rows: liveRows }, context);

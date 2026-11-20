@@ -1,3 +1,4 @@
+import type { PlannedSplExit } from "../operations/payments/planned-spl-exit.js";
 /** The policy section of a ring transfer, every record read under a root the statement binds. */
 import type { ShieldedPublicKey } from "@heliuslabs/spr/keypair";
 import { EMPTY_MINT_POLICY, type MintPolicy } from "../protocol/membership/mint-policy.js";
@@ -158,6 +159,7 @@ export interface PolicyDemand {
 
 export type PolicyDemandInput = Readonly<{
   tokenOwnerHint?: Address;
+  plannedSplExit?: PlannedSplExit;
   client: PolicyReadClient;
   config: RingPolicy;
   rail: RingRail;
@@ -327,6 +329,7 @@ export async function policyDemand(
         proofInputs.externalData.interfaceTransfers,
         input.tokenOwnerHint,
         context,
+        input.plannedSplExit,
       )
     : { withdrawals: [], splWithdrawalOwners: [] };
   const subjects = policySubjects(input, read.withdrawals);

@@ -1,3 +1,4 @@
+import type { PlannedSplExit } from "../operations/payments/planned-spl-exit.js";
 import { addressBytes, hashChain4, bigIntBytes } from "@heliuslabs/spr/internal";
 import { solanaOwnerIdentity } from "@heliuslabs/spr/keypair";
 import type { Address, Bytes32, RequestContext } from "@heliuslabs/spr/interface";
@@ -24,6 +25,7 @@ export async function readPolicyWithdrawals(
   transfers: readonly SettlementTransfer[],
   tokenOwnerHint: Address | undefined,
   context?: RequestContext,
+  plannedSplExit?: PlannedSplExit,
 ): Promise<
   Readonly<{ withdrawals: readonly PolicyWithdrawal[]; splWithdrawalOwners: readonly Bytes32[] }>
 > {
@@ -33,7 +35,15 @@ export async function readPolicyWithdrawals(
     let owner: Address;
     if (transfer.kind === "sol") owner = transfer.userSolAccount;
     else {
-      const read = await splDestination({ client, transfer, named: tokenOwnerHint }, context);
+      const read = await splDestination(
+        {
+          client,
+          transfer,
+          named: tokenOwnerHint,
+          ...(plannedSplExit === undefined ? {} : { plannedSplExit }),
+        },
+        context,
+      );
       if (read === undefined)
         throw new RingError("RING_ANONYMOUS_EXIT_TOKEN_ACCOUNT_INVALID", {
           details: { destination: transfer.tokenAccount },

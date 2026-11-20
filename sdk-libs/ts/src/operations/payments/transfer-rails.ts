@@ -1,3 +1,4 @@
+import { PlannedSplExit } from "./planned-spl-exit.js";
 /** The rails of a ring transfer, Rust `RingTransfer<Owner>`, `<Anonymous>`, `<PublicOwners>` and `<Delegated>`. */
 import { getBase64Decoder } from "@solana/kit";
 
@@ -123,6 +124,11 @@ export interface RingTransferApproval {
   ): Promise<void>;
 }
 
+export type CompositionConsumer = (
+  proven: ProvenRingTransfer,
+  txViewingKey: ViewingKey,
+) => Promise<void>;
+
 export type CustomRingTransferClient = RingProvingClient &
   Pick<Prover, "proveRingTransact"> &
   AnonymousRingTransactProver;
@@ -159,13 +165,13 @@ export interface CustomRingTransferInput {
 /** The confidential rail, the owner signs its spends in public or inside the proof, Rust `RingTransfer<Owner>`. */
 export class CustomRingTransfer {
   readonly #input: CustomRingTransferInput;
-  readonly #withdrawal: TransactWithdrawal | undefined;
+  readonly #withdrawal: TransactWithdrawal | readonly TransactWithdrawal[] | undefined;
   readonly #inProofOwner: AnonymousSpendSigner | undefined;
   readonly #coOwners: readonly CoOwner[];
 
   private constructor(
     input: CustomRingTransferInput,
-    withdrawal: TransactWithdrawal | undefined,
+    withdrawal: TransactWithdrawal | readonly TransactWithdrawal[] | undefined,
     inProofOwner: AnonymousSpendSigner | undefined,
     coOwners: readonly CoOwner[] = [],
   ) {
@@ -195,6 +201,16 @@ export class CustomRingTransfer {
   withWithdrawalAccounts(withdrawal: TransactWithdrawal, owner?: Address): CustomRingTransfer {
     const input = owner === undefined ? this.#input : { ...this.#input, withdrawalOwner: owner };
     return new CustomRingTransfer(input, withdrawal, this.#inProofOwner, this.#coOwners);
+  }
+
+  /** Settlement accounts for every public withdrawal, in proof leg order. */
+  withWithdrawalsAccounts(withdrawals: readonly TransactWithdrawal[]): CustomRingTransfer {
+    return new CustomRingTransfer(
+      this.#input,
+      Object.freeze(withdrawals.map((leg) => Object.freeze({ ...leg }))),
+      this.#inProofOwner,
+      this.#coOwners,
+    );
   }
 
   /** The sender's signing key signs inside the proof, any fee payer sends the transaction, Rust `with_in_proof_owner`. */
@@ -233,6 +249,16 @@ export class CustomRingTransfer {
 
   prove(client: CustomRingTransferClient, context?: RequestContext): Promise<ProvenRingTransfer> {
     return this.#prove(client, undefined, context);
+  }
+
+  /** In-process only: consume the exact owned proof result and borrowed key
+   * before its original finally destroys it. Never send either to a backend. */
+  proveForComposition(
+    client: CustomRingTransferClient,
+    consume: CompositionConsumer,
+    context?: RequestContext,
+  ): Promise<ProvenRingTransfer> {
+    return this.#prove(client, undefined, context, consume);
   }
 
   /** @internal */
@@ -321,7 +347,7 @@ export class CustomRingTransfer {
           leafIndexes: proofInputs.inputUtxos.map((spent) => leafIndexOf(spent, input.notes)),
           outputs: proofInputs.outputs,
           externalData: proofInputs.externalData,
-          interfaceTransferAccounts: staged.withdrawal === undefined ? [] : [staged.withdrawal],
+          interfaceTransferAccounts: withdrawalAccounts(staged.withdrawal),
           blindingSeed: proofInputs.blindingSeed,
           outputTreeId: proofInputs.outputTreeId,
           wideOwners: sealed.plan.wideOwners,
@@ -368,11 +394,12 @@ export class CustomRingTransfer {
     client: CustomRingTransferClient,
     approval: RingTransferApproval | undefined,
     context: RequestContext | undefined,
+    consume?: CompositionConsumer,
   ): Promise<ProvenRingTransfer> {
     const { ringProgramId } = this.#input;
     const { config, staged, prepared, owner, approvalBlinder } = await this.#stage(client, context);
     try {
-      return await proveStagedTransfer(
+      const proven = await proveStagedTransfer(
         {
           client,
           ringProgramId,
@@ -388,6 +415,8 @@ export class CustomRingTransfer {
         },
         context,
       );
+      await consume?.(proven, staged.rail.txViewingKey);
+      return proven;
     } finally {
       staged.rail.txViewingKey.destroy();
     }
@@ -542,7 +571,7 @@ function inProofOwnerKey(
 /** The hidden owner's spends on an anonymous ring, no transaction signer names the owner, Rust `RingTransfer<Anonymous>`. */
 export class AnonymousTransfer {
   readonly #owner: CustomRingTransferInput;
-  readonly #withdrawal: TransactWithdrawal | undefined;
+  readonly #withdrawal: TransactWithdrawal | readonly TransactWithdrawal[] | undefined;
   readonly #signer: AnonymousSpendSigner;
   /** In declared order, the order of their ring outputs. */
   readonly #payments: readonly AnonymousPayment[];
@@ -551,6 +580,7 @@ export class AnonymousTransfer {
   readonly #coOwners: readonly CoOwner[];
   readonly #readCache: ReadCache | undefined;
   readonly #exposure: OwnerExposure;
+  readonly #plannedSplExit: PlannedSplExit | undefined;
 
   private constructor(fields: AnonymousFields) {
     this.#owner = fields.owner;
@@ -562,6 +592,7 @@ export class AnonymousTransfer {
     this.#coOwners = fields.coOwners;
     this.#readCache = fields.readCache;
     this.#exposure = fields.exposure;
+    this.#plannedSplExit = fields.plannedSplExit;
     Object.freeze(this);
   }
 
@@ -569,7 +600,7 @@ export class AnonymousTransfer {
   static of(
     input: Readonly<{
       owner: CustomRingTransferInput;
-      withdrawal?: TransactWithdrawal;
+      withdrawal?: TransactWithdrawal | readonly TransactWithdrawal[];
       signer: AnonymousSpendSigner;
       coOwners?: readonly CoOwner[];
     }>,
@@ -584,6 +615,7 @@ export class AnonymousTransfer {
       coOwners: input.coOwners ?? [],
       readCache: undefined,
       exposure: "refused",
+      plannedSplExit: undefined,
     });
   }
 
@@ -632,6 +664,16 @@ export class AnonymousTransfer {
     return new AnonymousTransfer({ ...this.#fields(), shape });
   }
 
+  /** Proof-only opt-in for the exact absent seeded legacy SPL destination. */
+  withPlannedSplExit(plan: PlannedSplExit): AnonymousTransfer {
+    if (!(plan instanceof PlannedSplExit)) throw new Error("PLANNED_SPL_EXIT_PROFILE_REFUSED");
+    return new AnonymousTransfer({
+      ...this.#fields(),
+      plannedSplExit: plan,
+      exitTokenOwner: plan.base,
+    });
+  }
+
   /** A missing exit token account must be the owner's associated token account. */
   withExitTokenOwner(owner: Address): AnonymousTransfer {
     return new AnonymousTransfer({ ...this.#fields(), exitTokenOwner: owner });
@@ -644,6 +686,16 @@ export class AnonymousTransfer {
 
   prove(client: AnonymousTransferClient, context?: RequestContext): Promise<ProvenRingTransfer> {
     return this.#prove(client, undefined, context);
+  }
+
+  /** In-process only: consume the exact owned proof result and borrowed key
+   * before its original finally destroys it. Never send either to a backend. */
+  proveForComposition(
+    client: AnonymousTransferClient,
+    consume: CompositionConsumer,
+    context?: RequestContext,
+  ): Promise<ProvenRingTransfer> {
+    return this.#prove(client, undefined, context, consume);
   }
 
   /** @internal */
@@ -659,6 +711,7 @@ export class AnonymousTransfer {
     client: AnonymousTransferClient,
     approval: RingTransferApproval | undefined,
     context: RequestContext | undefined,
+    consume?: CompositionConsumer,
   ): Promise<ProvenRingTransfer> {
     const { ringProgramId, keys } = this.#owner;
     const { config, staged, prepared, owner, approvalBlinder } = await this.#stage(client, context);
@@ -683,7 +736,7 @@ export class AnonymousTransfer {
             proveContext,
           ),
       };
-      return await proveStagedTransfer(
+      const proven = await proveStagedTransfer(
         {
           client,
           ringProgramId,
@@ -695,6 +748,8 @@ export class AnonymousTransfer {
         },
         context,
       );
+      await consume?.(proven, staged.rail.txViewingKey);
+      return proven;
     } finally {
       staged.rail.txViewingKey.destroy();
     }
@@ -725,6 +780,7 @@ export class AnonymousTransfer {
     approval: RingTransferApproval | undefined,
     context: RequestContext | undefined,
   ): Promise<PreparedRingRelay> {
+    if (this.#plannedSplExit !== undefined) throw new Error("PLANNED_SPL_EXIT_RELAY_REFUSED");
     const { ringProgramId, keys } = this.#owner;
     const { quote } = input;
     const { config, staged, prepared, approvalBlinder } = await this.#stage(client, context);
@@ -760,7 +816,7 @@ export class AnonymousTransfer {
           leafIndexes: proofInputs.inputUtxos.map((spent) => leafIndexOf(spent, input.notes)),
           outputs: proofInputs.outputs,
           externalData: proofInputs.externalData,
-          interfaceTransferAccounts: staged.withdrawal === undefined ? [] : [staged.withdrawal],
+          interfaceTransferAccounts: withdrawalAccounts(staged.withdrawal),
           blindingSeed: proofInputs.blindingSeed,
           outputTreeId: proofInputs.outputTreeId,
           wideOwners: sealed.plan.wideOwners,
@@ -830,6 +886,21 @@ export class AnonymousTransfer {
     // The proof no longer holds the payer, a funder or the exit apart from the hidden owner, each
     // would name it, so the wallet refuses them unless the caller accepts the exposure.
     const guarded = this.#exposure === "refused" ? owner : undefined;
+    if (this.#plannedSplExit !== undefined) {
+      if (
+        config.hasPolicy ||
+        config.coSignerClasses !== undefined ||
+        config.delegate !== undefined ||
+        this.#payments.length !== 0 ||
+        this.#coOwners.length !== 0 ||
+        this.#readCache !== undefined ||
+        guarded === undefined ||
+        this.#owner.deposits?.length ||
+        this.#owner.coSigners?.length
+      )
+        throw new Error("PLANNED_SPL_EXIT_PROFILE_REFUSED");
+      await this.#plannedSplExit.validate(client, prepared, ringProgramId, owner, context);
+    }
     if (guarded !== undefined)
       checkHiddenParties(guarded, [
         prepared.payer,
@@ -840,6 +911,7 @@ export class AnonymousTransfer {
         client,
         transfers: prepared.interfaceTransfers,
         ...(guarded === undefined ? {} : { hiddenOwner: guarded }),
+        ...(this.#plannedSplExit === undefined ? {} : { plannedSplExit: this.#plannedSplExit }),
         ...(this.#exitTokenOwner === undefined ? {} : { tokenOwner: this.#exitTokenOwner }),
       },
       context,
@@ -883,6 +955,7 @@ export class AnonymousTransfer {
         ...(this.#withdrawal === undefined ? {} : { withdrawal: this.#withdrawal }),
         ...(this.#owner.extensions === undefined ? {} : { extensions: this.#owner.extensions }),
         anonymous: {
+          ...(this.#plannedSplExit === undefined ? {} : { plannedSplExit: this.#plannedSplExit }),
           ...(exitTokenOwner === undefined ? {} : { tokenOwner: exitTokenOwner }),
           // A hidden co-signer approves its own outflow, no exposure waiver admits it.
           partyIdentities: (coSigners: readonly Address[]) => {
@@ -919,13 +992,14 @@ export class AnonymousTransfer {
       coOwners: this.#coOwners,
       readCache: this.#readCache,
       exposure: this.#exposure,
+      plannedSplExit: this.#plannedSplExit,
     };
   }
 }
 
 interface AnonymousFields {
   readonly owner: CustomRingTransferInput;
-  readonly withdrawal: TransactWithdrawal | undefined;
+  readonly withdrawal: TransactWithdrawal | readonly TransactWithdrawal[] | undefined;
   readonly signer: AnonymousSpendSigner;
   readonly payments: readonly AnonymousPayment[];
   readonly shape: Shape | undefined;
@@ -933,12 +1007,13 @@ interface AnonymousFields {
   readonly coOwners: readonly CoOwner[];
   readonly readCache: ReadCache | undefined;
   readonly exposure: OwnerExposure;
+  readonly plannedSplExit: PlannedSplExit | undefined;
 }
 
 /** Every live owner signs in public, recipients stay hidden on an anonymous ring, Rust `RingTransfer<PublicOwners>`. */
 export class PublicOwnerTransfer {
   readonly #owner: CustomRingTransferInput;
-  readonly #withdrawal: TransactWithdrawal | undefined;
+  readonly #withdrawal: TransactWithdrawal | readonly TransactWithdrawal[] | undefined;
   readonly #wallet: Address;
   readonly #inProofOwner: boolean;
   readonly #coOwners: readonly CoOwner[];
@@ -959,7 +1034,7 @@ export class PublicOwnerTransfer {
   static of(
     input: Readonly<{
       owner: CustomRingTransferInput;
-      withdrawal?: TransactWithdrawal;
+      withdrawal?: TransactWithdrawal | readonly TransactWithdrawal[];
       wallet: Address;
       inProofOwner: boolean;
       coOwners: readonly CoOwner[];
@@ -1007,6 +1082,16 @@ export class PublicOwnerTransfer {
     return this.#prove(client, undefined, context);
   }
 
+  /** In-process only: consume the exact owned proof result and borrowed key
+   * before its original finally destroys it. Never send either to a backend. */
+  proveForComposition(
+    client: PublicOwnerTransferClient,
+    consume: CompositionConsumer,
+    context?: RequestContext,
+  ): Promise<ProvenRingTransfer> {
+    return this.#prove(client, undefined, context, consume);
+  }
+
   /** @internal */
   proveApproved(
     client: PublicOwnerTransferClient,
@@ -1020,6 +1105,7 @@ export class PublicOwnerTransfer {
     client: PublicOwnerTransferClient,
     approval: RingTransferApproval | undefined,
     context: RequestContext | undefined,
+    consume?: CompositionConsumer,
   ): Promise<ProvenRingTransfer> {
     const { ringProgramId, keys } = this.#owner;
     const { config, prepared, staged, spend } = await this.#stage(client, context);
@@ -1037,7 +1123,7 @@ export class PublicOwnerTransfer {
         proveContext,
       );
     try {
-      return await proveStagedTransfer(
+      const proven = await proveStagedTransfer(
         {
           client,
           ringProgramId,
@@ -1049,6 +1135,8 @@ export class PublicOwnerTransfer {
         },
         context,
       );
+      await consume?.(proven, staged.rail.txViewingKey);
+      return proven;
     } finally {
       staged.rail.txViewingKey.destroy();
     }
@@ -1148,7 +1236,7 @@ export class PublicOwnerTransfer {
 
 interface PublicOwnerFields {
   readonly owner: CustomRingTransferInput;
-  readonly withdrawal: TransactWithdrawal | undefined;
+  readonly withdrawal: TransactWithdrawal | readonly TransactWithdrawal[] | undefined;
   readonly wallet: Address;
   readonly inProofOwner: boolean;
   readonly coOwners: readonly CoOwner[];
@@ -1478,10 +1566,20 @@ function withReadCacheSlots(proofInputs: SppProofInputs, readCache: ReadCache): 
   }).withReadCache(readCache.cache);
 }
 
+function withdrawalAccounts(
+  withdrawal: TransactWithdrawal | readonly TransactWithdrawal[] | undefined,
+): readonly TransactWithdrawal[] {
+  return withdrawal === undefined
+    ? []
+    : Array.isArray(withdrawal)
+      ? withdrawal
+      : [withdrawal as TransactWithdrawal];
+}
+
 /** Rust `RelayProofInputs::token_account_setup`, each account the withdrawal pays. */
 async function tokenAccountCreates(
   setup: readonly TokenAccountSetup[] | undefined,
-  withdrawal: TransactWithdrawal | undefined,
+  withdrawal: TransactWithdrawal | readonly TransactWithdrawal[] | undefined,
 ): Promise<readonly TokenAccountCreate[]> {
   const created = new Set<Address>();
   return Promise.all(
@@ -1490,10 +1588,23 @@ async function tokenAccountCreates(
         new RingError("RING_RELAY_PROOF_INPUTS", {
           details: { reason: "tokenAccountSetup", index },
         });
-      if (withdrawal?.kind !== "spl" || withdrawal.mint !== entry.mint) throw refused();
-      const { tokenProgram } = withdrawal;
+      const candidates = withdrawalAccounts(withdrawal).filter(
+        (leg) => leg.kind === "spl" && leg.mint === entry.mint,
+      );
+      const named = candidates.find((leg) => leg.kind === "spl");
+      if (named?.kind !== "spl") throw refused();
+      const { tokenProgram } = named;
       const account = await associatedTokenAddress(entry.owner, entry.mint, tokenProgram);
-      if (account !== withdrawal.recipientTokenAccount || created.has(account)) throw refused();
+      if (
+        !candidates.some(
+          (leg) =>
+            leg.kind === "spl" &&
+            leg.recipientTokenAccount === account &&
+            leg.tokenProgram === tokenProgram,
+        ) ||
+        created.has(account)
+      )
+        throw refused();
       created.add(account);
       return Object.freeze({ owner: entry.owner, mint: entry.mint, tokenProgram });
     }),
@@ -1546,18 +1657,20 @@ async function transactionKey(
 /** A public withdrawal names its settlement accounts, a transfer without one names none. */
 function checkWithdrawalAccounts(
   prepared: PreparedTransfer,
-  withdrawal: TransactWithdrawal | undefined,
+  withdrawal: TransactWithdrawal | readonly TransactWithdrawal[] | undefined,
 ): void {
-  const leg = prepared.interfaceTransfers.find((transfer) => !transfer.isDeposit);
+  const legs = prepared.interfaceTransfers.filter((transfer) => !transfer.isDeposit);
+  const accounts = withdrawalAccounts(withdrawal);
   const matches =
-    leg === undefined
-      ? withdrawal === undefined
-      : withdrawal !== undefined &&
-        (leg.kind === "sol"
-          ? withdrawal.kind === "sol" && withdrawal.recipient === leg.userSolAccount
-          : withdrawal.kind === "spl" &&
-            withdrawal.mint === leg.mint &&
-            withdrawal.recipientTokenAccount === leg.tokenAccount);
+    legs.length === accounts.length &&
+    legs.every((leg, index) => {
+      const named = accounts[index];
+      return leg.kind === "sol"
+        ? named?.kind === "sol" && named.recipient === leg.userSolAccount
+        : named?.kind === "spl" &&
+            named.mint === leg.mint &&
+            named.recipientTokenAccount === leg.tokenAccount;
+    });
   if (!matches) throw new RingError("RING_SETTLEMENT_ACCOUNTS_INVALID");
 }
 
