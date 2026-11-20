@@ -7,12 +7,18 @@
 
 #![forbid(unsafe_code)]
 
+use solana_address::Address;
 use spr_hasher::{
     hash_chain::create_hash_chain_4_from_slice,
-    primitives::{hash_bytes, is_canonical_bn254_scalar_be, pack_be, right_align},
+    primitives::{
+        hash_bytes, is_canonical_bn254_scalar_be, pack_be, right_align, solana_owner_identity,
+    },
 };
 
-use crate::{TAGGED_X25519_KEY_LEN, VIEWING_PUBKEY_TAG};
+use crate::{
+    storage::Revision, tracking::TrackingRegistry, RingPolicy, TAGGED_X25519_KEY_LEN,
+    VIEWING_PUBKEY_TAG,
+};
 
 pub const DOMAIN: u64 = 0x4352_4444; // CRDD, distinct from a ring transfer (CRTX).
 pub const VERSION: u64 = 1;
@@ -121,4 +127,121 @@ impl DescriptorStatement {
 
 fn field(value: u64) -> [u8; 32] {
     right_align(&value.to_be_bytes())
+}
+
+/// Shared fields of an already validated single-output operation (ordinal 0).
+/// The caller supplies actual account identities, the predecessor's first
+/// nullifier, and the already resolved exact tracking revision and root. This
+/// value does not read accounts, authenticate a route, or resolve a live root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DescriptorProjection {
+    pub ring_program: Address,
+    pub tracking_account: Address,
+    pub tracking_revision: Revision,
+    pub tracking_root: [u8; 32],
+    pub first_nullifier: [u8; 32],
+    pub source_authority: Address,
+    pub payer: Address,
+    pub tree_id: [u8; 32],
+    pub output_mint: Address,
+    pub min_amount: u64,
+    pub max_amount: u64,
+    pub expiry_slot: u64,
+}
+
+/// Descriptor-specific commitment fields. No proof or witness is accepted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DescriptorRecord {
+    pub owner_utxo_hash: [u8; 32],
+    pub tx_viewing_pubkey: [u8; TAGGED_X25519_KEY_LEN],
+    pub salt: [u8; 16],
+    pub recipient_tag: [u8; 32],
+    pub recipient_zero_ciphertext: [u8; RECIPIENT_CIPHERTEXT_LEN],
+    pub auditor_ciphertext: [u8; AUDITOR_CIPHERTEXT_LEN],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectionError<E> {
+    RingBinding,
+    Context(E),
+    Statement(StatementError),
+}
+
+/// A statement and its public input, frozen together. This is not an approval
+/// or proof of the route. No mutable access to either value is provided.
+///
+/// ```compile_fail
+/// use custom_ring_interface::dynamic_descriptor::PreparedDescriptor;
+/// fn replace_amount(value: &mut PreparedDescriptor) {
+///     value.statement().min_amount = 0;
+/// }
+/// ```
+#[derive(Clone, Debug)]
+pub struct PreparedDescriptor {
+    statement: DescriptorStatement,
+    public_input_hash: [u8; 32],
+}
+
+impl PreparedDescriptor {
+    pub fn statement(&self) -> &DescriptorStatement {
+        &self.statement
+    }
+
+    pub fn public_input_hash(&self) -> &[u8; 32] {
+        &self.public_input_hash
+    }
+}
+
+impl DescriptorProjection {
+    /// Rebuild the descriptor with native identity and mint hashes. The caller
+    /// owns the versioned route transcript; compose it from the immutable
+    /// projection passed to the closure, not a second copy of shared fields.
+    /// The closure is trusted code, not a verifier of a caller-supplied hash.
+    /// The caller must still authenticate accounts, profile, exact root, and
+    /// predecessor before preparing a statement. This method performs only the
+    /// ring/registry cross-check and deterministic statement reconstruction.
+    pub fn prepare<E>(
+        self,
+        policy: &RingPolicy,
+        tracking: &TrackingRegistry,
+        record: &DescriptorRecord,
+        compose_context: impl FnOnce(&Self) -> Result<[u8; 32], E>,
+    ) -> Result<PreparedDescriptor, ProjectionError<E>> {
+        let hashing = |_| ProjectionError::Statement(StatementError::Hashing);
+        let ring_id = hash_bytes(self.ring_program.as_array()).map_err(hashing)?;
+        if policy.tracking != self.tracking_account
+            || tracking.ring_id != ring_id
+            || tracking.auditor_pubkey != policy.auditor_pubkey
+        {
+            return Err(ProjectionError::RingBinding);
+        }
+        let context = compose_context(&self).map_err(ProjectionError::Context)?;
+        let statement = DescriptorStatement {
+            ring_id,
+            auditor_pubkey: policy.auditor_pubkey,
+            tracking_root: self.tracking_root,
+            ring_generation: policy.generation(),
+            operation_context: context,
+            output_index: 0,
+            source_authority_identity: solana_owner_identity(self.source_authority.as_array())
+                .map_err(hashing)?,
+            payer_identity: solana_owner_identity(self.payer.as_array()).map_err(hashing)?,
+            tree_id: self.tree_id,
+            asset: hash_bytes(self.output_mint.as_array()).map_err(hashing)?,
+            owner_utxo_hash: record.owner_utxo_hash,
+            min_amount: self.min_amount,
+            max_amount: self.max_amount,
+            expiry_slot: self.expiry_slot,
+            tx_viewing_pubkey: record.tx_viewing_pubkey,
+            salt: record.salt,
+            recipient_tag: record.recipient_tag,
+            recipient_zero_ciphertext: record.recipient_zero_ciphertext,
+            auditor_ciphertext: record.auditor_ciphertext,
+        };
+        let public_input_hash = statement.hash().map_err(ProjectionError::Statement)?;
+        Ok(PreparedDescriptor {
+            statement,
+            public_input_hash,
+        })
+    }
 }
