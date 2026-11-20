@@ -38,6 +38,8 @@ pub mod cosign;
 pub mod disclosure;
 #[path = "proof/domain.rs"]
 pub mod domain;
+#[path = "proof/dynamic_descriptor.rs"]
+pub mod dynamic_descriptor;
 pub mod error;
 #[path = "instructions/instruction.rs"]
 pub mod instruction;
