@@ -81,6 +81,60 @@ fn a_zero_floor_keeps_the_tracking_grace() {
     assert_eq!(read(&tracking, 0, 4), Ok([5; 32]));
 }
 
+#[test]
+fn an_explicit_tracking_hash_is_bound_to_its_revision_without_substitution() {
+    let tracking = tracking_at(&[5, 4]);
+    let live = LiveRoots {
+        own: None,
+        curator: None,
+        tracking: &tracking,
+        tracking_floor: Revision::from(0),
+        slot: 99,
+    };
+    assert_eq!(live.tracking_matching(4.into(), &[5; 32]), Ok([5; 32]));
+    assert_eq!(live.tracking_matching(5.into(), &[6; 32]), Ok([6; 32]));
+    for (revision, expected) in [
+        (4, [6; 32]),
+        (5, [5; 32]),
+        (99, [6; 32]),
+        (5, [0; 32]),
+    ] {
+        assert_eq!(
+            live.tracking_matching(revision.into(), &expected),
+            Err(CustomRingError::RootNotServed)
+        );
+    }
+}
+
+#[test]
+fn an_exact_tracking_hash_cannot_bypass_cutoff_or_grace_expiry() {
+    let tracking = tracking_at(&[5, 4]);
+    let last_grace_slot = LiveRoots {
+        own: None,
+        curator: None,
+        tracking: &tracking,
+        tracking_floor: Revision::from(0),
+        slot: 99,
+    };
+    let expired = LiveRoots {
+        slot: 100,
+        ..last_grace_slot
+    };
+    assert_eq!(
+        expired.tracking_matching(4.into(), &[5; 32]),
+        Err(CustomRingError::RootNotServed)
+    );
+    assert_eq!(expired.tracking_matching(5.into(), &[6; 32]), Ok([6; 32]));
+    let tightened = LiveRoots {
+        tracking_floor: Revision::from(5),
+        ..last_grace_slot
+    };
+    assert_eq!(
+        tightened.tracking_matching(4.into(), &[5; 32]),
+        Err(CustomRingError::TrackingRootBelowFloor)
+    );
+}
+
 fn salted_ring(curator: Address) -> RingPolicy {
     let mut ring = *ring();
     ring.records = key(5);

@@ -482,6 +482,23 @@ impl LiveRoots<'_> {
             .map_err(|_| CustomRingError::RootNotServed)
     }
 
+    /// Bind a proof's explicit tracking revision and hash to this live reader.
+    ///
+    /// Read the named revision through the same retained-history, expiry and
+    /// source-floor checks as `tracking`; never substitute the newest root.
+    /// The caller still supplies the already bound tracking registry and slot.
+    pub fn tracking_matching(
+        &self,
+        revision: Revision,
+        expected: &[u8; 32],
+    ) -> Result<[u8; 32], CustomRingError> {
+        let served = self.tracking(revision)?;
+        if &served != expected {
+            return Err(CustomRingError::RootNotServed);
+        }
+        Ok(served)
+    }
+
     /// Without the records, `None` at revision zero and `unread` otherwise.
     pub fn own_if_read(
         &self,
