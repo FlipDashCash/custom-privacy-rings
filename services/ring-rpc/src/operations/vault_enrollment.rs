@@ -11,11 +11,11 @@ use zolana_ring_client::rpc::{
 };
 
 use super::{
-    ring_tracking, EnrollmentApplier, EnrollmentRefusal, RingRpcError, RingState, RingTracking,
-    MAX_HELD_ENROLLMENTS,
+    ring_tracking, EnrollmentApplier, EnrollmentBudget, EnrollmentRefusal, InFlight, RingRpcError,
+    RingState, RingTracking,
 };
 use crate::{
-    landing::{signature_fees, Simulation},
+    landing::{Attempt, Simulation},
     relay_submit::{presigned_transaction, CollectedSignature},
 };
 
@@ -61,7 +61,7 @@ impl EnrollmentApplier {
     ) -> Result<VaultEnrollmentBlock, RingRpcError> {
         let tracking = self.vault_tracking(&request).await?;
         let ring = request.ring.0;
-        if !self.budget.holds(ring, signature_fees(2)) {
+        if !self.budget.holds(ring, EnrollmentBudget::vault_fee()) {
             return Err(EnrollmentRefusal::Budget.into());
         }
         let latest = self.chain.latest_blockhash().await?;
@@ -103,12 +103,14 @@ impl EnrollmentApplier {
         .map_err(|_| EnrollmentRefusal::InvalidWrite)?;
         let bytes = message.serialize();
         let signature = signed.signature.0;
-        if !signature.verify(request.authority.0.as_ref(), &bytes) {
+        if !signature.verify(request.manager.0.as_ref(), &bytes) {
             return Err(EnrollmentRefusal::InvalidWrite.into());
         }
         let state = self.ring_state(ring);
         let mut state = state.lock().await;
-        let RingState { vault, .. } = &mut *state;
+        let RingState {
+            vault, in_flight, ..
+        } = &mut *state;
         let height = self.chain.block_height().await?;
         vault.expire(height);
         let expiry = signed.block.last_valid_block_height;
@@ -128,7 +130,7 @@ impl EnrollmentApplier {
                     signature: writer_signature,
                 },
                 CollectedSignature {
-                    signer: request.authority.0,
+                    signer: request.manager.0,
                     signature,
                 },
             ],
@@ -139,16 +141,24 @@ impl EnrollmentApplier {
             }
             return Ok(writer_signature.into());
         }
-        if vault.submissions.len() >= MAX_HELD_ENROLLMENTS {
-            return Err(EnrollmentRefusal::Full.into());
+        // A second proof from the same root could not land.
+        if in_flight.is_some() {
+            return Err(EnrollmentRefusal::InFlight.into());
         }
         if !matches!(self.chain.simulate(&message).await?, Simulation::Passed) {
             return Err(EnrollmentRefusal::InvalidWrite.into());
         }
-        if !self.budget.charge(ring, signature_fees(2)) {
+        if !self.budget.charge(ring, EnrollmentBudget::vault_fee()) {
             return Err(EnrollmentRefusal::Budget.into());
         }
         vault.submissions.insert(writer_signature, expiry);
+        *in_flight = Some(InFlight {
+            attempt: Attempt {
+                signature: writer_signature,
+                last_valid_block_height: expiry,
+            },
+            writes: Vec::new(),
+        });
         self.chain.send(&transaction).await?;
         Ok(writer_signature.into())
     }

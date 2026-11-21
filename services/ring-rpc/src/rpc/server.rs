@@ -22,7 +22,6 @@ use jsonrpsee::{
     RpcModule,
 };
 use serde::{de::DeserializeOwned, Serialize};
-use spr_indexer_api::RpcMethod;
 use spr_rpc_http::MethodPathLayer;
 use thiserror::Error;
 use tokio::net::TcpListener;
@@ -37,16 +36,17 @@ use zolana_ring_client::rpc::{
     GetPendingListApprovalsRequest, GetRecordUpdateStatusRequest, GetRelayQuoteRequest,
     GetRelayStatusRequest, GetSpendCoverageRequest, GetWalletActivityResponse,
     GetWalletStatusRequest, PagedRead, PrepareAuthorityTransferRequest, PrepareRelayRequest,
-    PrepareVaultEnrollment, RefuseListApprovalRequest, RegisterEnrollmentRingRequest, RingState,
-    RingStatusRequest, RingStatusResponse, SetMergeSettingsRequest, SetReaderGrantRequest,
-    SignedVaultEnrollment, SubmitEnrollmentRequest, SubmitRecordUpdateRequest, SubmitRelayRequest,
-    SubmitVaultEnrollment, VaultEnrollmentRequest, CO_SIGN_TRANSACTION, CREATE_AUDITOR_KEY,
-    CREATE_RECORDS_REGISTRY, EDIT_CO_SIGN_LIST, GET_AUDITED_UTXOS, GET_CO_SIGN_LISTS,
-    GET_DELEGATE_NOTES, GET_LIST_SALT, GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS,
-    GET_RELAY_QUOTE, GET_RELAY_STATUS, GET_SPEND_COVERAGE, GET_WALLET_STATUS, HEALTH,
-    PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY, REFUSE_LIST_APPROVAL, REGISTER_ENROLLMENT_RING,
+    RefuseListApprovalRequest, RegisterEnrollmentRingRequest, RingState, RingStatusRequest,
+    RingStatusResponse, SetMergeSettingsRequest, SetReaderGrantRequest, SignedVaultEnrollment,
+    SubmitEnrollmentRequest, SubmitRecordUpdateRequest, SubmitRelayRequest, VaultEnrollmentRequest,
+    CO_SIGN_TRANSACTION, CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY, EDIT_CO_SIGN_LIST,
+    GET_AUDITED_UTXOS, GET_CO_SIGN_LISTS, GET_DELEGATE_NOTES, GET_LIST_SALT,
+    GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS, GET_RELAY_QUOTE, GET_RELAY_STATUS,
+    GET_SPEND_COVERAGE, GET_WALLET_STATUS, HEALTH, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY,
+    PREPARE_VAULT_ENROLLMENT, REFUSE_LIST_APPROVAL, REGISTER_ENROLLMENT_RING,
     RELEASE_DELEGATE_SNAPSHOT, RELEASE_WALLET_SNAPSHOT, RING_STATUS, SET_MERGE_SETTINGS,
     SET_READER_GRANT, SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE, SUBMIT_RELAY,
+    SUBMIT_VAULT_ENROLLMENT,
 };
 
 use crate::{
@@ -310,7 +310,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
     )?;
     method(
         &mut module,
-        PrepareVaultEnrollment::NAME,
+        PREPARE_VAULT_ENROLLMENT,
         |hub, request: VaultEnrollmentRequest| async move {
             let _slot = hub.admit(Lane::Authentication)?;
             hub.enrollment_applier()?.prepare_vault(request).await
@@ -318,7 +318,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
     )?;
     method(
         &mut module,
-        SubmitVaultEnrollment::NAME,
+        SUBMIT_VAULT_ENROLLMENT,
         |hub, request: SignedVaultEnrollment| async move {
             let _slot = hub.admit(Lane::Authentication)?;
             hub.enrollment_applier()?.submit_vault(request).await

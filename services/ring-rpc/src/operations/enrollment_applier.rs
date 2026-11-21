@@ -65,6 +65,8 @@ pub enum EnrollmentRefusal {
     Budget = -32185,
     #[error("the enrollment writer serves its most registered rings, the operator raises the cap")]
     RingsFull = -32186,
+    #[error("the ring has a transaction in flight, prove the enrollment again after it lands")]
+    InFlight = -32187,
 }
 
 /// Applies the held writes of each served ring, the payer is the ring's `EnrollmentWriter`.
@@ -186,6 +188,11 @@ impl EnrollmentBudget {
     /// The payer's signature and one precompile signature per write.
     fn batch_fee(writes: usize) -> u64 {
         signature_fees(writes.saturating_add(1))
+    }
+
+    /// The writer's and the vault manager's signatures.
+    fn vault_fee() -> u64 {
+        signature_fees(2)
     }
 
     fn holds(&self, ring: Address, fee: u64) -> bool {
@@ -585,9 +592,9 @@ async fn ring_tracking(
     }))
 }
 
+#[path = "vault_enrollment.rs"]
+mod vault;
+
 #[cfg(test)]
 #[path = "enrollment_applier_tests.rs"]
 mod enrollment_applier_tests;
-
-#[path = "vault_enrollment.rs"]
-mod vault;

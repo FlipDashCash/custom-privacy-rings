@@ -44,7 +44,7 @@ mod cpi {
     };
 
     use super::{EnrollmentOwner, EnrollmentWrite, ENROLL_PDA};
-    use crate::{storage_instruction::EnrollmentChange, STORAGE_PROGRAM_ID};
+    use crate::{storage::StorageError, storage_instruction::EnrollmentChange, STORAGE_PROGRAM_ID};
 
     pub struct VaultEnrollmentPolicy<'a> {
         pub manager: &'a Address,
@@ -70,18 +70,18 @@ mod cpi {
         pub fn parse(accounts: &'a [AccountView], data: &'a [u8]) -> Result<Self, ProgramError> {
             let [manager, writer, policy, ring_auth, tracking, vault, storage, ring] = accounts
             else {
-                return Err(ProgramError::NotEnoughAccountKeys);
+                return Err(StorageError::MissingAccounts.into());
             };
             if !manager.is_signer() || !writer.is_signer() || manager.address() == writer.address()
             {
-                return Err(ProgramError::MissingRequiredSignature);
+                return Err(StorageError::MissingSignature.into());
             }
             if storage.address() != &STORAGE_PROGRAM_ID {
-                return Err(ProgramError::IncorrectProgramId);
+                return Err(StorageError::InvalidStorageProgram.into());
             }
             let payload = data
                 .strip_prefix(ENROLL_PDA)
-                .ok_or(ProgramError::InvalidInstructionData)?;
+                .ok_or(StorageError::InvalidInstructionData)?;
             let write = EnrollmentOwner {
                 owner: vault.address(),
                 ring_authority: ring_auth.address(),
@@ -114,12 +114,16 @@ mod cpi {
             policy: VaultEnrollmentPolicy<'_>,
             signer: Signer<'_, '_>,
         ) -> ProgramResult {
-            if self.manager.address() != policy.manager
-                || self.vault.address() != policy.vault
-                || self.ring.address() != policy.ring
+            if self.manager.address() != policy.manager {
+                return Err(StorageError::Unauthorized.into());
+            }
+            if self.vault.address() != policy.vault {
+                return Err(StorageError::OwnerSignatureMismatch.into());
+            }
+            if self.ring.address() != policy.ring
                 || self.tracking.address() != policy.tracking_registry
             {
-                return Err(ProgramError::InvalidArgument);
+                return Err(StorageError::InvalidTrackingRegistry.into());
             }
             let accounts = [
                 InstructionAccount::readonly_signer(self.writer.address()),

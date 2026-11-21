@@ -36,7 +36,7 @@ Storage checks owner consent, verifies the tree update, and publishes the new ro
 
 ### Enroll a vault PDA
 
-Enable the `enrollment-cpi` feature of `custom-ring-interface` in the vault program. Route the `ENROLL_PDA` discriminator to the enrollment handler.
+Enable the `enrollment-cpi` feature of `custom-ring-interface` in the vault program. Pass instruction data that starts with `ENROLL_PDA` to `PdaEnrollment::parse` unchanged.
 
 Check that the vault program owns `enrollment.vault()` before reading its manager, ring and tracking registry. Derive the expected vault address from your program's seeds. If the vault restricts enrollment keys, check `enrollment.change()` before signing.
 
@@ -55,7 +55,7 @@ enrollment.invoke_signed(
 )
 ```
 
-Pass the vault's seeds and bump in the Pinocchio `Signer`. The helper requires the vault manager's signature before it invokes the ring. See the [vault program](../../examples/enrollment-vault/src/lib.rs).
+Pass the vault's seeds and bump in the Pinocchio `Signer`. The helper requires the vault manager's signature before it invokes the ring. The [example vault program](../../examples/enrollment-vault/src/lib.rs) keeps one vault at one PDA.
 
 Set `Enroll::owner` to the vault PDA.
 
@@ -65,10 +65,9 @@ use custom_ring_sdk::EnrollVault;
 let signature = EnrollVault {
     enrollment,
     program: vault_program,
-    authority: &manager,
-    service: &ring_rpc,
+    manager: &manager,
 }
-.send(&client)
+.send(&ring_rpc, &client)
 .await?;
 ```
 

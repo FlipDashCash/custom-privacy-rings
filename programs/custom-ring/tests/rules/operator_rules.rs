@@ -1205,7 +1205,7 @@ fn pda_enrollment_and_rotation_require_the_vault_manager() {
         unauthorized.accounts[0].pubkey = impostor.pubkey();
         refused_with(
             ring.send(unauthorized, &[&writer, &impostor]),
-            InstructionError::InvalidArgument,
+            InstructionError::Custom(StorageError::Unauthorized as u32),
         );
         ring.send(apply.clone(), &[&writer, &manager]).unwrap();
         let registry = ring.read::<TrackingRegistry>(&tracking_registry());

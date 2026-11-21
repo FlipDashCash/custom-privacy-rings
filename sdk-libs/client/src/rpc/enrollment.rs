@@ -15,7 +15,7 @@ use solana_signer::{Signer, SignerError};
 use spr_indexer_api::{Base64String, RpcMethod, SerializablePubkey, SerializableSignature};
 use thiserror::Error;
 
-use super::SUBMIT_ENROLLMENT;
+use super::{PREPARE_VAULT_ENROLLMENT, SUBMIT_ENROLLMENT, SUBMIT_VAULT_ENROLLMENT};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -107,7 +107,7 @@ impl SubmitEnrollmentRequest {
 pub struct VaultEnrollmentRequest {
     pub ring: SerializablePubkey,
     pub program: SerializablePubkey,
-    pub authority: SerializablePubkey,
+    pub manager: SerializablePubkey,
     pub vault: SerializablePubkey,
     pub payload: Base64String,
 }
@@ -130,7 +130,7 @@ pub struct SignedVaultEnrollment {
 pub struct PrepareVaultEnrollment;
 
 impl RpcMethod for PrepareVaultEnrollment {
-    const NAME: &'static str = "prepareVaultEnrollment";
+    const NAME: &'static str = PREPARE_VAULT_ENROLLMENT;
     type Request = VaultEnrollmentRequest;
     type Response = VaultEnrollmentBlock;
 }
@@ -138,7 +138,7 @@ impl RpcMethod for PrepareVaultEnrollment {
 pub struct SubmitVaultEnrollment;
 
 impl RpcMethod for SubmitVaultEnrollment {
-    const NAME: &'static str = "submitVaultEnrollment";
+    const NAME: &'static str = SUBMIT_VAULT_ENROLLMENT;
     type Request = SignedVaultEnrollment;
     type Response = SerializableSignature;
 }

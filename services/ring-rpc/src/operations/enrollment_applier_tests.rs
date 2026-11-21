@@ -551,7 +551,9 @@ mod enrollment_registration_tests;
 #[tokio::test]
 async fn vault_enrollment_requires_the_manager_and_charges_one_fee_on_retry() {
     use custom_ring_sdk::VaultEnrollmentMessage;
-    use zolana_ring_client::rpc::{SignedVaultEnrollment, VaultEnrollmentRequest};
+    use zolana_ring_client::rpc::{
+        SignedVaultEnrollment, VaultEnrollmentBlock, VaultEnrollmentRequest,
+    };
 
     let chain = StubChain::new();
     let fee = signature_fees(2);
@@ -574,7 +576,7 @@ async fn vault_enrollment_requires_the_manager_and_charges_one_fee_on_retry() {
     let request = VaultEnrollmentRequest {
         ring: RING.into(),
         program: program.into(),
-        authority: manager.pubkey().into(),
+        manager: manager.pubkey().into(),
         vault: Address::find_program_address(&[b"owner"], &program)
             .0
             .into(),
@@ -586,13 +588,33 @@ async fn vault_enrollment_requires_the_manager_and_charges_one_fee_on_retry() {
     );
     let service = service.with_vault_programs([program]);
     let block = service.prepare_vault(request.clone()).await.unwrap();
-    let message = VaultEnrollmentMessage {
-        request: &request,
-        writer,
-        registry: REGISTRY,
-    }
-    .compile(&block)
-    .unwrap();
+    let compile = |request: &VaultEnrollmentRequest, block: &VaultEnrollmentBlock| {
+        VaultEnrollmentMessage {
+            request,
+            writer,
+            registry: REGISTRY,
+        }
+        .compile(block)
+        .unwrap()
+    };
+    let unissued = VaultEnrollmentBlock {
+        blockhash: spr_indexer_api::Hash([9; 32]),
+        ..block.clone()
+    };
+    let unissued_bytes = compile(&request, &unissued).serialize();
+    assert_eq!(
+        refusal(
+            service
+                .submit_vault(SignedVaultEnrollment {
+                    enrollment: request.clone(),
+                    block: unissued,
+                    signature: manager.sign_message(&unissued_bytes).into(),
+                })
+                .await
+        ),
+        EnrollmentRefusal::InvalidWrite
+    );
+    let message = compile(&request, &block);
     let bytes = message.serialize();
     let mut signed = SignedVaultEnrollment {
         enrollment: request,
@@ -606,10 +628,46 @@ async fn vault_enrollment_requires_the_manager_and_charges_one_fee_on_retry() {
     assert!(chain.sent.lock().unwrap().is_empty());
     signed.signature = manager.sign_message(&bytes).into();
     let submitted = service.submit_vault(signed.clone()).await.unwrap();
+    let vault_rotation = VaultEnrollmentRequest {
+        payload: spr_indexer_api::Base64String(
+            hex::decode(vector["rotate"].as_str().unwrap()).unwrap(),
+        ),
+        ..signed.enrollment.clone()
+    };
+    let rotation_bytes = compile(&vault_rotation, &signed.block).serialize();
+    assert_eq!(
+        refusal(
+            service
+                .submit_vault(SignedVaultEnrollment {
+                    enrollment: vault_rotation.clone(),
+                    block: signed.block.clone(),
+                    signature: manager.sign_message(&rotation_bytes).into(),
+                })
+                .await
+        ),
+        EnrollmentRefusal::InFlight
+    );
+    assert_eq!(
+        service.submit_vault(signed.clone()).await.unwrap(),
+        submitted
+    );
     chain.landed(ChainOutcome::Confirmed { slot: SLOT });
-    assert_eq!(service.submit_vault(signed).await.unwrap(), submitted);
+    service.flush().await;
+    assert_eq!(
+        refusal(
+            service
+                .submit_vault(SignedVaultEnrollment {
+                    enrollment: vault_rotation,
+                    block: signed.block.clone(),
+                    signature: manager.sign_message(&rotation_bytes).into(),
+                })
+                .await
+        ),
+        EnrollmentRefusal::Budget
+    );
     let sent = chain.sent.lock().unwrap();
-    assert_eq!(sent.len(), 1);
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[1], sent[0]);
     assert_eq!(sent[0].message, message);
     assert_eq!(
         sent[0].signatures,

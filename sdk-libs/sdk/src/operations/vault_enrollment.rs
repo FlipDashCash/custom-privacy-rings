@@ -17,15 +17,14 @@ use zolana_ring_client::rpc::{
 
 use crate::{
     storage::EnrollmentAccounts,
-    submission::{check_transaction_size, outcome, send_budget, Outcome},
+    submission::{check_transaction_size, outcome, send_budget, Outcome, PENDING_POLL},
     CustomRing, Enroll, RingClient, RingError, RingIndexerBackend, SignatureHistory,
 };
 
 pub struct EnrollVault<'a> {
     pub enrollment: Enroll<'a>,
     pub program: Address,
-    pub authority: &'a dyn Signer,
-    pub service: &'a SprApi,
+    pub manager: &'a dyn Signer,
 }
 
 pub struct VaultEnrollmentMessage<'a> {
@@ -37,6 +36,7 @@ pub struct VaultEnrollmentMessage<'a> {
 impl EnrollVault<'_> {
     pub async fn send<R: AsyncRpc + SignatureHistory, I: RingIndexerBackend>(
         self,
+        writer_service: &SprApi,
         client: &RingClient<R, I>,
     ) -> Result<Signature, RingError> {
         let change = self.enrollment.prove(client).await?;
@@ -46,12 +46,11 @@ impl EnrollVault<'_> {
         let request = VaultEnrollmentRequest {
             ring: change.ring.program_id().into(),
             program: self.program.into(),
-            authority: self.authority.try_pubkey()?.into(),
+            manager: self.manager.try_pubkey()?.into(),
             vault: change.owner.into(),
             payload: Base64String(inner.data),
         };
-        let block = self
-            .service
+        let block = writer_service
             .call::<PrepareVaultEnrollment>(request.clone())
             .await
             .map_err(|error| ClientError::Rpc(error.to_string()))?;
@@ -62,9 +61,8 @@ impl EnrollVault<'_> {
         }
         .compile(&block)?;
         let bytes = message.serialize();
-        let signature = self.authority.try_sign_message(&bytes)?;
-        let sent = self
-            .service
+        let signature = self.manager.try_sign_message(&bytes)?;
+        let sent = writer_service
             .call::<SubmitVaultEnrollment>(SignedVaultEnrollment {
                 enrollment: request,
                 block: block.clone(),
@@ -74,12 +72,12 @@ impl EnrollVault<'_> {
             .map_err(|error| ClientError::Rpc(error.to_string()))?
             .0;
         if !sent.verify(writer.as_ref(), &bytes) {
-            return Err(RingError::EnrollmentSigner { owner: writer });
+            return Err(RingError::WriterSignature { writer });
         }
         loop {
             match outcome(client.zolana(), sent, block.last_valid_block_height).await? {
                 Outcome::Confirmed { .. } => return Ok(sent),
-                Outcome::Unknown => tokio::time::sleep(crate::submission::PENDING_POLL).await,
+                Outcome::Unknown => tokio::time::sleep(PENDING_POLL).await,
                 Outcome::Stale(error) | Outcome::Failed(error) => {
                     return Err(RingError::Rejected {
                         signature: sent,
@@ -95,9 +93,9 @@ impl VaultEnrollmentMessage<'_> {
     pub fn compile(self, block: &VaultEnrollmentBlock) -> Result<VersionedMessage, RingError> {
         let request = self.request;
         let ring = CustomRing::new(request.ring.0);
-        let authority = request.authority.0;
-        if authority == self.writer || !authority.is_on_curve() {
-            return Err(RingError::EnrollmentSigner { owner: authority });
+        let manager = request.manager.0;
+        if manager == self.writer || !manager.is_on_curve() {
+            return Err(RingError::VaultManager { manager });
         }
         EnrollmentOwner {
             owner: &request.vault.0,
@@ -111,7 +109,7 @@ impl VaultEnrollmentMessage<'_> {
             authorization: AccountMeta::new_readonly(request.vault.0, false),
         }
         .metas();
-        accounts.insert(0, AccountMeta::new_readonly(authority, true));
+        accounts.insert(0, AccountMeta::new_readonly(manager, true));
         accounts.push(AccountMeta::new_readonly(ring.program_id(), false));
         let instruction = Instruction {
             program_id: request.program.0,
