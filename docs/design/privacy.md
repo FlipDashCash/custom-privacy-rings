@@ -49,7 +49,8 @@ The confidential mode and the anonymous mode differ at the sender and the recipi
 - The salt is final, so a disclosed salt reveals status permanently.
 - An unenrolled identity has no salt of its own. A ring that commits a ring salt lists it privately under that salt, and a ring that commits none lists it only on a public list.
 - Any holder of the ring salt can compute a known identity's ring-salted key and test that identity for a private entry.
-- A transaction can read a salted list. The party that proves the transaction holds the witness and learns the salts and list status of the other enrolled owners in that proof. A proof that reads an unenrolled owner also takes the ring salt.
+- A transaction can read a salted list. The party that proves the transaction holds the witness and learns the salts and list status of the other enrolled owners in that proof.
+- On a ring that commits a ring salt every proof that reads a salted list takes the ring salt, so every party that proves such a transfer holds it. Ring RPC returns it through `getListSalt` to list writers only.
 
 ## Who else sees what
 

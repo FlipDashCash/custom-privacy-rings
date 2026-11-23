@@ -43,7 +43,7 @@ A blocklist is a list of identities or assets the ring refuses. A sender rule ov
 
 ### 1.3. Frozen list
 
-The frozen list is a second authority list, kept apart from the blocklist. A sender rule over it stops every transfer of a frozen identity. A merge and a delegate move read no rule. The private frozen list is its salted counterpart. It holds enrolled owners under salted keys, and a rule reads it as its own deny list.
+The frozen list is a second authority list, kept apart from the blocklist. A sender rule over it stops every transfer of a frozen identity. A merge and a delegate move read no rule. The private frozen list is its salted counterpart. It holds an owner under the key of its own salt or of the ring salt, and a rule reads it as its own deny list.
 
 ### 1.4. Asset allowlist
 
@@ -224,7 +224,7 @@ Ring RPC signs through separate AWS KMS Ed25519 keys for service attestations, s
 | 31 | **Reply metadata** | Ciphertext | An optional unauthenticated claim about the sender, one fixed length per frame. |
 | 32 | **Published slot** | Output position | An output position below the frame's count `m`. A compact frame omits every later position. |
 | 33 | **Tracking registry** | Storage tree | One ring's tree of enrollments. Any applier moves pending enrollments into it, and no authority writes it. |
-| 34 | **Tracking floor** | Registry field | The highest tracking revision a private write proved a row under. A frame that reads a salted list through the registry names no lower tracking revision. |
+| 34 | **Tracking floor** | Registry field | The highest tracking revision a private write proved a row or an absence under. A frame that reads a salted list through the registry names no lower tracking revision. |
 | 35 | **Note count** | Envelope field | The sealed count `R` of spent notes among the published inputs. The proof names no note position. |
 | 36 | **Payload** | Ciphertext | A non-exit slot's data hashes and application data past its record, under the frame's `HAS_DATA`. No proof constrains it. |
 
@@ -249,7 +249,7 @@ Every owner that spends a ring note under a nonzero nullifier key enrolls on the
 3. **Storage program:** reads each owner signature from the precompile instruction, verifies every first enrollment's `RegisterKey` proof against the ring id and the auditor key the tracking registry pins, refuses the zero nullifier key, and applies the batch proof over the entries it computes from the writes.
 4. **Ring indexer:** lists pending authorizations, projects the tracking tree and serves its openings.
 
-An enrollment grants nothing until an apply places its row under a tracking root. The owner's notes under its key spend from the first root that holds its row. Before then a salted owner write for it fails. The `EnrollmentWriter` alone sends `EnrollBatch`, and Storage checks every owner signature itself. [Tracking](design/records-and-roots.md#tracking)
+An enrollment grants nothing until an apply places its row under a tracking root. The owner's notes under its key spend from the first root that holds its row. Before then a salted owner write for it lands only under the ring salt of a ring that commits one. The `EnrollmentWriter` alone sends `EnrollBatch`, and Storage checks every owner signature itself. [Tracking](design/records-and-roots.md#tracking)
 
 A wallet rotates its viewing key per ring. It signs `Enroll` again on that ring's tracking registry with the new viewing key and every other field unchanged. The rotation carries no proof, and the program refuses a change to any other field. The rotation moves only the authorization's viewing key and waits on no apply. A sender verifies the owner's row under a tracking root and reads the viewing key from the owner's authorization at `confirmed`. An address that carries an older viewing key therefore seals to the current one.
 
@@ -275,7 +275,7 @@ The **Wallet** writes its own viewing flag and its wallet grants. The **Policy a
    2. Queues wallet and authority updates in separate batches. An update its list approval joined rides first in its approver's batch.
    3. Sends an authority batch at its next pass, and a wallet batch when it is full, aged or ahead of a queued authority update.
    4. Leaves the grace to the **Storage program**. The apply proof marks a batch [restrictive](design/records-and-roots.md#root-history) when it tightens a list, guard or bound, writes a private list or changes an asset limit. Such a batch retires every earlier root. Any other batch keeps the outgoing root for the grace period, and over a full history it evicts the oldest kept root.
-   5. Proves a batch with salted owner writes under the private apply key. The proof opens each such owner's applied row under one root of the pinned tracking registry. It holds the written key to the owner's salted member under a salt that opens the row's list tag. A wrong salt fails the proof. The update names that root's revision. The Storage program reads the root and raises the registry's tracking floor to the revision in the same instruction. A batch whose salted owner has no applied row fails before the proof.
+   5. Proves a batch with salted owner writes under the private apply key. The proof opens each such owner's applied row, or the row that proves the owner absent, under one root of the pinned tracking registry. It holds the written key to the owner's salted member under a nonzero salt. The SDK refuses a salt that opens neither the row's list tag nor the policy's ring list tag. The update names that root's revision. The Storage program reads the root and raises the registry's tracking floor to the revision in the same instruction. A batch whose salted owner has no applied row fails before the proof unless the salt opens the ring list tag.
    6. Refuses a queued authority update once its signer no longer holds the policy role.
    7. Proves each batch and submits it, paying fees.
 
@@ -445,7 +445,7 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 ### Ring Program
 
 1. `Initialize`: creates the ring account with the four role keys and the auditor key. It creates the ring's tracking registry through the Storage program, binds the records, and on a policy ring pins the rule table. It registers the ring with SPP. It refuses a records registry whose ring id is not this ring's. The upgrade authority signs.
-2. `UpdatePolicy`: replaces the rule table, repoints one list's source, or rebinds the records to a registry of this ring. Its trailing accounts are the registries the write names, then every other registry a private list of the resulting account reads, matched by address. It refuses a salted source of another ring and stores nothing on a refusal. The policy authority signs.
+2. `UpdatePolicy`: replaces the rule table, repoints one list's source, rebinds the records to a registry of this ring, or commits the ring list tag. Its trailing accounts are the registries the write names, then every other registry a private list of the resulting account reads, matched by address. It refuses a salted source of another ring and stores nothing on a refusal. The policy authority signs.
 3. `UpdateAuthority`: hands one role to a new key. The admin and the new key sign. Differs from the PR 15 draft: it names the role.
 4. `SetPaused`: pauses or resumes the ring in SPP. The pauser signs.
 5. `SetCoSigner`: creates a co-signer account or changes its scope. The co-signer admin signs.
@@ -505,7 +505,7 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 35. A transfer's co-signer derives each owner's debit from the frame it signs with the auditor key. Client-sent openings would widen what the co-signer learns.
 36. A note under the zero nullifier key needs no enrollment. A zero-key transfer output requires owner absence at the accepted tracking root. A retained root can prove absence during the enrollment grace period. An old zero-key note stays spendable after enrollment, and a merge preserves its key. Readers mark a zero-key note `exposed_if_spent`, and automatic selection leaves it out.
 37. A slot's discovery tag is a hint no proof constrains. One every-site scan reads no tag, so a wrong tag cannot hide a note its recipient can decrypt.
-38. A salted owner write proves the owner's row under one tracking root. In the same instruction it raises the source's tracking floor to that root's revision. Rows never leave the tracking tree, so every root a salted read accepts holds each owner with a private entry. No such owner proves absence. An owner with no applied row has no private entry, so its proven absence hides none.
+38. A salted owner write proves the owner's row or absence under one tracking root. In the same instruction it raises the source's tracking floor to that root's revision. Rows never leave the tracking tree, so every root a salted read accepts holds each owner with an entry under its own salt. No such owner proves absence to skip that entry. Every owner also reads the record under the ring salt the policy commits, whatever its row, so an entry there binds before and after enrollment.
 39. The envelope seals the note count `R` and no note position. The ring's inputs hold SPP's spent notes in note order, and the proof takes the address chain as a private witness the shared `private_tx_hash` checks. The auditor classifies each nullifier from its own index, and `R` checks the count.
 40. No statement element counts a signer's outputs. The SDKs sign for a relayed signer only after every published output opens to it.
 

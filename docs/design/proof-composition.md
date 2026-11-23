@@ -104,7 +104,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The circuit answers each query through a pool bound to a root, present or proven absent, in `resolveSubjects`. No prover list bit reaches a rule.
 - `curatorColumns` projects list bits alone, and mint settings read the own pool.
 - An owner reads its public lists at `ListKey(owner, 0)`, and an asset at its asset field.
-- The circuit forces a present owner's salt to open its row's `list_tag`, then reads the record at the forced salted key. An owner proven absent reads off every private list. Registration refuses a zero salt, so no private record sits on the public key.
+- The circuit forces a present owner's salt to open its row's `list_tag`, then reads the record at the forced salted key. Every owner also reads the record at `ListKey(owner, ring_salt)` under the salt that opens the policy's `ring_list_tag`, and a zero tag reads no such record. Registration refuses a zero salt, so no private record sits on the public key.
 - `RegistrySlots::load` refuses a salted source that pins another tracking registry. `LiveRoots::tracking` refuses a tracking revision below the highest floor of the salted sources.
 - The tests in `programs/custom-ring/tests/rules/storage_root_rules.rs` are `a_tracking_root_below_the_salted_floor_is_refused_at_load` and `a_private_list_mapped_to_a_curator_on_another_tracking_registry_is_refused`.
 - The tests in `prover/circuits/policy` are `TestPooledPolicyBindsSubjectReferences`, `TestRecordPoolBindsEveryActiveQuery`, `TestPublicAndPrivateBlocksAreTwoRules` and `TestPresentRowCannotSkipTheSaltedRead`.
