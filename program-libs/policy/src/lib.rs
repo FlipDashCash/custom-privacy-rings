@@ -31,6 +31,7 @@ pub use rule_table::{
 };
 pub use rules::{
     OutputSubjects, PaymentSubjects, RecordLists, RuleRefusal, TransferSubject, TransferSubjects,
+    VoucherCover,
 };
 
 /// The ring id field a UTXO inside the ring carries.

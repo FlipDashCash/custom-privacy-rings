@@ -254,10 +254,18 @@ pub enum RingError {
     AnonymousSignerMismatch,
     #[error("the in-proof owner does not match the sender")]
     InProofOwnerMismatch,
+    #[error("the voucher's signature does not verify over the transfer's vouch digest")]
+    VoucherSignatureMismatch,
+    #[error("a relayed transfer takes no voucher")]
+    VouchedRelay,
+    #[error("a transfer no rule table screens takes no voucher")]
+    VoucherUnscreened,
     #[error("input {index} is a default-ring note the in-proof owner rail cannot spend")]
     InProofDefaultRingInput { index: usize },
     #[error("the confidential relay carries no owner signature")]
     MissingInProofOwnerSignature,
+    #[error("core authorized no in-proof owner for the payment")]
+    OwnerUnauthorized,
     #[error("public transaction signers must differ from the hidden owner")]
     AnonymousPublicSignerLinksOwner,
     #[error("withdrawal destination {0} names the hidden owner")]
@@ -324,6 +332,11 @@ pub enum RingError {
         signature: Signature,
         error: solana_transaction_error::TransactionError,
     },
+    #[error("{signature} is unresolved after {error}")]
+    Unsettled {
+        signature: Signature,
+        error: Box<RingError>,
+    },
     #[error("{owner} is enrolled under another nullifier key, the first key is final")]
     AlreadyEnrolled { owner: Address },
     #[error(
@@ -333,6 +346,10 @@ pub enum RingError {
     EnrollmentBatchSize { writes: u64 },
     #[error("the enrollment of {owner} takes the owner's own signature")]
     EnrollmentSigner { owner: Address },
+    #[error("the vault manager {manager} must be a wallet key other than the enrollment writer")]
+    VaultManager { manager: Address },
+    #[error("ring rpc answered with a signature the enrollment writer {writer} did not make")]
+    WriterSignature { writer: Address },
     #[error(transparent)]
     EnrollmentRequest(#[from] EnrollmentRequestError),
     #[error("ring rpc failed the relay with {reason}")]

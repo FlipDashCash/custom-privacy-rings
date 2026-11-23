@@ -89,6 +89,10 @@ func TestPolicyRequestsRejectMalformedPayloads(t *testing.T) {
 			m["trackingProof"].(map[string]any)["paths"].([]any)[0].(map[string]any)["index"] = registry.TrackingCapacity
 		}, "tracking path"},
 		{"row entry outside pool", func(m map[string]any) { m["rowEntries"].([]any)[0] = len(m["trackingSubjects"].([]any)) }, "tracking subject"},
+		{"voucher subject outside pool", func(m map[string]any) { m["voucherEntry"].(map[string]any)["own"] = len(m["ownSubjects"].([]any)) }, "subject index"},
+		{"voucher tracking entry outside pool", func(m map[string]any) {
+			m["voucherEntry"].(map[string]any)["tracking"] = len(m["trackingSubjects"].([]any))
+		}, "tracking subject"},
 		{"short canopy", func(m map[string]any) { proof(m)["canopy"] = proof(m)["canopy"].([]any)[1:] }, "expected"},
 		{"short path", func(m map[string]any) { path(m)["siblings"] = path(m)["siblings"].([]any)[1:] }, "expected"},
 		{"short sibling row", func(m map[string]any) { rows := path(m)["siblings"].([]any); rows[0] = rows[0].([]any)[1:] }, "expected"},

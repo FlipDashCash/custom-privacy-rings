@@ -7,6 +7,7 @@ The auditor holds one viewing key for the ring's life. Every operation proves a 
 - The sender draws a transaction viewing key. The transfer proof seals its secret to the auditor in one AES-256-CTR stream.
 - The key schedule binds the auditor key, the transaction key and a salt. A resend repeats the key, and a fresh salt gives a different keystream.
 - The stream contains an envelope and one recipient key per published slot.
+- On a vouched transfer the stream also contains the Ed25519 key that vouched. The proof seals the key whose signature it verified, so the auditor reads who answers for every sender and owner of that transfer.
 - Each slot has one record, sealed from the transaction viewing secret to that slot's recipient key. A non-exit slot's body carries it, and an exit's travels in the auditor message. The recipient and the auditor read the same record.
 - A record contains the kind, amount, owner key, mint, nullifier key and blinding. A dummy's record is all zero, and the auditor rebuilds the dummy hash from its blinding.
 - The proof holds every published blinding to a derivation from the sealed key, the salt, the first nullifier and the slot index.

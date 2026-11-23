@@ -71,6 +71,7 @@ struct TransferCase {
     input_count: usize,
     private_tx_hash: String,
     sender: Option<String>,
+    delegate_asset: String,
     party_identities: Option<Vec<String>>,
     #[serde(default)]
     signer_slots: usize,
@@ -184,6 +185,7 @@ fn transfer_statements_reach_the_go_public_inputs() {
                 salt: &array(&case.salt),
                 layout: AuditLayout {
                     entry: case.layout & 2 != 0,
+                    vouched: case.layout & 1 != 0,
                 },
             },
             family,
@@ -194,6 +196,7 @@ fn transfer_statements_reach_the_go_public_inputs() {
             output_capacity: case.output_capacity,
             input_count: case.input_count,
             private_tx_hash: &array(&case.private_tx_hash),
+            delegate_asset: &array(&case.delegate_asset),
             signers: run,
             roots: &roots,
             public_assets: &arrays::<32>(&case.public_assets).try_into().unwrap(),

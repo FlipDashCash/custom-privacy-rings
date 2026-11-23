@@ -51,6 +51,8 @@ export interface SealedAudit {
   readonly envelope: Uint8Array;
   /** One sealed `V_i` per published slot. */
   readonly recipientKeys: readonly Uint8Array[];
+  /** The voucher's sealed Ed25519 key, present exactly on a vouched layout. */
+  readonly voucher?: Uint8Array;
   /** Each exit's record in slot order, the auditor message carries them. */
   readonly exitRecords: readonly Uint8Array[];
   /** Sent to the relay, the caller wipes it. */
@@ -66,6 +68,8 @@ export function sealAudit(
     /** The published inputs in SPP order, compact padding left out. */
     inputs: readonly ProofInputUtxo[];
     auditor: X25519PublicKey;
+    /** The voucher's Ed25519 key, present exactly on a vouched layout. */
+    voucher?: Bytes32;
   }>,
 ): SealedAudit {
   const { layout } = input;
@@ -80,10 +84,11 @@ export function sealAudit(
         layout,
         recipientKeys: input.published.map((slot) => slot.recipientKey),
         inputs: input.inputs,
+        ...(input.voucher === undefined ? {} : { voucher: input.voucher }),
       }),
     });
     return Object.freeze({
-      audit: Object.freeze({ entry: layout.key.entry }),
+      audit: Object.freeze({ entry: layout.key.entry, vouched: layout.vouched }),
       layout,
       ...sealed,
       exitRecords: Object.freeze(
@@ -110,12 +115,14 @@ export function auditDisclosure(
     /** `V_i` of each published slot. */
     recipientKeys: readonly X25519PublicKey[];
     inputs: readonly ProofInputUtxo[];
+    voucher?: Bytes32;
   }>,
 ): RingDisclosure {
   const { layout, inputs } = input;
   return Object.freeze({
     envelope: auditEnvelopeOf(input.txViewingSecret, inputs, layout),
     recipientKeys: Object.freeze(input.recipientKeys.map((key) => key.u())),
+    ...(input.voucher === undefined ? {} : { voucher: input.voucher }),
   });
 }
 

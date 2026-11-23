@@ -23,7 +23,7 @@ use spr_interface::N_PUBLIC_SLOTS;
 
 use crate::{
     anonymous_exit::ANONYMOUS_PARTIES,
-    audit_stream::{EXIT_RECORD_LEN, RING_RECORD_LEN},
+    audit_stream::{EXIT_RECORD_LEN, RING_RECORD_LEN, SEALED_KEY_LEN},
     cosign::ApprovalMask,
     disclosure::{pack_disclosure, AuditLayout},
     domain,
@@ -53,6 +53,22 @@ pub struct AuditHead<'a> {
 }
 
 impl AuditHead<'_> {
+    /// `Poseidon(digest(envelope), digest(slot keys), hash_bytes(voucher key))`, zero in the last place off a vouched frame.
+    fn stream_digest(&self) -> Result<[u8; 32], HasherError> {
+        let keys =
+            self.layout
+                .split_keys(self.recipient_keys)
+                .ok_or(HasherError::InvalidInputLength(
+                    SEALED_KEY_LEN,
+                    self.recipient_keys.len(),
+                ))?;
+        Poseidon::hashv(&[
+            &ciphertext_digest(self.envelope)?,
+            &ciphertext_digest(keys.slots)?,
+            &keys.voucher.map_or(Ok(ZERO_FIELD), hash_bytes)?,
+        ])
+    }
+
     /// `statement` is the domain, so a proof of one kind cannot answer another.
     fn elements_under(
         &self,
@@ -68,10 +84,7 @@ impl AuditHead<'_> {
             tx1,
             aud0,
             aud1,
-            Poseidon::hashv(&[
-                &ciphertext_digest(self.envelope)?,
-                &ciphertext_digest(self.recipient_keys)?,
-            ])?,
+            self.stream_digest()?,
             right_align(self.salt),
             right_align(&[self.layout.value()]),
         ])
@@ -95,6 +108,8 @@ pub struct TransferStatement<'a> {
     /// `n`, the frame's nullifier count.
     pub input_count: usize,
     pub private_tx_hash: &'a [u8; 32],
+    /// The asset of the mint whose permanent delegate signs, zero on every other frame.
+    pub delegate_asset: &'a [u8; 32],
     /// Default on the authority rails and on an empty run.
     pub signers: SignerSet,
     pub roots: &'a TransferRoots,
@@ -116,7 +131,7 @@ pub struct TransferRoots {
 }
 
 /// Everything but the party cells, the public slots and the close.
-const TRANSFER_FIXED_ELEMENTS: usize = AUDIT_HEAD_ELEMENTS + 3 + 3 + 2 + 2 + 1 + 2 + 4 + 1;
+const TRANSFER_FIXED_ELEMENTS: usize = AUDIT_HEAD_ELEMENTS + 3 + 3 + 2 + 2 + 2 + 2 + 4 + 1;
 
 impl TransferStatement<'_> {
     pub const fn element_count(&self) -> usize {
@@ -143,6 +158,8 @@ impl TransferStatement<'_> {
             count(self.input_count),
             *self.private_tx_hash,
             *self.family.sender(),
+            // A nonzero cell is the asset of every note.
+            *self.delegate_asset,
         ]);
         // 6. The circuit refuses a hidden owner equal to any party the program names.
         elements.extend(self.family.parties());

@@ -52,7 +52,7 @@ func (w Anonymous) Build(t testing.TB) BuiltAnonymous {
 	case PublicOwners:
 		run = append([]*big.Int{Sender(t)}, w.CoOwners...)
 	}
-	c.InProof, c.Hidden, c.Delegate, c.Sender = 0, ringtest.Bit(w.Rail == HiddenSender), ringtest.Bit(w.Rail == AnonymousDelegate), 0
+	c.InProof, c.Hidden, c.Delegate, c.Sender, c.DelegateAsset = 0, ringtest.Bit(w.Rail == HiddenSender), ringtest.Bit(w.Rail == AnonymousDelegate), 0, w.delegateAsset()
 	for i := range c.PartyIdentities {
 		c.PartyIdentities[i] = 0
 		if i < len(w.Parties) {
@@ -75,6 +75,7 @@ func (b BuiltAnonymous) Rehash(t testing.TB) {
 func (b BuiltAnonymous) Rebind(t testing.TB) {
 	t.Helper()
 	b.Circuit.WithdrawalHash = withdrawalHash(t, &b.Circuit.Policy)
+	b.Circuit.Voucher = b.Audit.VoucherWires(t, ringtest.AsBigInt(b.Circuit.PrivateTxHash), ringtest.AsBigInt(b.Circuit.WithdrawalHash))
 	b.Circuit.PublicInputHash = spptest.MustHashChain4(t, b.Statement(t))
 }
 

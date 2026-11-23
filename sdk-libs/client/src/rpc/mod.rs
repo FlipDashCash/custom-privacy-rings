@@ -67,6 +67,8 @@ pub const SUBMIT_RELAY: &str = "submitRelay";
 pub const GET_RELAY_STATUS: &str = "getRelayStatus";
 pub const SUBMIT_RECORD_UPDATE: &str = "submitRecordUpdate";
 pub const SUBMIT_ENROLLMENT: &str = "submitEnrollment";
+pub const PREPARE_VAULT_ENROLLMENT: &str = "prepareVaultEnrollment";
+pub const SUBMIT_VAULT_ENROLLMENT: &str = "submitVaultEnrollment";
 pub const GET_RECORD_UPDATE_STATUS: &str = "getRecordUpdateStatus";
 pub const SET_MERGE_SETTINGS: &str = "setMergeSettings";
 pub const SET_READER_GRANT: &str = "setReaderGrant";
@@ -418,6 +420,9 @@ pub struct DecryptedTransaction {
     pub signers: Vec<SerializablePubkey>,
     /// Public settlement legs, where value left the ring.
     pub withdrawals: Vec<DecryptedWithdrawal>,
+    /// Ed25519, the transfer proof verified its vouch signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vouched_by: Option<SerializablePubkey>,
 }
 
 /// The public legs and nullifiers come from the confirmed transaction.
@@ -720,6 +725,7 @@ impl From<ConfirmedAudit> for DecryptedTransaction {
                 })
                 .collect(),
             real_inputs: audited.real_inputs,
+            vouched_by: audited.voucher.map(Into::into),
             default_inputs: audited.entries.into_iter().map(Into::into).collect(),
             nullifiers: nullifiers.into_iter().map(Into::into).collect(),
             spenders: spenders

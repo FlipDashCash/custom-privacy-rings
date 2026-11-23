@@ -199,6 +199,8 @@ export interface RingTransactData {
   readonly entry: boolean;
   /** The key with its full owner rows, a hidden owner count needs the frame to name the key. */
   readonly wideOwners: boolean;
+  /** A signer vouches for the transfer, its sealed key follows the slot keys. */
+  readonly vouched: boolean;
   /** The `m` published slots, slot `i` keeps its index in every derivation. */
   readonly outputs: readonly RingOutput[];
   /** Set exactly under the reply flag. */
@@ -207,7 +209,7 @@ export interface RingTransactData {
   readonly sender?: PublishedSenderBundle;
   /** `envelope_ct`, the transmitted length is the stream layout's. */
   readonly envelope: Uint8Array;
-  /** `keys_ct`, one sealed `V_i` of 32 bytes per published slot. */
+  /** `keys_ct`, one sealed `V_i` of 32 bytes per published slot, then the voucher's sealed key under `vouched`. */
   readonly recipientKeys: Uint8Array;
   readonly privateTxHash: Bytes32;
   /** Present exactly on the anonymous rail with a hidden sender. */
@@ -262,14 +264,12 @@ function authorityRail(instruction: Uint8Array): RingRail {
   throw invalid("InvalidInstructionData");
 }
 
-/** Rust `RingRail::new`, the delegate rails need the delegate only `SetDelegate` writes. */
+/** Rust `RingRail::new`. */
 export function ringRail(
   tag: number,
   config: Readonly<{ mode: RingMode; delegate?: Address }>,
 ): RingRail {
-  const rail = ringRailOf(tag, config.mode);
-  if (isDelegateRail(rail) && config.delegate === undefined) throw invalid("DelegateDisabled");
-  return rail;
+  return ringRailOf(tag, config.mode);
 }
 
 export function isDelegateRail(rail: RingRail): boolean {
@@ -328,6 +328,7 @@ export function ringStreamLayout(
     publicOwners?: boolean;
     /** The selected key's flag, unset fits the published counts alone. */
     wideOwners?: boolean;
+    vouched?: boolean;
   }>,
 ): AuditStreamLayout {
   const fitted = fittedSpend({
@@ -347,6 +348,7 @@ export function ringStreamLayout(
     hasData: false,
     entry: shape.entry,
     wideOwners: spend.wide,
+    vouched: shape.vouched ?? false,
   };
   if (frameKeyShape(spend) === undefined)
     throw new RingError("RING_CATALOG_KEY_MISSING", {
@@ -389,8 +391,8 @@ export const RingTransactData = Object.freeze({
     }
   },
 
-  auditLayout(data: Pick<RingTransactData, "entry">): AuditLayout {
-    return Object.freeze({ entry: data.entry });
+  auditLayout(data: Pick<RingTransactData, "entry" | "vouched">): AuditLayout {
+    return Object.freeze({ entry: data.entry, vouched: data.vouched });
   },
 
   streamLayout(data: RingTransactData): AuditStreamLayout {
@@ -510,6 +512,8 @@ const ShapeFlag = Object.freeze({ defaultOwnerTag: 1 << 6, publicOwners: 1 << 7 
 const InputFlag = Object.freeze({ hasData: 1 << 6, entry: 1 << 7 });
 /** Byte 3 past `m`, Rust `output_flag::WIDE_OWNERS`, the proof's key opens its full owner rows. */
 const WIDE_OWNERS = 1 << 7;
+/** Byte 3 past `m`, Rust `output_flag::VOUCHED`, the voucher's sealed key follows the recipient keys. */
+const VOUCHED = 1 << 6;
 /** The shape index or the input count, bits 6 and 7 carry the flags. */
 const HEADER_LOW = 0b0011_1111;
 
@@ -536,6 +540,8 @@ interface FrameFlags {
   readonly entry: boolean;
   /** Output count byte bit 7. */
   readonly wideOwners: boolean;
+  /** Output count byte bit 6. */
+  readonly vouched: boolean;
 }
 
 interface FrameHeader {
@@ -592,6 +598,7 @@ function streamOf(rail: RingRail, header: FrameHeader): AuditStreamLayout {
       inputs,
       outputs,
       capacity: shape.outputs,
+      vouched: flags.vouched,
     }),
   );
 }
@@ -685,6 +692,7 @@ function readCompact(bytes: Reader, rail: RingRail): RingTransactData {
     hasData: header.flags.hasData,
     entry: header.flags.entry,
     wideOwners: header.flags.wideOwners,
+    vouched: header.flags.vouched,
     outputs: Object.freeze(outputs),
     ...(replies === undefined ? {} : { replies }),
     ...(sender === undefined ? {} : { sender }),
@@ -1045,9 +1053,10 @@ function readHeader(bytes: Reader, rail: RingRail): FrameHeader {
     hasData: has(inputByte, InputFlag.hasData),
     entry: has(inputByte, InputFlag.entry),
     wideOwners: has(outputByte, WIDE_OWNERS),
+    vouched: has(outputByte, VOUCHED),
   };
   checkFrameFlags(flags, rail);
-  const outputCount = outputByte & ~WIDE_OWNERS;
+  const outputCount = outputByte & ~(WIDE_OWNERS | VOUCHED);
   if (outputCount < 1 || outputCount > shape.outputs) throw invalid("OutputCountOutOfRange");
   return {
     nIn: shape.inputs,
@@ -1065,6 +1074,7 @@ function headerOf(data: RingTransactData): FrameHeader {
     hasData: data.hasData,
     entry: data.entry,
     wideOwners: data.wideOwners,
+    vouched: data.vouched,
   };
   checkFrameFlags(flags, data.rail);
   if (data.outputs.length < 1 || data.outputs.length > data.nOut)
@@ -1091,7 +1101,7 @@ function headerBytes(header: FrameHeader): readonly [number, number, number] {
       bit(flags.defaultOwnerTag, ShapeFlag.defaultOwnerTag) |
       bit(flags.publicOwners, ShapeFlag.publicOwners),
     header.inputCount | bit(flags.hasData, InputFlag.hasData) | bit(flags.entry, InputFlag.entry),
-    header.outputCount | bit(flags.wideOwners, WIDE_OWNERS),
+    header.outputCount | bit(flags.wideOwners, WIDE_OWNERS) | bit(flags.vouched, VOUCHED),
   ];
 }
 

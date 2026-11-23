@@ -1284,6 +1284,7 @@ export interface DecryptedRingTransaction {
   readonly signers: readonly Address[];
   /** Empty when nothing left the ring. */
   readonly withdrawals: readonly DecryptedRingWithdrawal[];
+  readonly vouchedBy?: Address;
 }
 
 export type {
@@ -2529,6 +2530,7 @@ function decodeTransaction(wire: Record<string, unknown>): DecryptedRingTransact
       list(wire["signers"], "signers").map((key, index) => address(key, `signers[${index}]`)),
     ),
     withdrawals: decodeWithdrawals(wire["withdrawals"]),
+    ...(absent(wire["vouchedBy"]) ? {} : { vouchedBy: address(wire["vouchedBy"], "vouchedBy") }),
   });
 }
 

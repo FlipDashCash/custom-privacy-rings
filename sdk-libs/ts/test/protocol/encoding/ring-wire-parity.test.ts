@@ -161,7 +161,7 @@ describe("transfer_statement.json", () => {
         envelope: hexToBytes(vector.envelope),
         recipientKeys: hexToBytes(vector.recipient_keys),
         salt: hexToBytes(vector.salt) as Bytes16,
-        layout: { entry: (vector.layout & 2) !== 0 },
+        layout: { entry: (vector.layout & 2) !== 0, vouched: (vector.layout & 1) !== 0 },
       },
       family:
         vector.family === "confidential"
@@ -184,6 +184,7 @@ describe("transfer_statement.json", () => {
       capacity: vector.output_capacity,
       inputCount: vector.input_count,
       privateTxHash: field(vector.private_tx_hash),
+      delegateAsset: field(vector.delegate_asset),
       signers: signerBinding(vector.signers.map(field), vector.signer_slots),
       roots: {
         policyHash: field(vector.policy_hash),

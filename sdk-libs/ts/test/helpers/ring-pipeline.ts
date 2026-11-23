@@ -711,6 +711,9 @@ export function checkDisclosure(
       recipientKeys: data.outputs.map((_, slot) =>
         data.recipientKeys.subarray(slot * RECIPIENT_KEY_LEN, (slot + 1) * RECIPIENT_KEY_LEN),
       ),
+      ...(data.vouched
+        ? { voucher: data.recipientKeys.subarray(data.outputs.length * RECIPIENT_KEY_LEN) }
+        : {}),
     },
     salt: data.salt,
   });

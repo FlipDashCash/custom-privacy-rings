@@ -480,9 +480,22 @@ pub(crate) struct PolicyParams<'a> {
     pub pools: RecordPools,
     /// `S` entries in row order.
     pub sender_entries: Vec<OwnerEntry>,
+    /// Zero off a screened vouched frame.
+    pub voucher_entry: OwnerEntry,
     pub owner_entries: Vec<OwnerEntry>,
     pub asset_entries: Vec<PoolEntry>,
     pub public_asset_entries: Vec<u32>,
+}
+
+/// Mirror Go `VoucherParams`.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct VoucherParams {
+    #[serde(with = "fe")]
+    pub public_key: [u8; 32],
+    /// Over `VouchMessage::digest`.
+    #[serde(with = "fe")]
+    pub signature: [u8; 64],
 }
 
 /// Mirror Go `TransferParams`.
@@ -502,6 +515,7 @@ pub(crate) struct TransferParams<'a> {
     /// `m`, the published slots.
     pub output_count: u8,
     pub outputs: Vec<OutputOpening>,
+    pub voucher: VoucherParams,
     /// `n`, the frame's nullifier count.
     pub input_count: u8,
     /// The input class, the spent notes in note order then dummies.
@@ -528,6 +542,8 @@ pub(crate) struct TransferParams<'a> {
     /// The in-proof owner, zero on every other rail.
     #[serde(with = "fe")]
     pub sender: [u8; 32],
+    #[serde(with = "fe")]
+    pub delegate_asset: [u8; 32],
     /// Payer, co-signer and exit destination of an anonymous frame, zero when absent.
     #[serde(serialize_with = "fe::seq")]
     pub party_identities: Vec<[u8; 32]>,

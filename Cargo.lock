@@ -2082,6 +2082,7 @@ dependencies = [
  "five8",
  "groth16-solana",
  "hex",
+ "pinocchio 0.11.2",
  "serde",
  "serde_json",
  "solana-address 2.7.0",
@@ -2729,6 +2730,14 @@ name = "encode_unicode"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
+
+[[package]]
+name = "enrollment-vault"
+version = "0.1.0"
+dependencies = [
+ "custom-ring-interface",
+ "pinocchio 0.11.2",
+]
 
 [[package]]
 name = "enum-iterator"
@@ -5357,9 +5366,11 @@ dependencies = [
  "solana-account-decoder-client-types",
  "solana-address 2.7.0",
  "solana-clock 3.2.1",
+ "solana-keypair",
  "solana-rpc-client",
  "solana-rpc-client-api",
  "solana-signature",
+ "solana-signer",
  "solana-transaction",
  "solana-transaction-status-client-types",
  "spr-client",
@@ -5377,6 +5388,7 @@ dependencies = [
  "zolana-ring-member-registry",
  "zolana-ring-policy",
  "zolana-ring-rpc",
+ "zolana-secret-file",
 ]
 
 [[package]]
@@ -8684,9 +8696,17 @@ dependencies = [
  "http-body-util",
  "hyper",
  "jsonrpsee",
+ "log",
+ "reqwest",
  "serde",
  "serde_json",
+ "solana-pubkey 4.3.0",
+ "solana-signature",
+ "spr-indexer-api",
+ "thiserror 2.0.20",
+ "tokio",
  "tower",
+ "url",
 ]
 
 [[package]]

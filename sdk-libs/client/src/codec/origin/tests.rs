@@ -1236,6 +1236,7 @@ fn origin_of_frame(
         sender: None,
         envelope: &[],
         recipient_keys: &keys,
+        vouched: false,
         private_tx_hash: &zero,
         anonymous: None,
         in_proof_owner: in_proof.then_some(InProofOwner {

@@ -51,7 +51,7 @@ func (w Confidential) Build(t testing.TB) Built {
 	case InProof:
 		run = w.CoOwners
 	}
-	c.InProof, c.Hidden, c.Delegate, c.Sender = ringtest.Bit(w.Rail == InProof), 0, ringtest.Bit(w.Rail == Delegate), 0
+	c.InProof, c.Hidden, c.Delegate, c.Sender, c.DelegateAsset = ringtest.Bit(w.Rail == InProof), 0, ringtest.Bit(w.Rail == Delegate), 0, w.delegateAsset()
 	for i := range c.PartyIdentities {
 		c.PartyIdentities[i] = 0
 	}
@@ -81,6 +81,7 @@ func (b Built) Rehash(t testing.TB) {
 func (b Built) Rebind(t testing.TB) {
 	t.Helper()
 	b.Circuit.WithdrawalHash = withdrawalHash(t, &b.Circuit.Policy)
+	b.Circuit.Voucher = b.Audit.VoucherWires(t, ringtest.AsBigInt(b.Circuit.PrivateTxHash), ringtest.AsBigInt(b.Circuit.WithdrawalHash))
 	b.Circuit.PublicInputHash = spptest.MustHashChain4(t, b.Statement(t))
 }
 

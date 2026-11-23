@@ -10,7 +10,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { InterfaceError } from "@heliuslabs/spr/interface";
 import { bigIntBytes, bytesField, isZero, type ExpectedProvingKey } from "@heliuslabs/spr/internal";
-import type { Bytes16, Bytes32 } from "@heliuslabs/spr/interface";
+import type { Bytes16, Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
 import { ClientError } from "@heliuslabs/spr/client";
 import {
   APPLY_BATCH,
@@ -87,6 +87,13 @@ export interface OutputOpeningProofInput {
   readonly recipientKey: Bytes32;
 }
 
+/** Go `VoucherParams`, a throwaway pair off a vouched transfer. */
+export interface VoucherProofInput {
+  readonly publicKey: Bytes32;
+  /** Ed25519 over the 32 bytes of `vouchDigest`. */
+  readonly signature: Bytes64;
+}
+
 /** Go `EntryOpening`, zero off a default-ring input. */
 export interface EntryOpeningProofInput {
   readonly ownerKey: Bytes32;
@@ -141,6 +148,8 @@ export interface PolicyProofInputs extends PolicyTableProofInputs {
   readonly curatorPool: RecordPool;
   /** The pool rows of the key's owner rows. */
   readonly senderEntries: readonly PolicyOwnerEntry[];
+  /** The zero entry off a vouched frame and off a screened ring. */
+  readonly voucherEntry: PolicyOwnerEntry;
   readonly ownerEntries: readonly PolicyOwnerEntry[];
   readonly assetEntries: readonly PolicySubjectEntry[];
   readonly publicAssetEntries: readonly number[];
@@ -178,6 +187,7 @@ export interface TransferProofInputs
   /** `m`, the slots past it leave the frame. */
   readonly outputCount: number;
   readonly outputs: readonly OutputOpeningProofInput[];
+  readonly voucher: VoucherProofInput;
   /** `n`, the published nullifier count. */
   readonly inputCount: number;
   /** SPP's address chain, zero with no address input, checked through `privateTxHash` alone. */
@@ -202,6 +212,8 @@ export interface TransferProofRequest extends TransferProofInputs {
   readonly delegate: boolean;
   /** The in-proof owner, zero on every other rail. */
   readonly sender: Bytes32;
+  /** The asset of the mint whose permanent delegate signs, zero otherwise. */
+  readonly delegateAsset: Bytes32;
   /** Payer, each co-signer and exit destination, zero when absent. */
   readonly partyIdentities: readonly Bytes32[];
 }
@@ -489,6 +501,7 @@ function transferJson(request: TransferProofRequest): Json {
     hidden: flag(request.hidden),
     delegate: flag(request.delegate),
     sender: field(request.sender, "sender"),
+    delegateAsset: field(request.delegateAsset, "delegateAsset"),
     partyIdentities: fields(request.partyIdentities, ANONYMOUS_PARTIES, "partyIdentities"),
     approvalMask: integer(request.approvalMask, "approvalMask", 0, APPROVAL_MASK_MAX),
     ...(request.approvalTotals === undefined
@@ -499,6 +512,10 @@ function transferJson(request: TransferProofRequest): Json {
       : { approvalBlinder: field(request.approvalBlinder, "approvalBlinder") }),
     outputCount: integer(request.outputCount, "outputCount", 1, request.outputs.length),
     outputs: request.outputs.map((output, i) => outputJson(output, `outputs[${i}]`)),
+    voucher: {
+      publicKey: hexBytes(request.voucher.publicKey, 32, "voucher.publicKey"),
+      signature: hexBytes(request.voucher.signature, 64, "voucher.signature"),
+    },
     inputCount: integer(request.inputCount, "inputCount", 1, slots),
     inputs: request.inputs.map((input, i) => openingJson(input, `inputs[${i}]`)),
     addressChain: field(request.addressChain, "addressChain"),
@@ -671,6 +688,7 @@ function policyJson(policy: PolicyProofInputs, shape: PolicySectionShape): Json 
     senderEntries: sized(policy.senderEntries, shape.rows, "senderEntries").map((entry, i) =>
       ownerEntryJson(entry, capacity, `senderEntries[${i}]`),
     ),
+    voucherEntry: ownerEntryJson(policy.voucherEntry, capacity, "voucherEntry"),
     ownerEntries: sized(policy.ownerEntries, slots, "ownerEntries").map((entry, i) =>
       ownerEntryJson(entry, capacity, `ownerEntries[${i}]`),
     ),

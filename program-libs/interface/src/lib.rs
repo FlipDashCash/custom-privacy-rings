@@ -53,6 +53,8 @@ pub mod output;
 pub mod owner_grant;
 #[path = "proof/owner_signature.rs"]
 pub mod owner_signature;
+#[path = "instructions/pda_enrollment.rs"]
+pub mod pda_enrollment;
 #[path = "proof/ring_keys.rs"]
 pub mod ring_keys;
 #[path = "codec/spp.rs"]
@@ -72,6 +74,7 @@ pub mod tracking;
 pub use owner_grant::OwnerGrant;
 #[path = "instructions/transact.rs"]
 pub mod transact;
+#[cfg(feature = "verifying-keys")]
 #[path = "proof/verification.rs"]
 mod verification;
 #[path = "instructions/withdrawals.rs"]
@@ -102,6 +105,7 @@ pub use spp::*;
 pub use state::*;
 pub use statement::*;
 pub use transact::*;
+#[cfg(feature = "verifying-keys")]
 pub use verification::{RegisterKeyCheck, RingProof};
 
 pub const STORAGE_PROGRAM_ID: solana_address::Address =
@@ -124,7 +128,7 @@ pub fn tagged_x25519(u: &[u8; 32]) -> [u8; TAGGED_X25519_KEY_LEN] {
 pub struct AuditorMessage<'a> {
     pub eph_pk: &'a [u8; TAGGED_X25519_KEY_LEN],
     pub envelope: &'a [u8],
-    /// One sealed key per published slot.
+    /// One sealed key per published slot, then the voucher's on a vouched frame.
     pub recipient_keys: &'a [u8],
     /// One record per exit in slot order, every other record opens its slot's body.
     pub exit_records: &'a [u8],

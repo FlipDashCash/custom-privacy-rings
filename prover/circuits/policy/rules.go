@@ -18,10 +18,13 @@
 // 3. A scalar guard exempts a total at most the rule's threshold, a per asset guard an owner's total at most the mint's threshold, and an unguarded rule exempts nothing.
 // 4. Every live input's asset meets every unguarded asset rule, a zero value input included.
 // 5. A rule admits a subject on one of its present lists or off one of its absent lists.
+// 6. The voucher of a vouched transfer meets every sender rule over its own records.
 
 package policy
 
 import (
+	"slices"
+
 	"github.com/consensys/gnark/frontend"
 	"github.com/reilabs/gnark-lean-extractor/v3/abstractor"
 
@@ -52,7 +55,9 @@ func screenedRules(api frontend.API, screened frontend.Variable, table tableView
 
 // assertSenderRules holds every screened sender to every sender rule, with or without a spent input or an output.
 func assertSenderRules(api frontend.API, active []frontend.Variable, table tableView, resolved subjects) {
-	assertSubjectsAdmitted(api, active, table, resolved.senders, resolved.liveSenders, func(rule ruleFields) frontend.Variable { return rule.onSender })
+	// The voucher is one more sender under its own records, a key a sender rule refuses vouches for nobody.
+	views, live := append(slices.Clone(resolved.senders), resolved.voucher), append(slices.Clone(resolved.liveSenders), resolved.vouched)
+	assertSubjectsAdmitted(api, active, table, views, live, func(rule ruleFields) frontend.Variable { return rule.onSender })
 }
 
 // assertSubjectsAdmitted holds every live subject to the active rules selects sets, a key with no such subject carries no gate.

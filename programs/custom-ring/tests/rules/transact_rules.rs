@@ -147,6 +147,7 @@ impl Fixture {
             }),
             envelope: &[],
             recipient_keys: &[],
+            vouched: false,
             private_tx_hash: &self.fields[0],
             anonymous: hidden_sender.then(|| AnonymousProofData {
                 commitment: &self.keys[3],
@@ -1491,6 +1492,76 @@ fn only_the_configured_delegate_moves_withdraws_and_takes_no_deposit() {
         ),
         CustomRingError::DelegateDisabled,
     );
+}
+
+/// The mint sits after the signer, on a ring with or without its own delegate.
+#[test]
+fn a_mint_names_its_live_permanent_delegate_on_the_authority_rail() {
+    use spl_token_2022_interface::{
+        extension::{
+            permanent_delegate::PermanentDelegate, BaseStateWithExtensionsMut, ExtensionType,
+            PodStateWithExtensionsMut,
+        },
+        pod::PodMint,
+    };
+    let token_2022 = Address::new_from_array(spr_interface::SPL_TOKEN_2022_PROGRAM_ID);
+    let fixture = Fixture::new();
+    let issuer = Keypair::new();
+    let mint = Address::new_unique();
+    let mint_data = |delegate: Option<Address>| {
+        let extensions = [ExtensionType::PermanentDelegate];
+        let mut data =
+            vec![0; ExtensionType::try_calculate_account_len::<PodMint>(&extensions).unwrap()];
+        let mut state =
+            PodStateWithExtensionsMut::<PodMint>::unpack_uninitialized(&mut data).unwrap();
+        state
+            .init_extension::<PermanentDelegate>(false)
+            .unwrap()
+            .delegate = delegate
+            .map(|key| key.to_bytes().into())
+            .try_into()
+            .unwrap();
+        state.base.is_initialized = true.into();
+        state.init_account_type().unwrap();
+        data
+    };
+    let data = fixture.transfer(RingRail::Delegate, 2, 2, false);
+    let signer = AccountMeta::new_readonly(issuer.pubkey(), true);
+    for (mut ring, refusal) in [
+        (
+            Ring::new(Setup::AuditOnly),
+            CustomRingError::DelegateDisabled,
+        ),
+        (
+            delegate_ring(&Keypair::new()),
+            CustomRingError::UnauthorizedDelegate,
+        ),
+    ] {
+        let spp = spp_list(&ring.payer.pubkey(), &data, &[]);
+        let send = |ring: &mut Ring, mint: Option<Address>| {
+            let mint = mint.map(|mint| AccountMeta::new_readonly(mint, false));
+            send(
+                ring,
+                tag::AUTHORITY_TRANSFER,
+                std::iter::once(signer.clone()).chain(mint).collect(),
+                data.encode().unwrap(),
+                spp.clone(),
+                &[&issuer],
+            )
+        };
+        ring.store(mint, token_2022, mint_data(Some(issuer.pubkey())));
+        reaches_verification(send(&mut ring, Some(mint)));
+        refused(send(&mut ring, None), refusal);
+        for (owner, data) in [
+            (token_2022, mint_data(None)),
+            (token_2022, mint_data(Some(Address::new_unique()))),
+            (token_2022, vec![0; mint_data(None).len()]),
+            (SYSTEM, mint_data(Some(issuer.pubkey()))),
+        ] {
+            ring.store(mint, owner, data);
+            refused(send(&mut ring, Some(mint)), refusal);
+        }
+    }
 }
 
 /// A curator's restrictive update cannot fail a proof made before it.

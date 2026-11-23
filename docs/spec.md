@@ -35,6 +35,8 @@ The policy defines which checks a transfer must prove. `Initialize` pins the fir
 
 An allowlist is a list of approved identities. A rule can require the sender, every recipient, or both, to be on it. A recipient rule screens every output, the sender's change and each exit included, and the owner of each withdrawal. A guard can exempt payments at or below a threshold, so only recipients above it must be listed. The threshold is one value for the rule, compared with each owner's total of each asset, or one value per asset in the asset's record. Change that the sender's own ring notes fund adds no receipt.
 
+A listed identity can vouch for one transfer. It signs the transfer, the proof verifies the signature without revealing the key, and its entry on `Allow` or `PrivateAllow` then admits every sender and recipient of that transfer. The ring must have a rule table, and the voucher must hold an entry on one of those two lists and pass every sender rule itself. A vouch covers no other list, so a blocked or frozen identity stays refused. The auditor reads the voucher's key from the transfer. A wallet or a program address its user never listed transacts this way under the user's one listed key. See [proof composition](design/proof-composition.md#a-vouchers-allow-entry-admits-the-transfer-it-signs).
+
 ### 1.2. Blocklist
 
 A blocklist is a list of identities or assets the ring refuses. A sender rule over it stops every transfer of a blocked identity. Its notes stay in the ring, it can still merge them, and the delegate can still move them. A blocklist refuses known members only. A fresh key passes it.
@@ -89,7 +91,9 @@ Pausing stops all activity in the ring until it's resumed: deposits, transfers, 
 
 ### 2.2. Permanent delegate
 
-A permanent delegate is a key that can move any note of the ring without its owner's signature. The admin and the delegate set it once, on any ring kind. A delegate move transfers within the ring and withdraws, and takes no deposit leg. SPP has no exit selector on its authority rail, so a delegate move sends no output to the default ring. It reads no rule, guard, cap or approval, so a blocked or frozen member's funds move. Its nonzero-key inputs still match their owners' tracking rows, its outputs still meet the output key rule, and its records still open to the auditor. On an anonymous ring the delegate is public, and the source and the recipients stay hidden. SPP governance must enable the ring's authority rail before the first move.
+A permanent delegate is a key that can move any note of the ring without its owner's signature. The admin and the delegate set it once, on any ring kind. A delegate move transfers within the ring and withdraws, and takes no deposit leg. SPP has no exit selector on its authority rail, so a delegate move sends no output to the default ring. It reads no rule, guard, cap or approval, so a blocked or frozen member's funds move. Its nonzero-key inputs still match their owners' tracking rows, its outputs still meet the output key rule, and its records still open to the auditor. On an anonymous ring the delegate is public, and the source and the recipients stay hidden. SPP opens the ring's authority rail at creation on a pool with permissionless ring activation, and SPP governance opens it on any other pool.
+
+The permanent delegate of a Token-2022 mint signs the same move for a transfer whose every input and output is of that mint. It needs no ring delegate. Ring RPC builds its proofs and returns it no nullifier secret.
 
 ### 2.3. Co-signer approval
 
@@ -126,7 +130,7 @@ These limits bind only the operations the ring requires co-signing for. Ring RPC
 1. **Ring program:** one deployment per ring. Verifies the ring proofs and controls, then calls SPP signed by its ring PDA.
 2. **Storage program:** one shared deployment. Keeps the root history of policy record trees, each under one authority, and of each ring's tracking tree. It verifies the proof of each tree update and of each first enrollment. It checks no policy.
 3. **Ring RPC:** our hosted service. Holds the auditor key, writes policy records, applies enrollments, relays and pays for wallet operations, co-signs under limits, merges enrolled owners' notes and serves readers. It opens every enrolled owner's sealed secret from the ring's tracking rows.
-4. **Ring indexer:** projects every policy and tracking tree from confirmed blocks and lists pending enrollments. It serves record and tracking openings, and forwards every other call to Photon.
+4. **Ring indexer:** projects every policy and tracking tree from confirmed blocks and lists pending enrollments. It serves record and tracking openings, and forwards every other call to Photon. Ring RPC and the ring indexer can each announce their methods to Photon. Photon forwards them after its operator approves the service key, so either Photon or the ring indexer can be the one client endpoint.
 5. **Ring prover:** the zolana prover with the ring circuits added.
 6. **SDKs and CLI:** the Rust and TypeScript SDKs build ring operations. A wallet sends them through Ring RPC by default, or reads the records and Merkle paths from the ring indexer, proves and sends them itself. The operator CLI creates, deploys and governs rings.
 
@@ -180,8 +184,8 @@ Ring RPC signs through separate AWS KMS Ed25519 keys for service attestations, s
 8. **Revocation timing:** a restrictive update binds on chain the moment the Storage program applies it. A transaction that passed Ring RPC or a relayer before then fails on chain. The apply proof marks an update restrictive when it tightens a list, guard or bound, writes a private list or changes an asset limit. A curator's revocation binds as fast as its authority writes it.
 9. **Limits:** Ring RPC enforces co-signer limits only on what it co-signs. A co-signer outside Ring RPC enforces none.
 10. **Photon, ring indexer and chain RPC:** Photon and the ring indexer that forwards to it are trusted for complete history, the chain RPC for confirmed contents. A balance read observes the service's verified finalized history. No authoritative balance or limit decision reads it, see [reading through Ring RPC](design/audit-and-recovery.md#reading-through-ring-rpc). Ring RPC verifies each record opening under the newest root. While the ring indexer lags that root, Ring RPC's tree-mode reader grant checks, its limit updates and its co-signatures on a deposit, transfer or withdrawal fail.
-11. **SPP governance:** trusted to activate the ring when SPP does not activate it at creation, and to enable its authority rail.
-12. **Delegate message:** before the delegate signs, the ring SDKs open the message's output records and check the move against the request. Each requested payment must match its output kind, owner key, nullifier key, mint and amount. Each ring record must be sealed to its owner's viewing key. Each withdrawal must match its recipient, mint, amount and token program. Every other ring output must return to a requested source. The message carries no deposit, extra leg or data. The published nullifiers of notes the delegate opened for the requested sources must number `R`, the proven count of spent notes. The SDKs do not choose which of those notes the move spends.
+11. **SPP governance:** trusted to activate the ring and to open its authority rail when SPP does neither at creation.
+12. **Delegate message:** before the delegate signs, the ring SDKs open the message's output records and check the move against the request. Each requested payment must match its output kind, owner key, nullifier key, mint and amount. Each ring record must be sealed to its owner's viewing key. Each withdrawal must match its recipient, mint, amount and token program. Every other ring output must return to a requested source. The message carries no deposit, extra leg or data. The published nullifiers of notes the delegate opened for the requested sources must number `R`, the proven count of spent notes. The SDKs do not choose which of those notes the move spends. A mint's permanent delegate states its mint and opens no source, so its check holds only the outputs. An unrequested wallet's notes of that mint may fund the move it signs. It learns the notes of that mint Ring RPC selects for any wallet it names.
 
 ## Glossary
 
@@ -394,7 +398,7 @@ An authority transfer moves a wallet's funds to recipients within the same ring 
 
 1. **Delegate:** signs a request naming the source wallets, ring payments and withdrawals, including each mint, recipient and amount. SPL withdrawals also bind their token program when supplied.
 2. **Ring RPC:**
-   1. Checks that the signer is the ring's delegate and that the ring's config names the auditor key Ring RPC holds.
+   1. Checks that the signer is the ring's delegate, or the live permanent delegate of the one mint every leg names, and that the ring's config names the auditor key Ring RPC holds. A mint's delegate is funded from notes of that mint alone.
    2. Opens the source's nullifier secret from its tracking seal, or takes zero under the zero key, and checks it against the source's nullifier key.
    3. Funds the payments from the source's notes and returns the change to the source.
    4. Generates the SPP proof and the ring proof, the inputs' tracking rows and the outputs' key rule included.
@@ -449,7 +453,7 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 7. `SetDelegate`: sets the delegate once. It changes no mode and needs no policy. The admin and the delegate sign.
 8. Tag 58 is unassigned. A deposit is a `Transfer` that spends no note.
 9. `Transfer`: verifies the one ring proof before SPP CPI. Its statement carries the audit, the tracking root and the policy section under the ring's written policy hash. It also carries `approval_mask` under the thresholds of the ring's own records. The payer signs. On the signer rail each input owner also signs. On the in-proof rail the owner the frame names signs inside the SPP proof, and each other owner of the run signs the transaction. The proof holds every input to one of them. On the anonymous rail each public co-owner signs. Each co-signer the demanded classes need and each deposit leg's funder also sign.
-10. `AuthorityTransfer`: as `Transfer` on the authority rail, on a confidential or an anonymous ring. It reads no policy root, sets no approval bit, demands no co-signer and takes no deposit leg. The delegate and the payer sign.
+10. `AuthorityTransfer`: as `Transfer` on the authority rail, on a confidential or an anonymous ring. It reads no policy root, sets no approval bit, demands no co-signer and takes no deposit leg. The delegate and the payer sign. A signer other than the ring's delegate names a Token-2022 mint whose permanent delegate it is, and the proof holds every note to that mint.
 11. `Merge`: verifies the ring merge proof before SPP CPI. Its statement carries the output hash, the first nullifier, the ring id, the auditor and ephemeral keys and the sealed envelope and record. It also carries the payer, the tracking root and SPP's output ciphertext. The payer signs. No co-signer signs.
 
 ### Storage Program

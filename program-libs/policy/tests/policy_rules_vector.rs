@@ -92,12 +92,14 @@ impl Outcome {
         match result {
             Ok(()) => Self::Pass,
             Err(RuleRefusal::Lists { rule, subject }) => Self::lists(rule, subject),
+            Err(RuleRefusal::VoucherUnlisted) => panic!("admit reads no voucher"),
         }
     }
 
     const fn lists(rule: usize, subject: TransferSubject) -> Self {
         match subject {
             TransferSubject::InputAsset(_) => panic!("admit reads no input asset"),
+            TransferSubject::Voucher => panic!("admit reads no voucher"),
             TransferSubject::Sender => Self::Lists {
                 rule,
                 subject: SubjectKind::Sender,

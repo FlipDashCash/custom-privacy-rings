@@ -63,9 +63,11 @@ import {
   pinnedPolicy,
   policySourceView,
   policyTableProofInputs,
+  vouchedBy,
+  evaluateVoucher,
+  type VoucherRefusal,
   type PinnedPolicy,
   type RecordLists,
-  type RuleRefusal,
   type SourceView,
 } from "../protocol/membership/policy.js";
 import {
@@ -121,6 +123,8 @@ export interface PolicyInputs {
   /** At the key's owner rows, zero rows last. */
   readonly rows: readonly Bytes32[];
   readonly senderEntries: readonly PolicyOwnerEntry[];
+  /** The zero entry off a vouched frame and off a screened ring. */
+  readonly voucherEntry: PolicyOwnerEntry;
   /** The output slots then the withdrawals, the request pads them to the key. */
   readonly ownerEntries: readonly PolicyOwnerEntry[];
   readonly assetEntries: readonly PolicySubjectEntry[];
@@ -166,6 +170,8 @@ export type PolicyDemandInput = Readonly<{
   proofInputs: SppProofInputs;
   publicSlots: PublicSlots;
   listSalts: readonly RingListSalt[];
+  /** The owner identity of the voucher's key, absent off a vouched frame. */
+  voucher?: Bytes32;
   /** An unregistered owner on a ring whose policy commits a ring salt reads under it. */
   ringSalt?: Bytes32;
 }>;
@@ -223,7 +229,7 @@ interface PolicySubjects {
   readonly assets: readonly (Bytes32 | undefined)[];
   /** By published input slot, undefined on a dummy or an address slot and off a policy. */
   readonly inputAssets: readonly (Bytes32 | undefined)[];
-  /** Screened owners, empty off a policy. */
+  /** Screened owners and the voucher, empty off a policy. */
   readonly ownerMembers: readonly Bytes32[];
   readonly assetMembers: readonly Bytes32[];
   readonly publicAssets: readonly Bytes32[];
@@ -237,6 +243,8 @@ function policySubjects(
 ): PolicySubjects {
   const { config, rail, proofInputs } = input;
   const pinned = config.hasPolicy && !isDelegateRail(rail) ? pinnedPolicy(config) : undefined;
+  if (pinned === undefined && input.voucher !== undefined)
+    throw new RingError("RING_VOUCHER_UNSCREENED");
   const view = pinned === undefined ? undefined : policySourceView(pinned.sources);
   const liveRows = input.rows.filter((row) => !isZero(row));
   const { outputs } = proofInputs;
@@ -255,7 +263,7 @@ function policySubjects(
   const ownerMembers =
     pinned === undefined
       ? []
-      : firstSeen([...liveRows, ...owners, ...withdrawals.map((leg) => leg.owner)]);
+      : firstSeen([...liveRows, ...owners, ...withdrawals.map((leg) => leg.owner), input.voucher]);
   const ringOwners = outputs.map((output) =>
     output.ringProgramId === undefined
       ? undefined
@@ -375,6 +383,7 @@ export async function readPolicy(
     policyHash: ZERO_32,
     rows: input.rows,
     senderEntries: Object.freeze(input.rows.map(() => ABSENT_OWNER)),
+    voucherEntry: ABSENT_OWNER,
     ownerEntries: Object.freeze([]) as readonly PolicyOwnerEntry[],
     assetEntries: Object.freeze([]) as readonly PolicySubjectEntry[],
     inputAssetEntries: Object.freeze([]) as readonly PolicySubjectEntry[],
@@ -493,20 +502,23 @@ export async function readPolicy(
       output.isDummy() ? [] : [{ output, slot }],
     );
     const ringInputs = spent.filter((note) => note.ring);
+    const voucherLists = input.voucher === undefined ? undefined : ownerLists(input.voucher);
+    const covered = (member: Bytes32 | undefined): RecordLists =>
+      voucherLists === undefined ? ownerLists(member) : vouchedBy(ownerLists(member), voucherLists);
     const payments = [
       ...live.map(({ output, slot }) => ({
         ring: output.ringProgramId !== undefined,
         owner: owners[slot] ?? ZERO_32,
         asset: memberOfAsset(output.asset),
         amount: output.amount,
-        ownerLists: ownerLists(owners[slot]),
+        ownerLists: covered(owners[slot]),
         assetLists: assetLists(assets[slot]),
         mintPolicy: policyOf(memberOfAsset(output.asset)),
       })),
       ...withdrawals.map((leg) => ({
         ...leg,
         ring: false,
-        ownerLists: ownerLists(leg.owner),
+        ownerLists: covered(leg.owner),
         assetLists: assetLists(leg.asset),
         mintPolicy: policyOf(leg.asset),
       })),
@@ -514,7 +526,10 @@ export async function readPolicy(
     // A co-owner who receives nothing is screened, every row passes the sender rules. Payments
     // read once with or without a row, a dummy sender would hold a deposit to sender rules.
     const refusal =
-      evaluateSenders(pinned.table, sources, liveRows.map(ownerLists)) ??
+      (voucherLists === undefined
+        ? undefined
+        : evaluateVoucher(pinned.table, sources, voucherLists)) ??
+      evaluateSenders(pinned.table, sources, liveRows.map(covered)) ??
       evaluatePayments(pinned.table, sources, { ringInputs, outputs: payments }) ??
       evaluateInputAssets(
         pinned.table,
@@ -546,6 +561,7 @@ export async function readPolicy(
     senderEntries: Object.freeze(
       input.rows.map((row) => (isZero(row) ? ABSENT_OWNER : ownerEntry(row))),
     ),
+    voucherEntry: ownerEntry(input.voucher),
     ownerEntries: Object.freeze([
       ...owners.map(ownerEntry),
       ...padding(ABSENT_OWNER),
@@ -797,6 +813,7 @@ export function policyParams(policy: PolicyInputs, proving: PolicyProving): Poli
     ownPool: policy.ownPool ?? unopenedRecordPool(capacity.own),
     curatorPool: policy.curatorPool ?? unopenedRecordPool(capacity.curator),
     senderEntries: policy.senderEntries,
+    voucherEntry: policy.voucherEntry,
     ownerEntries: pad(policy.ownerEntries, slots, ABSENT_OWNER),
     assetEntries: [
       ...pad(policy.assetEntries, slots, ABSENT_ENTRY),
@@ -934,12 +951,16 @@ function emptyTable(): PolicyTableProofInputs {
 }
 
 /** The rule and the subject a refusal names, outputs by their SPP slot. */
-function ruleUnsatisfied(refusal: RuleRefusal, live: readonly number[]): RingError {
+function ruleUnsatisfied(refusal: VoucherRefusal, live: readonly number[]): RingError {
+  if (refusal.kind === "voucherUnlisted")
+    return new RingError("RING_POLICY_RULE_UNSATISFIED", {
+      details: { reason: refusal.kind, subject: "voucher" },
+    });
   const { subject } = refusal;
   const reason = { reason: refusal.kind, ruleIndex: refusal.rule, subject: subject.kind };
   return new RingError("RING_POLICY_RULE_UNSATISFIED", {
     details:
-      subject.kind === "sender"
+      subject.kind === "sender" || subject.kind === "voucher"
         ? reason
         : subject.kind === "inputAsset"
           ? { ...reason, inputIndex: subject.input }

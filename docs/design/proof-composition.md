@@ -68,6 +68,13 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The circuit holds live rows strictly ascending with zero rows last, except on the delegate rail, in `assertRowsAscending`.
 - The tests are `TestInputPredicateOnEveryRail`, `TestZeroKeyInputs`, `TestDelegateInputOwners`, `TestOwnerCapacity`, and `TestRowsAscend` in `prover/circuits/policy`.
 
+### A mint's permanent delegate moves that mint alone
+
+- The program takes any signer in the delegate slot of `AuthorityTransfer`. A signer other than the ring's delegate names a mint in the next slot. The program requires a Token-2022 mint whose `PermanentDelegate` is that signer, in `MintDelegate::asset`, the parse Ring RPC and the Rust SDK also run, and writes `hash_bytes(mint)` as `delegate_asset`. The program writes zero for the ring's delegate.
+- The circuit holds the asset of every live input and every live output to a nonzero `delegate_asset`, an exit included, in `assertAsset`. A zero value holds nothing.
+- SPP conserves each asset over the notes and the public slots, and the program refuses a deposit leg on the rail, so no withdrawal of another asset balances.
+- The tests are `TestDelegateAssetHoldsEveryNote`, `a_mint_names_its_asset_only_to_its_live_permanent_delegate` in `program-libs/interface/tests/transact.rs`, `a_mint_names_its_live_permanent_delegate_on_the_authority_rail` in `programs/custom-ring/tests/rules/transact_rules.rs` and `a_mint_delegate_moves_its_mint_alone_and_reads_no_secret` in `services/ring-rpc/src/operations/authority_transfer.rs`.
+
 ### The signer set is the run SPP authorizes
 
 - The program reads the SPP owner run, deduplicates by first occurrence, and builds `signer_count` and `signer_chain`. Each entry must sign, and none can be a demanded co-signer.
@@ -109,6 +116,21 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - A guard reads same-ring receipts net of the owner's own inputs, and exits and legs gross. Entry funding stays a receipt.
 - The circuit screens each live input's asset under every unconditional asset rule, in `assertInputAssetRules`. A zero-value note therefore cannot carry a delisted asset past the rules.
 - The tests in `prover/circuits/policy` are `TestEveryCoOwnerIsScreened`, `TestReceiptTable`, `TestAssetGuardNetsChange`, `TestZeroValueDelistedInputFailsAnUnconditionalAssetRule` and `TestPolicyWithdrawalBindingAndPadding`.
+
+### A voucher's allow entry admits the transfer it signs
+
+- The circuit verifies one Ed25519 signature over `Poseidon(CRVC, private_tx_hash, withdrawal_hash)` on every proof, in `VoucherWires.Open`. The tag keeps the signed bytes apart from SPP's owner authorization digest, so a vouch authorizes no spend.
+- The program sets the vouched flag from the frame, through bit 0 of the layout element. No prover bit sets it.
+- The circuit refuses a vouched transfer unless `Screened` is set, in `resolveSubjects`, so the delegate rail and a ring with no rule table take no voucher.
+- The circuit reads the signer's records as an owner's and refuses a signer on neither `Allow` nor `PrivateAllow`, in `assertVouches`. It holds the signer to every sender rule in `assertSenderRules`. The key the stream seals is therefore a listed key the sender rules admit.
+- The circuit gives each sender and payment owner the signer's bit on `Allow` and `PrivateAllow` beside its own, in `subjectView.cover`. Every other list reads the subject's own record, and an asset reads no voucher bit.
+- The signer answers for the whole transfer. No wire names a covered subject.
+- The circuit seals the verified key bytes on the blocks past the last recipient key, and zeros on a transfer nobody vouches for. The program adds `hash_bytes` of the transmitted region to `envelope_digest` on a vouched frame, and zero otherwise.
+- The auditor reads the key from the stream. No on-chain value names it.
+- A signer on a private allow list needs its list salt in the witness.
+- The voucher's records take rows of the record pools and the tracking pool the owners share. A transfer that fills every row leaves none for it.
+- A proof nobody vouches for carries a throwaway key and its signature. That key reads no record and enters no ciphertext.
+- The tests are `TestVoucherAdmitsUnlistedOwners` and `TestVouchBindsTheTransfer`, `TestStreamSealsTheVoucherKey` in `prover/circuits/audit`, the voucher cases of `TestPolicySections` and `TestVoucherCoversThePrivateAllowList` in `prover/circuits/policy`, and the voucher index cases of `TestPolicyRequestsRejectMalformedPayloads` in `prover/ring`.
 
 ### The settled outputs are the audited outputs
 

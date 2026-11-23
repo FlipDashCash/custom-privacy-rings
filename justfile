@@ -36,7 +36,7 @@ export PROVER_INDEXER_URL := localnet-ring-indexer-url
 export PROVER_BIN := justfile_directory() / "target/prover-server"
 # Mirrored by GENESIS_PROGRAMS in cli/src/commands/ring/localnet.rs.
 ring-genesis-programs := "--sbf-program rnGSTosTQ9gToNQP44THEZph8xtBtuGa5FEwzhKrWjL target/deploy/storage_program.so"
-sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-transaction zolana-ring-rpc custom-ring-sdk custom-ring-cli custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
+sdk-lib-crates := "zolana-ring-client zolana-ring-indexer zolana-ring-keys zolana-ring-transaction zolana-ring-rpc custom-ring-sdk custom-ring-cli custom-ring-interface zolana-ring-policy zolana-ring-member-registry"
 
 default:
     @just --list
@@ -75,6 +75,8 @@ build-storage-program:
         --manifest-path programs/storage/Cargo.toml -- --locked --features bpf-entrypoint
     SBF_TOOLS_VERSION={{sbf-tools-version}} zolana/tools/build-programs.sh \
         --manifest-path programs/storage/tests/cpi-owner/Cargo.toml -- --locked
+    SBF_TOOLS_VERSION={{sbf-tools-version}} zolana/tools/build-programs.sh \
+        --manifest-path examples/enrollment-vault/Cargo.toml -- --locked
 
 # Skipped when ZOLANA_SPP_PROGRAM_SO and ZOLANA_USER_REGISTRY_SO name builds.
 _spp-programs:
@@ -643,7 +645,7 @@ _test-ts-live test-script *args: build-ring-program _spp-programs build-photon b
     done
     # Ring RPC applies enrollments only for --enrollment-apply-ring, the suites deploy rings at these reserved keys.
     e2e_programs=()
-    for _ in 1 2; do
+    for _ in 1 2 3; do
       e2e_programs+=("$("$custody" signer)")
     done
     e2e_programs_json="$(printf '%s\n' "${e2e_programs[@]}" | jq -sc .)"

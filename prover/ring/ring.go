@@ -133,7 +133,7 @@ func (p PolicyParams) validateIndices(pools policy.RecordPoolShape, trackingPool
 	if err := validatePoolIndices(p.CuratorSubjects, p.CuratorProof, pools.Curator); err != nil {
 		return err
 	}
-	for _, entry := range slices.Concat(p.SenderEntries, p.OwnerEntries) {
+	for _, entry := range slices.Concat(p.SenderEntries, p.OwnerEntries, []PooledOwnerEntry{p.VoucherEntry}) {
 		if err := entry.validateOwnerIndices(pools); err != nil {
 			return err
 		}

@@ -3,11 +3,13 @@ import { describe, expect, it } from "vitest";
 import { MAX_CACHE_WRITES } from "@heliuslabs/spr/interface";
 import type { Bytes32, Bytes33 } from "@heliuslabs/spr/interface";
 import { hashBytes, hashChain4 } from "@heliuslabs/spr/internal";
+import { poseidon } from "@heliuslabs/spr/keypair";
 
 import { CUSTOM_RING_PROOF_LENGTH } from "../../../src/protocol/proof/custom-ring-proof.js";
 import { field, ringFrame, ringInstructionData } from "../../helpers/ring-frame.js";
 import { RingError } from "../../../src/protocol/error.js";
 import {
+  ciphertextDigest,
   envelopeDigest,
   ringTransferStatement,
   signerBinding,
@@ -119,6 +121,41 @@ describe("the ring frame", () => {
     expect(bytes[3]).toBe(2 | (1 << 7));
     expect(bytes[4]).toBe(3);
     expect(RingTransactData.parse(bytes, "confidential").approval).toBe(frame.approval);
+  });
+
+  it("puts the vouched flag at bit 6 of the output count and the voucher's sealed key past the slot keys", () => {
+    const plain = ringFrame({ rail: "confidential", inputs: 1, outputs: 2 });
+    const vouched = ringFrame({ rail: "confidential", inputs: 1, outputs: 2, vouched: true });
+    const bytes = RingTransactData.encode(vouched);
+    expect(RingTransactData.encode(plain)[3]).toBe(2);
+    expect(bytes[3]).toBe(2 | (1 << 6));
+    expect(bytes.length).toBe(RingTransactData.encode(plain).length + RECIPIENT_KEY_LEN);
+    const parsed = RingTransactData.parse(bytes, "confidential");
+    expect(parsed).toEqual(vouched);
+    expect(parsed.outputs).toHaveLength(2);
+    expect(parsed.recipientKeys).toHaveLength(3 * RECIPIENT_KEY_LEN);
+    expect(RingTransactData.auditLayout(parsed)).toEqual({ entry: false, vouched: true });
+    expect(RingTransactData.streamLayout(parsed).vouched).toBe(true);
+    expect(RingTransactData.streamLayout(plain).vouched).toBe(false);
+    expect(RingTransactData.auditorMessage(parsed)).toHaveLength(
+      RingTransactData.auditorMessage(plain).length + RECIPIENT_KEY_LEN,
+    );
+    // The flag and the key region move together, either alone is refused.
+    expect(reason(() => RingTransactData.encode({ ...plain, vouched: true }))).toBe(
+      "RingTransactLength",
+    );
+    expect(reason(() => RingTransactData.encode({ ...vouched, vouched: false }))).toBe(
+      "RingTransactLength",
+    );
+    const wide = ringFrame({
+      rail: "confidential",
+      inputs: 1,
+      outputs: 2,
+      wideOwners: true,
+      vouched: true,
+    });
+    expect(RingTransactData.encode(wide)[3]).toBe(2 | (1 << 6) | (1 << 7));
+    expect(RingTransactData.parse(RingTransactData.encode(wide), "confidential")).toEqual(wide);
   });
 
   it("refuses an approval mask past its two bits", () => {
@@ -399,7 +436,37 @@ describe("the ring frame", () => {
 });
 
 describe("the transfer statement", () => {
-  const STATEMENT_LENGTH = 43;
+  const STATEMENT_LENGTH = 44;
+
+  it("binds the voucher's sealed key in the stream digest and zero off a vouched frame", () => {
+    const envelope = new Uint8Array(33).fill(3);
+    const keys = new Uint8Array(2 * RECIPIENT_KEY_LEN).fill(4);
+    const voucher = new Uint8Array(RECIPIENT_KEY_LEN).fill(6);
+    const sealed = Uint8Array.of(...keys, ...voucher);
+    const digests = [ciphertextDigest(envelope), ciphertextDigest(keys)];
+    expect(envelopeDigest(envelope, keys, { vouched: false })).toEqual(
+      poseidon([...digests, new Uint8Array(32)]),
+    );
+    expect(envelopeDigest(envelope, sealed, { vouched: true })).toEqual(
+      poseidon([...digests, hashBytes(voucher)]),
+    );
+    expect(envelopeDigest(envelope, sealed, { vouched: true })).not.toEqual(
+      envelopeDigest(envelope, sealed, { vouched: false }),
+    );
+    expect(() => envelopeDigest(envelope, new Uint8Array(31), { vouched: true })).toThrow();
+
+    const frame = ringFrame({ rail: "confidential", inputs: 2, outputs: 2, vouched: true });
+    const elements = transferStatementElements(ringTransferStatement(frame, binding([field(31)])));
+    expect(elements).toHaveLength(STATEMENT_LENGTH);
+    expect(elements[7]).toEqual(
+      envelopeDigest(frame.envelope, frame.recipientKeys, { vouched: true }),
+    );
+    expect(elements[9]).toEqual(field(1));
+    const plain = ringFrame({ rail: "confidential", inputs: 2, outputs: 2 });
+    expect(
+      transferStatementElements(ringTransferStatement(plain, binding([field(31)])))[9],
+    ).toEqual(field(0));
+  });
 
   it("orders the confidential elements and closes on the length", () => {
     const frame: Frame = {
@@ -411,7 +478,9 @@ describe("the transfer statement", () => {
     expect(elements).toHaveLength(STATEMENT_LENGTH);
     const bigint = (bytes: Bytes32 | undefined): bigint =>
       bytes === undefined ? -1n : BigInt(`0x${Buffer.from(bytes).toString("hex")}`);
-    expect(elements[7]).toEqual(envelopeDigest(frame.envelope, frame.recipientKeys));
+    expect(elements[7]).toEqual(
+      envelopeDigest(frame.envelope, frame.recipientKeys, RingTransactData.auditLayout(frame)),
+    );
     expect(bigint(elements[13])).toBe(3n);
     expect(bigint(elements[14])).toBe(0n);
     expect(bigint(elements[15])).toBe(1n);
@@ -421,7 +490,7 @@ describe("the transfer statement", () => {
     );
     expect(bigint(elements[18])).toBe(2n);
     expect(elements[19]).toEqual(frame.privateTxHash);
-    expect(bigint(elements[26])).toBe(1n);
+    expect(bigint(elements[27])).toBe(1n);
     expect(bigint(elements.at(-1))).toBe(BigInt(elements.length));
     const disclosed: Frame = { ...frame, extensions: { approvalTotals: field(88) } };
     expect(

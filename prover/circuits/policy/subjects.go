@@ -18,6 +18,7 @@
 // 5. A padded row, a dummy, an unused payment and an unused public slot close their gates and read zeros.
 // 6. A live input's asset reads its lists under Screened alone and decodes no mint policy.
 // 7. A mint policy reads from the own record alone, an asset with no record reads no limit.
+// 8. A sender and a payment owner read the voucher's allow bits beside their own, policy/voucher.go.
 
 package policy
 
@@ -36,8 +37,11 @@ type subjectView struct {
 }
 
 type subjects struct {
-	senders        []subjectView
-	liveSenders    []frontend.Variable
+	senders     []subjectView
+	liveSenders []frontend.Variable
+	// voucher holds the signer's own view, vouched is set on a screened vouched transfer.
+	voucher        subjectView
+	vouched        frontend.Variable
 	owners, assets []subjectView
 	// inputAssets[i] is the asset of input slot i, liveInputs[i] is set on a spent note.
 	inputAssets  []subjectView
@@ -119,16 +123,22 @@ func (p *Policy) resolveSubjects(api frontend.API, table tableView, g Gates, spe
 	}
 	resolved := subjects{owners: make([]subjectView, len(payments)), assets: make([]subjectView, len(payments)), mintPolicies: make([]mintPolicyWires, len(payments))}
 	resolved.senders, resolved.liveSenders = make([]subjectView, len(senders)), make([]frontend.Variable, len(senders))
-	// 3. A padded row and a dummy or unused payment close their gates and read zeros, the rule sections skip them on the same bits.
+	// 3. The voucher reads its lists as any owner does, off a vouched transfer its query closes and it covers nobody.
+	// A vouched transfer needs the rules on and the signer on a list it covers. The stream seals the signer's key on the vouched bit alone, a frame vouched off the rules would hand the auditor a key no record names.
+	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: spend.Vouch.Active, V: api.Sub(1, g.Screened)})
+	resolved.vouched = spend.Vouch.Active
+	resolved.voucher = resolveOwner(p.VoucherEntry, resolved.vouched, spend.Vouch.Identity)
+	resolved.voucher.assertVouches(api, resolved.vouched)
+	// 4. A padded row and a dummy or unused payment close their gates and read zeros, the rule sections skip them on the same bits.
 	for j, sender := range senders {
 		// A zero identity pads the list and carries no rule.
 		resolved.liveSenders[j] = ringgadget.IsNonZero(api, sender)
-		resolved.senders[j] = resolveOwner(p.SenderEntries[j], api.Mul(g.Screened, resolved.liveSenders[j]), sender)
+		resolved.senders[j] = resolveOwner(p.SenderEntries[j], api.Mul(g.Screened, resolved.liveSenders[j]), sender).cover(api, resolved.voucher)
 	}
 	// A mint record serves the rules under a policy and the thresholds on a ring with an own registry.
 	mintRead := api.Or(g.Screened, g.Outflow)
 	for i, pay := range payments {
-		resolved.owners[i] = resolveOwner(p.OwnerEntries[i], api.Mul(pay.Active, g.Screened), pay.Owner)
+		resolved.owners[i] = resolveOwner(p.OwnerEntries[i], api.Mul(pay.Active, g.Screened), pay.Owner).cover(api, resolved.voucher)
 		var record pooledRecord
 		resolved.assets[i], record = resolve(p.AssetEntries[i], api.Mul(pay.Active, mintRead), curated, pay.Asset)
 		resolved.mintPolicies[i] = decodeMintPolicy(api, record.mintPolicy)
@@ -139,7 +149,7 @@ func (p *Policy) resolveSubjects(api frontend.API, table tableView, g Gates, spe
 		record := pooledRecordAt(own.resolve(api, recordQuery{active: active, member: asset, index: index}))
 		resolved.publicAssets = append(resolved.publicAssets, publicAsset{limitedAsset: limitedAsset{asset: asset, active: active, policy: decodeMintPolicy(api, record.mintPolicy)}, withdrawalThreshold: record.withdrawalThreshold})
 	}
-	// 4. Every live input's asset reads its lists like a payment's, off the slot SPP spends, and a repeated asset can share one subject row. Only the rules read it, so the outflow gate opens no query here and no mint policy decodes. The authority rail clears Screened and spends with no read.
+	// 5. Every live input's asset reads its lists like a payment's, off the slot SPP spends, and a repeated asset can share one subject row. Only the rules read it, so the outflow gate opens no query here and no mint policy decodes. The authority rail clears Screened and spends with no read.
 	resolved.inputAssets, resolved.liveInputs = make([]subjectView, len(spend.Inputs)), make([]frontend.Variable, len(spend.Inputs))
 	for i, input := range spend.Inputs {
 		resolved.liveInputs[i] = input.Utxo

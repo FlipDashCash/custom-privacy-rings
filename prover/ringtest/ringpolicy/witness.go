@@ -127,11 +127,12 @@ func (w World) BuildRows(t testing.TB, rows Rows) Witness {
 	c.InputChain = inputChain
 	c.ThresholdsActive, c.Delegate = ringtest.Bit(!w.NoOwnRegistry && !w.Delegate), ringtest.Bit(w.Delegate)
 	c.ApprovalMask, c.ApprovalTotals, c.ApprovalBlinder = w.Approval, 0, 0
+	c.Vouched, c.Voucher = ringtest.Bit(w.Voucher != 0), w.Voucher
 	tracking := ringregistry.NewTracking(t)
 	for _, owner := range w.Enrolled {
 		Enroll(t, tracking, big.NewInt(owner), big.NewInt(owner+1))
 	}
-	FillPools(t, p, c.Outputs, c.Inputs, c.Senders, own, curator, tracking)
+	FillPools(t, p, c.Outputs, c.Inputs, c.Senders, c.Voucher, own, curator, tracking)
 	payments := make([]frontend.Variable, 0, len(p.OwnerEntries))
 	for _, out := range c.Outputs {
 		payments = append(payments, out.OwnerPkHash)
@@ -143,7 +144,7 @@ func (w World) BuildRows(t testing.TB, rows Rows) Witness {
 	for o := range outputs {
 		outputs[o] = 0
 	}
-	FillTracking(t, &c.Tracking, tracking, c.Senders, outputs, p, payments)
+	FillTracking(t, &c.Tracking, tracking, c.Senders, outputs, p, payments, c.Voucher)
 	b.Rehash(t)
 	return b
 }
@@ -240,7 +241,7 @@ func (w World) balancedInputs() []Slot {
 
 // owners is every identity the world screens as an owner, its records sit under the public key.
 func (w World) owners() map[int64]bool {
-	owners := map[int64]bool{w.Sender: true}
+	owners := map[int64]bool{w.Sender: true, w.Voucher: true}
 	for _, owner := range w.CoOwners {
 		owners[owner] = true
 	}

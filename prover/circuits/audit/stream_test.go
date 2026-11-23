@@ -138,9 +138,9 @@ func TestDataHashesNeedNoLayoutBit(t *testing.T) {
 	s.Outputs[0].Utxo.DataHash = big.NewInt(0xda7a)
 	s.Outputs[0].Utxo.RingDataHash = big.NewInt(0x5ca1e)
 	c.RequireSolved(t, s.Circuit(t))
-	t.Run("bit 0", func(t *testing.T) {
+	t.Run("bit 2", func(t *testing.T) {
 		circuit := s.Circuit(t)
-		circuit.Layout = 1
+		circuit.Layout = 1 << 2
 		c.Refuse(t, circuit)
 	})
 }
@@ -156,7 +156,35 @@ func TestLayoutIsTheKeys(t *testing.T) {
 	t.Run("entry on a key with no entry capacity", func(t *testing.T) { refuse(t, plainShape, audit.LayoutEntry) })
 	t.Run("no entry on an entry key", func(t *testing.T) { refuse(t, entryShape, 0) })
 	t.Run("a bit past the flags", func(t *testing.T) { refuse(t, plainShape, 1<<2) })
-	t.Run("bit 0 on an entry key", func(t *testing.T) { refuse(t, entryShape, audit.LayoutEntry|1) })
+}
+
+// The auditor opens the voucher's key from its own blocks, and a frame nobody vouches for seals zeros there.
+func TestStreamSealsTheVoucherKey(t *testing.T) {
+	for _, shape := range []audit.StreamShape{plainShape, entryShape} {
+		c := compileSection(t, shape)
+		region := func(s ringaudit.Audit) []byte {
+			return s.Keys.Open(t, s.Stream(t))[shape.Ranges().VoucherOffset():][:audit.KeyLen]
+		}
+		vouched := ringaudit.NewSection(t, shape)
+		vouched.Voucher = ringaudit.VoucherKey
+		c.RequireSolved(t, vouched.Circuit(t))
+		if !bytes.Equal(region(vouched), vouched.SignerKey()) {
+			t.Fatal("the stream seals another key")
+		}
+		if !bytes.Equal(region(ringaudit.NewSection(t, shape)), make([]byte, audit.KeyLen)) {
+			t.Fatal("an unvouched stream seals a key")
+		}
+		t.Run("a voucher region the frame left out", func(t *testing.T) {
+			unvouched := vouched
+			unvouched.Voucher = nil
+			c.RefuseStatement(t, vouched.Circuit(t), unvouched.Statement(t))
+		})
+		t.Run("a flipped voucher ciphertext byte", func(t *testing.T) {
+			stream := vouched.Stream(t)
+			stream.Voucher()[0] ^= 1
+			c.RefuseStatement(t, vouched.Circuit(t), vouched.StatementOf(t, stream, vouched.Claim()))
+		})
+	}
 }
 
 // The reader rebuilds every slot with no mint registry.
@@ -246,6 +274,7 @@ func TestStreamVector(t *testing.T) {
 		EnvelopeCt    string   `json:"envelope_ciphertext"`
 		RecipientKeys []string `json:"recipient_keys"`
 		KeysCt        string   `json:"recipient_keys_ciphertext"`
+		Voucher       string   `json:"voucher"`
 		Records       []string `json:"records"`
 		RecordCts     []string `json:"record_ciphertexts"`
 		OutputHashes  []string `json:"output_hashes"`
@@ -258,6 +287,8 @@ func TestStreamVector(t *testing.T) {
 	data.Outputs[0].Utxo.RingDataHash = big.NewInt(0x5ca1e)
 	defaultFirst := ringaudit.NewSection(t, audit.StreamShape{InputClass: 4, Outputs: 2, Entry: true})
 	defaultFirst.Inputs[0], defaultFirst.Inputs[1] = defaultFirst.Inputs[1], defaultFirst.Inputs[0]
+	vouched := ringaudit.NewSection(t, plainShape)
+	vouched.Voucher = ringaudit.VoucherKey
 	sections := []struct {
 		name    string
 		section ringaudit.Audit
@@ -268,6 +299,7 @@ func TestStreamVector(t *testing.T) {
 		{"entry", ringaudit.NewSection(t, entryShape)},
 		{"no_spend", ringaudit.NewSection(t, plainShape).Spending(t, 0)},
 		{"entry_default_first", defaultFirst},
+		{"vouched", vouched},
 	}
 	cases := make([]vectorCase, len(sections))
 	for k, tc := range sections {
@@ -277,7 +309,7 @@ func TestStreamVector(t *testing.T) {
 		v := vectorCase{
 			Name: tc.name, Layout: s.Layout(), InputClass: s.Shape.InputClass, Outputs: s.Shape.Outputs, OutputCount: s.OutputCount(), InputCount: s.InputCount,
 			Envelope: hex.EncodeToString(p.Envelope), EnvelopeCt: hex.EncodeToString(stream.Envelope(s.InputCount)),
-			KeysCt:       hex.EncodeToString(stream.Keys(s.OutputCount())),
+			KeysCt:       hex.EncodeToString(sealedKeys(s, stream)),
 			EnvelopeHash: ringtest.FieldHex(s.StatementOf(t, stream, s.Claim())[7]),
 			RecordChain:  ringtest.FieldHex(ringaudit.RecordChain(t, s.StatementOutputs(t, stream))),
 		}
@@ -288,11 +320,14 @@ func TestStreamVector(t *testing.T) {
 			v.OutputHashes = append(v.OutputHashes, ringtest.FieldHex(s.Outputs[i].Utxo.Hash(t)))
 			v.Blindings = append(v.Blindings, ringtest.FieldHex(s.Blinding(t, i)))
 		}
+		if s.Vouched() {
+			v.Voucher = hex.EncodeToString(s.SignerKey())
+		}
 		cases[k] = v
 	}
 	txViewingSk, auditorSk := sections[0].section.Keys.TxViewingSk(), ringaudit.AuditorSk()
 	ringtest.PinVector(t, "audit/audit-stream.json", map[string]any{
-		"description":     "Auditor streams under CRING/adt and output records under CRING/rcp and each slot's delivered secret, from solved witnesses. Records and record_ciphertexts hold the published bytes, 137 on an exit and 105 otherwise.",
+		"description":     "Auditor streams under CRING/adt and output records under CRING/rcp and each slot's delivered secret, from solved witnesses. Records and record_ciphertexts hold the published bytes, 137 on an exit and 105 otherwise. recipient_keys_ciphertext is the sealed key region a frame carries, the slot keys then the voucher key on a vouched frame, and voucher is that key's plaintext.",
 		"tx_viewing_sk":   hex.EncodeToString(txViewingSk[:]),
 		"auditor_sk":      hex.EncodeToString(auditorSk[:]),
 		"salt":            hex.EncodeToString(sections[0].section.Salt[:]),
@@ -301,4 +336,13 @@ func TestStreamVector(t *testing.T) {
 		"output_tree_id":  ringaudit.OutputTreeID,
 		"cases":           cases,
 	})
+}
+
+// sealedKeys is the key region a frame carries, the slot keys then the voucher's on a vouched frame.
+func sealedKeys(s ringaudit.Audit, stream ringaudit.Stream) []byte {
+	keys := stream.Keys(s.OutputCount())
+	if s.Vouched() {
+		return slices.Concat(keys, stream.Voucher())
+	}
+	return keys
 }

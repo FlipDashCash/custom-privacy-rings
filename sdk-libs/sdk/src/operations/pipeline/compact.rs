@@ -165,12 +165,13 @@ pub(crate) struct TransactParts {
     pub has_data: bool,
     pub entry: bool,
     pub wide_owners: bool,
+    pub vouched: bool,
     pub outputs: Vec<OwnedOutput>,
     /// `reply_len` and the region, set exactly under `REPLY_METADATA`.
     pub replies: Option<(u16, Vec<u8>)>,
     pub sender: Option<OwnedSenderBundle>,
     pub envelope: Vec<u8>,
-    /// One sealed recipient key per published slot.
+    /// One sealed recipient key per published slot, then the voucher's under `vouched`.
     pub recipient_keys: Vec<u8>,
     pub private_tx_hash: [u8; 32],
     pub anonymous: Option<OwnedAnonymousProofData>,
@@ -227,6 +228,7 @@ impl TransactParts {
             sender: self.sender.as_ref().map(OwnedSenderBundle::view),
             envelope: &self.envelope,
             recipient_keys: &self.recipient_keys,
+            vouched: self.vouched,
             private_tx_hash: &self.private_tx_hash,
             anonymous: self.anonymous.as_ref().map(|anonymous| AnonymousProofData {
                 commitment: &anonymous.commitment,
@@ -258,6 +260,7 @@ pub(crate) struct TransactAccounts {
     pub read_cache: Option<Address>,
     pub co_signers: Vec<Address>,
     pub delegate: Option<Address>,
+    pub delegate_mint: Option<Address>,
 }
 
 impl TransactAccounts {
@@ -330,6 +333,10 @@ impl TransactAccounts {
         accounts.extend(
             self.delegate
                 .map(|delegate| AccountMeta::new_readonly(delegate, true)),
+        );
+        accounts.extend(
+            self.delegate_mint
+                .map(|mint| AccountMeta::new_readonly(mint, false)),
         );
         accounts.extend(spp);
         let mut bytes = vec![match parts.rail.is_delegate() {

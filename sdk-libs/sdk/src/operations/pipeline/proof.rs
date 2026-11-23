@@ -54,6 +54,7 @@ impl Assembled {
                 .map(|opening| opening.blinder.0),
             output_count: byte(parts.outputs.len())?,
             outputs: audit.output_openings(stream.capacity)?,
+            voucher: self.voucher,
             input_count: byte(frame.published_inputs)?,
             inputs: audit.input_openings(class)?,
             address_chain: audit.address_chain()?,
@@ -66,6 +67,7 @@ impl Assembled {
             hidden: parts.anonymous.is_some(),
             delegate: parts.rail.is_delegate(),
             sender: self.sender,
+            delegate_asset: frame.delegate_asset,
             party_identities: self.party_identities.to_vec(),
             tracking: frame.policy.tracking_params()?,
             policy: frame.policy.params(&PolicyProving {

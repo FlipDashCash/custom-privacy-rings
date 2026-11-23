@@ -35,6 +35,7 @@ import {
 } from "../../protocol/codec/audit-stream.js";
 import {
   recipientKeyRegion,
+  voucherRegion,
   STREAM_FIRST_COUNTER,
   type AuditStreamLayout,
 } from "../../protocol/codec/ring-disclosure-layout.js";
@@ -194,6 +195,8 @@ export interface AuditedRingTransaction {
   readonly inputs: readonly AuditedInput[];
   /** The default-ring notes among the `R` spent notes, in note order. */
   readonly entries: readonly AuditedEntryInput[];
+  /** The Ed25519 key that vouched for the transfer, absent off a vouched frame. */
+  readonly voucher?: Bytes32;
 }
 
 /** Rust `UtxoOwner`. */
@@ -456,6 +459,10 @@ export function openRingTransfer(input: TransactionAuditInput): OpenedRingAudit 
     );
     const entries = entryInputs(envelope);
     const sender = senderOf(input.rail, envelope, entries, inputs, input.knownUtxos);
+    const voucher =
+      message.voucher === undefined
+        ? undefined
+        : (schedule.apply(voucherRegion(layout).startCounter, message.voucher) as Bytes32);
     return Object.freeze({
       realInputs,
       audited: Object.freeze({
@@ -470,6 +477,7 @@ export function openRingTransfer(input: TransactionAuditInput): OpenedRingAudit 
         ...(sender === undefined ? {} : { sender }),
         inputs: Object.freeze(inputs),
         entries,
+        ...(voucher === undefined ? {} : { voucher }),
       }),
     });
   } finally {

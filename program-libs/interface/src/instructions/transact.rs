@@ -23,7 +23,7 @@
 //! 10. One [`RingOutput`] per slot, SPP's `utxo_hash`, `owner_tag` and `data`, then the slot's record. A non-exit slot carries a short tag and its record opens the ring's scheme 10 body. An exit carries the full tag, its record goes to the auditor message and SPP's scheme 3 body follows.
 //! 11. [`Replies`] under `REPLY_METADATA`, appended to each scheme 10 body inside SPP's `data`.
 //! 12. [`FramedSenderBundle`] on an anonymous frame, SPP's first message under scheme 9.
-//! 13. The envelope and the recipient keys. With the exits' records, the auditor message, SPP's last message, with the auditor's `u` as its view tag.
+//! 13. The envelope and the recipient keys, then the voucher's sealed key under `output_flag::VOUCHED`. With the exits' records, the auditor message, SPP's last message, with the auditor's `u` as its view tag.
 //! 14. `private_tx_hash`. SPP's, the ring proof reopens it over the slots it opened.
 //! 15. [`AnonymousProofData`] or [`InProofOwner`]. The BSB22 commitment and default owner tag of SPP's anonymous selector, and the in proof owner's key for the statement.
 //! 16. `spp_proof`. SPP's, with `b` compressed, and the expansion decompresses it.
@@ -35,7 +35,14 @@
 mod expansion;
 
 use solana_address::Address;
-use spr_hasher::{primitives::solana_owner_identity, HasherError};
+use spl_token_2022_interface::{
+    extension::{permanent_delegate::get_permanent_delegate, PodStateWithExtensions},
+    pod::PodMint,
+};
+use spr_hasher::{
+    primitives::{hash_bytes, solana_owner_identity},
+    HasherError,
+};
 use spr_interface::{
     error::ShieldedPoolError,
     instruction::{
@@ -50,7 +57,7 @@ use spr_interface::{
         CircuitId, InterfaceTransfer, TreeContext,
     },
     shape::{Shape, SPP_SUPPORTED_SHAPES},
-    N_PUBLIC_SLOTS,
+    N_PUBLIC_SLOTS, SPL_TOKEN_2022_PROGRAM_ID,
 };
 use wincode::{containers, len::FixIntLen, Serialize};
 
@@ -103,7 +110,6 @@ pub enum RailSigner {
     /// The anonymous rail, the payer, the owner run, the co-signers and the funders sign.
     Payer,
     Delegate {
-        delegate: Address,
         anonymous_ring: bool,
     },
 }
@@ -113,13 +119,9 @@ impl RailSigner {
         match RingRail::of(tag, ring.mode()?)? {
             RingRail::Anonymous => Ok(Self::Payer),
             RingRail::Confidential => Ok(Self::Owners),
-            rail @ (RingRail::Delegate | RingRail::AnonymousDelegate) => ring
-                .delegate()
-                .map(|delegate| Self::Delegate {
-                    delegate: *delegate,
-                    anonymous_ring: rail == RingRail::AnonymousDelegate,
-                })
-                .ok_or(CustomRingError::DelegateDisabled),
+            rail @ (RingRail::Delegate | RingRail::AnonymousDelegate) => Ok(Self::Delegate {
+                anonymous_ring: rail == RingRail::AnonymousDelegate,
+            }),
         }
     }
 
@@ -136,6 +138,31 @@ impl RailSigner {
                 ..
             } => RingRail::AnonymousDelegate,
         }
+    }
+}
+
+#[must_use]
+pub struct MintDelegate<'a> {
+    pub mint: &'a Address,
+    pub owner: &'a Address,
+    pub data: &'a [u8],
+    pub signer: &'a Address,
+}
+
+impl MintDelegate<'_> {
+    /// The mint's asset field, `UnauthorizedDelegate` unless `signer` is its live permanent delegate.
+    pub fn asset(self) -> Result<[u8; 32], CustomRingError> {
+        if self.owner.as_array() != &SPL_TOKEN_2022_PROGRAM_ID {
+            return Err(CustomRingError::UnauthorizedDelegate);
+        }
+        let state = PodStateWithExtensions::<PodMint>::unpack(self.data)
+            .map_err(|_| CustomRingError::UnauthorizedDelegate)?;
+        if get_permanent_delegate(&state).map(|delegate| delegate.to_bytes())
+            != Some(self.signer.to_bytes())
+        {
+            return Err(CustomRingError::UnauthorizedDelegate);
+        }
+        Ok(hash_bytes(self.mint.as_array())?)
     }
 }
 
@@ -295,8 +322,10 @@ pub struct RingTransactData<'a> {
     pub sender: Option<FramedSenderBundle<'a>>,
     /// `envelope_ct`, the transmitted length is the stream layout's.
     pub envelope: &'a [u8],
-    /// One sealed key per published slot, in slot order.
+    /// One sealed key per published slot, in slot order, then the voucher's key under `vouched`.
     pub recipient_keys: &'a [u8],
+    /// A signer vouches for the transfer, `policy/voucher.go`.
+    pub vouched: bool,
     /// SPP's, the proof reopens it over the slots it opened and ties both proofs to one transaction.
     pub private_tx_hash: &'a [u8; 32],
     /// Present exactly on the anonymous rail with a hidden sender.
@@ -619,6 +648,7 @@ impl<'a> ParsedTransact<'a> {
             output_capacity: self.stream.capacity,
             input_count: data.nullifiers.len(),
             private_tx_hash: data.private_tx_hash,
+            delegate_asset: binding.delegate_asset,
             signers: binding.signers,
             roots: binding.roots,
             public_assets: binding.public_assets,
@@ -637,6 +667,7 @@ pub struct TransferBinding<'a> {
     pub auditor_pubkey: &'a [u8; TAGGED_X25519_KEY_LEN],
     /// The in-proof owner identity, otherwise zero.
     pub sender: &'a [u8; 32],
+    pub delegate_asset: &'a [u8; 32],
     /// Default on the authority rails and on an empty run.
     pub signers: SignerSet,
     /// Zero outside the anonymous family.
@@ -697,6 +728,7 @@ impl<'a> RingTransactData<'a> {
             inputs: usize::from(input_count),
             outputs: output_count,
             capacity: usize::from(shape.outputs),
+            vouched: header.flags.vouched,
         };
         // 5. Each slot's fields for SPP, then its record. A non-exit tag travels short and regains its
         // leading zeros. The bytes past the record carry a length under `has_data` and their plain
@@ -819,6 +851,7 @@ impl<'a> RingTransactData<'a> {
             sender,
             envelope,
             recipient_keys,
+            vouched: header.flags.vouched,
             private_tx_hash,
             anonymous,
             in_proof_owner,
@@ -1217,7 +1250,10 @@ impl<'a> RingTransactData<'a> {
     }
 
     pub fn audit_layout(&self) -> AuditLayout {
-        AuditLayout { entry: self.entry }
+        AuditLayout {
+            entry: self.entry,
+            vouched: self.vouched,
+        }
     }
 
     /// Every ciphertext length of the transfer, refusing a frame no key serves.
@@ -1232,6 +1268,7 @@ impl<'a> RingTransactData<'a> {
             inputs: self.nullifiers.len(),
             outputs: self.outputs.len(),
             capacity: usize::from(shape.outputs),
+            vouched: self.vouched,
         }
     }
 
@@ -1455,8 +1492,11 @@ pub mod input_flag {
 }
 
 pub const OUTPUT_COUNT_BYTE: usize = 3;
-/// Byte 3, the proof's key opens its full owner rows.
+/// Byte 3, the published slot count below these flags.
 pub mod output_flag {
+    /// The voucher's sealed key follows the recipient keys.
+    pub const VOUCHED: u8 = 1 << 6;
+    /// The proof's key opens its full owner rows.
     pub const WIDE_OWNERS: u8 = 1 << 7;
 }
 pub const APPROVAL_BYTE: usize = 4;
@@ -1555,13 +1595,14 @@ impl FrameHeader {
             has_data: inputs & input_flag::HAS_DATA != 0,
             entry: inputs & input_flag::ENTRY != 0,
             wide_owners: output_count & output_flag::WIDE_OWNERS != 0,
+            vouched: output_count & output_flag::VOUCHED != 0,
         };
         flags.check(rail)?;
         let header = Self {
             n_in: count_byte(spp_shape.n_inputs())?,
             n_out: count_byte(spp_shape.n_outputs())?,
             input_count: inputs & Self::LOW,
-            output_count: output_count & !output_flag::WIDE_OWNERS,
+            output_count: output_count & !(output_flag::WIDE_OWNERS | output_flag::VOUCHED),
             flags,
         };
         header.check_output_count()?;
@@ -1607,7 +1648,9 @@ impl FrameHeader {
             self.input_count
                 | flag(flags.has_data, input_flag::HAS_DATA)
                 | flag(flags.entry, input_flag::ENTRY),
-            self.output_count | flag(flags.wide_owners, output_flag::WIDE_OWNERS),
+            self.output_count
+                | flag(flags.wide_owners, output_flag::WIDE_OWNERS)
+                | flag(flags.vouched, output_flag::VOUCHED),
         ])
     }
 }
@@ -1629,6 +1672,8 @@ struct FrameFlags {
     entry: bool,
     /// Output count byte bit 7.
     wide_owners: bool,
+    /// Output count byte bit 6.
+    vouched: bool,
 }
 
 impl FrameFlags {
@@ -1641,6 +1686,7 @@ impl FrameFlags {
             has_data: data.has_data,
             entry: data.entry,
             wide_owners: data.wide_owners,
+            vouched: data.vouched,
         }
     }
 

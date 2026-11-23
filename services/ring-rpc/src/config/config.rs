@@ -12,6 +12,7 @@ use p256::elliptic_curve::subtle::ConstantTimeEq;
 use solana_address::Address;
 use solana_hash::Hash;
 use spr_keypair::X25519Keypair;
+use spr_rpc_http::forward::UpstreamUrl;
 use thiserror::Error;
 use zeroize::Zeroizing;
 use zolana_operator_custody::{
@@ -102,6 +103,12 @@ pub struct ServeArgs {
     pub request_timeout_secs: NonZeroU64,
     #[arg(long, env = "RING_RPC_UPSTREAM_TIMEOUT_SECS", default_value = "10")]
     pub upstream_timeout_secs: NonZeroU64,
+    /// Photon's private registry, set to have Photon forward the served methods here.
+    #[arg(long, env = "RING_RPC_PHOTON_REGISTRY_URL", requires = "public_url")]
+    pub photon_registry_url: Option<UpstreamUrl>,
+    /// The service URL Photon connects to.
+    #[arg(long, env = "RING_RPC_PUBLIC_URL", requires = "photon_registry_url")]
+    pub public_url: Option<UpstreamUrl>,
     /// Lamports reserved and spent over the store's life on enrollments and token accounts, zero refuses every charge.
     #[arg(long, env = "RING_RPC_RELAY_BUDGET_LAMPORTS", default_value_t = 0)]
     pub relay_budget_lamports: u64,
@@ -138,6 +145,13 @@ pub struct ServeArgs {
         value_delimiter = ','
     )]
     pub enrollment_apply_rings: Vec<Address>,
+    /// A vault program trusted with the enrollment writer's signature.
+    #[arg(
+        long = "enrollment-vault-program",
+        env = "RING_RPC_ENROLLMENT_VAULT_PROGRAMS",
+        value_delimiter = ','
+    )]
+    pub enrollment_vault_programs: Vec<Address>,
     /// Serve plain HTTP on a public address and accept plain HTTP origins, test deployments only.
     #[arg(long, env = "RING_RPC_INSECURE_PUBLIC_BIND")]
     pub insecure_public_bind: bool,
@@ -426,6 +440,7 @@ impl ServeArgs {
         }
         if !applier
             && (!self.enrollment_apply_rings.is_empty()
+                || !self.enrollment_vault_programs.is_empty()
                 || self.enrollment_budget_lamports != 0
                 || self.enrollment_ring_budget_lamports.is_some()
                 || self.enrollment_max_rings.is_some())
@@ -635,6 +650,12 @@ mod tests {
             (
                 "a named ring without an applier",
                 vec!["--enrollment-apply-ring", &ring],
+                custody(&[]),
+                Enrollment,
+            ),
+            (
+                "a vault program without an applier",
+                vec!["--enrollment-vault-program", &ring],
                 custody(&[]),
                 Enrollment,
             ),

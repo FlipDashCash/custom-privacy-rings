@@ -103,7 +103,7 @@ async fn exit_owner(
     };
     match stage_anonymous(&transfer, &chain).await?.spend {
         Spend::Anonymous(_) => Ok(()),
-        Spend::Owner | Spend::InProofOwner(_) | Spend::PublicOwners | Spend::Delegate { .. } => {
+        Spend::Owner(_) | Spend::InProofOwner(_) | Spend::PublicOwners | Spend::Delegate { .. } => {
             unreachable!("an anonymous ring stages its rail")
         }
     }
@@ -966,6 +966,7 @@ async fn only_the_configured_delegate_moves_utxos() {
             member,
             key: key.nullifier_key.clone(),
             inputs,
+            mint: None,
         })
     };
     let utxos = |count: u64| -> Vec<WalletUtxo> {
@@ -1309,10 +1310,17 @@ struct DelegateCase<'a> {
     member: &'a ShieldedKeypair,
     key: spr_keypair::NullifierKey,
     inputs: Vec<WalletUtxo>,
+    /// The account the chain holds at the mint of the first input.
+    mint: Option<solana_account::Account>,
 }
 
-async fn stage_delegate(case: DelegateCase<'_>) -> Result<(), RingError> {
-    let assets = AssetRegistry::default();
+/// The mint a staged permanent delegate signs for.
+async fn stage_delegate(case: DelegateCase<'_>) -> Result<Option<DelegateMint>, RingError> {
+    let spent = case.inputs[0].utxo.asset;
+    let mut assets = AssetRegistry::default();
+    if spent != Mint::SOL {
+        assets.insert(spent.asset_id, spent.asset)?;
+    }
     let source = case.member.shielded_address()?;
     let transfer = DelegateTransfer::new(DelegateTransferInput {
         ring: ring(),
@@ -1323,18 +1331,92 @@ async fn stage_delegate(case: DelegateCase<'_>) -> Result<(), RingError> {
         inputs: case.inputs,
         outputs: vec![DelegateOutput {
             recipient: source,
-            asset: Mint::SOL.asset,
+            asset: spent.asset,
             amount: 2,
         }],
     })
     .with_assets(&assets);
-    let chain = Chain::ring(case.settings);
+    let mut chain = Chain::ring(case.settings);
+    if let Some(mint) = case.mint {
+        chain = chain.with(spent.asset, mint);
+    }
     let config = ring().require_config(&chain).await?;
-    transfer
-        .rail
-        .stage(ring(), &chain, &config)
+    match transfer.rail.stage(ring(), &chain, &config).await?.spend {
+        Spend::Delegate { mint, .. } => Ok(mint),
+        _ => unreachable!("a delegate transfer stages its rail"),
+    }
+}
+
+#[tokio::test]
+async fn a_permanent_delegate_moves_only_the_mint_it_holds() {
+    use spl_token_2022_interface::{
+        extension::{
+            permanent_delegate::PermanentDelegate, BaseStateWithExtensionsMut, ExtensionType,
+            PodStateWithExtensionsMut,
+        },
+        pod::PodMint,
+    };
+    let member = &crate::tests::support::keypair(1);
+    let issuer = Address::new_from_array([0x46; 32]);
+    let mint = Mint::new(Address::new_from_array([0x47; 32]), 2);
+    let extensions = [ExtensionType::PermanentDelegate];
+    let mut data =
+        vec![0; ExtensionType::try_calculate_account_len::<PodMint>(&extensions).unwrap()];
+    let mut state = PodStateWithExtensionsMut::<PodMint>::unpack_uninitialized(&mut data).unwrap();
+    state
+        .init_extension::<PermanentDelegate>(false)
+        .unwrap()
+        .delegate = Some(issuer.to_bytes().into()).try_into().unwrap();
+    state.base.is_initialized = true.into();
+    state.init_account_type().unwrap();
+    let stage_on = |settings, delegate, inputs| {
+        stage_delegate(DelegateCase {
+            settings,
+            delegate,
+            member,
+            key: member.nullifier_key.clone(),
+            inputs,
+            mint: Some(solana_account::Account {
+                owner: Address::new_from_array(spr_interface::SPL_TOKEN_2022_PROGRAM_ID),
+                data: data.clone(),
+                ..Default::default()
+            }),
+        })
+    };
+    let undelegated = RingSettings::new(RingMode::Confidential);
+    let stage = |delegate, inputs| stage_on(undelegated, delegate, inputs);
+    let held = |count: u64| -> Vec<WalletUtxo> {
+        (0..count)
+            .map(|leaf| ring_utxo(member, mint, 1, leaf))
+            .collect()
+    };
+    assert_eq!(
+        stage(issuer, held(2)).await.unwrap(),
+        Some(DelegateMint {
+            address: mint.asset,
+            asset: spr_hasher::primitives::hash_bytes(mint.asset.as_array()).unwrap(),
+        })
+    );
+    let mut mixed = held(2);
+    mixed.push(ring_utxo(member, Mint::SOL, 1, 2));
+    for refused in [
+        stage(issuer, mixed).await,
+        stage(Address::new_from_array([0x48; 32]), held(2)).await,
+    ] {
+        assert!(matches!(refused, Err(RingError::MissingDelegate)));
+    }
+    let delegated = RingSettings {
+        delegate: Some(Address::new_from_array([0x44; 32])),
+        ..undelegated
+    };
+    assert!(stage_on(delegated, issuer, held(2))
         .await
-        .map(|_| ())
+        .unwrap()
+        .is_some());
+    assert!(matches!(
+        stage_on(delegated, Address::new_from_array([0x48; 32]), held(2)).await,
+        Err(RingError::Program(CustomRingError::UnauthorizedDelegate))
+    ));
 }
 
 /// Every string a request draws, hashes or derives keeps only its length.
@@ -1892,6 +1974,148 @@ async fn a_recipient_the_rules_refuse_fails_before_proving() {
             rule: 1,
             subject: TransferSubject::Owner(0),
         }))
+    ));
+}
+
+/// The circuit verifies one signature over the vouch digest on every proof, a listed voucher admits an unlisted recipient.
+#[tokio::test]
+async fn the_request_carries_a_signature_over_the_vouch_digest_vouched_or_not() {
+    use crate::tests::support::{keypair, owner_record, Registry};
+    use custom_ring_interface::domain::VouchMessage;
+    use zolana_ring_policy::RuleRefusal;
+
+    use crate::pipeline::VouchSigner;
+    /// A wallet returning a signature over other bytes.
+    struct Unsigned(PublicKey);
+    impl VouchSigner for Unsigned {
+        fn public_key(&self) -> PublicKey {
+            self.0
+        }
+
+        fn sign_vouch(&self, _digest: &[u8; 32]) -> Result<[u8; 64], RingError> {
+            Ok([0; 64])
+        }
+    }
+    let (sender, recipient, voucher) = (keypair(1), keypair(2), keypair(3));
+    let client = |recipient_lists: u64, voucher_lists: u64| {
+        Chain::ring(RingSettings {
+            has_policy: true,
+            ..RingSettings::new(RingMode::Confidential)
+        })
+        .with_registry(
+            Registry::new(&[
+                (&sender, 1),
+                (&recipient, recipient_lists),
+                (&voucher, voucher_lists),
+            ]),
+            &crate::tests::pipeline_rules(),
+        )
+        .client()
+    };
+    let transfer = || {
+        let mut transaction = ring_transaction(vec![ring_utxo(&sender, Mint::SOL, 10, 0)]);
+        transaction
+            .transfer_with_ring(
+                &recipient.shielded_address().unwrap(),
+                Mint::SOL,
+                3,
+                Some(ring().program_id()),
+            )
+            .unwrap();
+        owner_transfer(&sender, transaction)
+    };
+    fn bytes<const N: usize>(value: &serde_json::Value) -> [u8; N] {
+        hex::decode(value.as_str().unwrap().trim_start_matches("0x"))
+            .unwrap()
+            .try_into()
+            .unwrap()
+    }
+    let hex_of = |bytes: &[u8]| format!("0x{}", hex::encode(bytes));
+    // The built request with its signature checked over the digest of its own hashes.
+    let signed = |assembled: &Assembled| {
+        let request = assembled.request().unwrap();
+        let built = serde_json::to_value(
+            crate::prover::RequestBody::new(request.circuit, &request.body).unwrap(),
+        )
+        .unwrap();
+        let digest = VouchMessage {
+            private_tx_hash: &bytes(&built["privateTxHash"]),
+            withdrawal_hash: &bytes(&built["withdrawalHash"]),
+        }
+        .digest()
+        .unwrap();
+        let signer = PublicKey::from_ed25519(&bytes(&built["voucher"]["publicKey"]));
+        assert!(signer.verify_message(&digest, &bytes(&built["voucher"]["signature"])));
+        built
+    };
+    let vouching: &dyn VouchSigner = &voucher.signing_key;
+    let voucher_key = voucher.signing_pubkey().as_ed25519().unwrap();
+
+    let assembled = transfer()
+        .with_voucher(vouching)
+        .assemble(&client(0, 1))
+        .await
+        .unwrap();
+    let built = signed(&assembled);
+    assert_eq!(built["voucher"]["publicKey"], hex_of(&voucher_key));
+    assert_eq!(built["layout"], 1);
+    let own = built["voucherEntry"]["own"].as_u64().unwrap() as usize;
+    assert_eq!(
+        built["ownSubjects"][own]["member"],
+        hex_of(owner_record(&voucher).as_bytes())
+    );
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/custom-ring-transfer-vouched.json");
+    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
+        std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
+    }
+    assert!(path.exists());
+    let parts = assembled.parts();
+    assert!(parts.vouched);
+    assert_eq!(parts.recipient_keys.len(), 32 * (parts.outputs.len() + 1));
+
+    let assembled = transfer().assemble(&client(1, 1)).await.unwrap();
+    let built = signed(&assembled);
+    assert_ne!(built["voucher"]["publicKey"], hex_of(&voucher_key));
+    assert_eq!(built["layout"], 0);
+    assert_eq!(
+        built["voucherEntry"],
+        serde_json::to_value(crate::request::OwnerEntry::default()).unwrap()
+    );
+    let parts = assembled.parts();
+    assert!(!parts.vouched);
+    assert_eq!(parts.recipient_keys.len(), 32 * parts.outputs.len());
+
+    assert!(matches!(
+        transfer()
+            .with_voucher(vouching)
+            .assemble(&client(0, 0))
+            .await,
+        Err(RingError::PolicyRuleUnsatisfied(
+            RuleRefusal::VoucherUnlisted
+        ))
+    ));
+    assert!(matches!(
+        transfer()
+            .with_voucher(&Unsigned(voucher.signing_pubkey()))
+            .assemble(&client(0, 1))
+            .await,
+        Err(RingError::VoucherSignatureMismatch)
+    ));
+    assert!(matches!(
+        transfer()
+            .with_voucher(vouching)
+            .seal_unread(client(0, 1).zolana())
+            .await,
+        Err(RingError::VouchedRelay)
+    ));
+    let unscreened = Chain::ring(RingSettings::new(RingMode::Confidential)).client();
+    assert!(matches!(
+        transfer()
+            .with_voucher(vouching)
+            .assemble(&unscreened)
+            .await,
+        Err(RingError::VoucherUnscreened)
     ));
 }
 
@@ -3277,7 +3501,7 @@ async fn only_a_named_public_spend_takes_the_wallets_zero_key_note() {
     let named = owner_transfer(&sender, ring_transaction(vec![note])).spend_public(wallet);
     assert!(matches!(
         named.rail.stage(ring(), &config).await.unwrap().spend,
-        Spend::Owner
+        Spend::Owner(_)
     ));
 }
 
@@ -3336,7 +3560,7 @@ fn each_input_takes_the_secret_its_own_nullifier_names() {
     };
     let mut inputs = [input_of(&keyed), input_of(&zero)];
     TransferAuthority {
-        owner: Some(owner.nullifier_key.clone()),
+        owner: Some(OwnerKey::Held(&owner.nullifier_key)),
         co_owners: Vec::new(),
     }
     .complete_inputs(&mut inputs)
@@ -4057,7 +4281,7 @@ async fn a_program_owner_spends_public_under_either_key_class_on_both_modes() {
             // The frame admits its public owners flag on the anonymous rail alone.
             let spends_public = match mode {
                 RingMode::Anonymous => matches!(staged.spend, Spend::PublicOwners),
-                RingMode::Confidential => matches!(staged.spend, Spend::Owner),
+                RingMode::Confidential => matches!(staged.spend, Spend::Owner(_)),
             };
             assert!(spends_public, "{mode:?}");
             assert_eq!(staged.owner_signers, [pda(0x51)], "{mode:?}");

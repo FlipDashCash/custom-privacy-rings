@@ -97,6 +97,7 @@ struct TransferCase {
     input_count: usize,
     private_tx_hash: String,
     sender: Option<String>,
+    delegate_asset: String,
     party_identities: Option<Vec<String>>,
     signer_count: usize,
     signer_chain: String,
@@ -239,6 +240,7 @@ fn stream(key: AuditKey, inputs: usize, outputs: &[RingOutput<'_>]) -> AuditStre
         inputs,
         outputs: outputs.len(),
         capacity: outputs.len(),
+        vouched: false,
     }
 }
 
@@ -302,6 +304,7 @@ fn transfer_case(statement: &TransferStatement<'_>) -> TransferCase {
             Poseidon::hashv(&[
                 &ciphertext_digest(head.envelope).unwrap(),
                 &ciphertext_digest(head.recipient_keys).unwrap(),
+                &[0; 32],
             ])
             .unwrap(),
         ),
@@ -315,6 +318,7 @@ fn transfer_case(statement: &TransferStatement<'_>) -> TransferCase {
         input_count: statement.input_count,
         private_tx_hash: hex::encode(statement.private_tx_hash),
         sender,
+        delegate_asset: hex::encode(statement.delegate_asset),
         party_identities: parties,
         signer_count: statement.signers.count,
         signer_chain: hex::encode(statement.signers.chain),
@@ -378,6 +382,7 @@ fn compute_vectors() -> StatementVectors {
         output_capacity: 8,
         input_count: 2,
         private_tx_hash: &values.fields[3],
+        delegate_asset: &[0; 32],
         signers: SignerSet::new([[0x42; 32], [0x43; 32], [0x42; 32]].iter(), 16).unwrap(),
         roots: &policy_roots,
         public_assets: &assets,
@@ -419,6 +424,10 @@ fn compute_vectors() -> StatementVectors {
         public_amounts: &no_slots,
         public_gross: &no_slots,
         ..signer_policy
+    };
+    let mint_delegate_move = TransferStatement {
+        delegate_asset: &values.fields[5],
+        ..delegate_move
     };
     let mut parties = [zero; ANONYMOUS_PARTIES];
     parties[0] = right_aligned(11);
@@ -464,7 +473,13 @@ fn compute_vectors() -> StatementVectors {
         ..anonymous_policy_transfer
     };
     let entry = TransferStatement {
-        head: values.head(AuditLayout { entry: true }, stream(entry_key, 3, &four)),
+        head: values.head(
+            AuditLayout {
+                entry: true,
+                vouched: false,
+            },
+            stream(entry_key, 3, &four),
+        ),
         roots: &tracking_roots,
         signers: SignerSet::default(),
         ..anonymous_policy_transfer
@@ -479,6 +494,7 @@ fn compute_vectors() -> StatementVectors {
         signer_no_spend,
         in_proof_policy,
         delegate_move,
+        mint_delegate_move,
         anonymous_policy_transfer,
         public_owners,
         anonymous_delegate,
@@ -541,13 +557,13 @@ fn compute_vectors() -> StatementVectors {
     StatementVectors {
         description: "Every ring statement and its public input HashChain4(elements). The transfer \
                       head is [CRTX, n0, ring_id, pack_be(0x04 || tx_u), pack_be(auditor_pubkey), \
-                      Poseidon(digest(envelope), digest(recipient_keys)), salt, layout] with the frame's \
-                      random salt and layout = entry << 1. \
+                      Poseidon(digest(envelope), digest(recipient_keys), 0), salt, layout] with the frame's \
+                      random salt and layout = entry << 1, no case is vouched. \
                       digest(ct) = Poseidon(u32 len(ct), HashChain4(pack_left31(ct))). Each \
                       envelope and key region has the length of its stream layout. The transfer statements are HashChain4 over the \
                       audit head under CRTX, in_proof, hidden, delegate, \
                       approval_mask, approval_totals, no_spend, output_count, record_chain \
-                      HashChain4(hash_bytes(record_i)), input_count, private_tx_hash, the sender, the \
+                      HashChain4(hash_bytes(record_i)), input_count, private_tx_hash, the sender, delegate_asset, the \
                       party identities, signer_count, signer_chain, policy_hash, own_root, \
                       curator_root, tracking_root, asset, net and gross per public \
                       slot, withdrawal_hash and the element count. No body, tag, \
@@ -641,7 +657,7 @@ fn ring_statements_vector() {
         .iter()
         .map(|case| case.elements.len())
         .collect();
-    assert!(transfer.iter().all(|len| *len == 43));
+    assert!(transfer.iter().all(|len| *len == 44));
 }
 
 #[test]
@@ -746,8 +762,8 @@ fn the_element_count_follows_the_family_alone() {
         class: 16,
         entry: false,
     };
-    // Head, rail bits, mask, totals digest, no_spend, m, record chain, n, private_tx_hash, sender, parties, signer count and chain, four roots, nine public cells, withdrawals and length.
-    let cells = AUDIT_HEAD_ELEMENTS + 3 + 3 + 2 + 2 + 1 + ANONYMOUS_PARTIES + 2 + 4 + 9 + 1 + 1;
+    // Head, rail bits, mask, totals digest, no_spend, m, record chain, n, private_tx_hash, sender, delegate asset, parties, signer count and chain, four roots, nine public cells, withdrawals and length.
+    let cells = AUDIT_HEAD_ELEMENTS + 3 + 3 + 2 + 2 + 2 + ANONYMOUS_PARTIES + 2 + 4 + 9 + 1 + 1;
     for capacity in [2usize, 4, 8] {
         for published in [1, capacity] {
             let statement = TransferStatement {
@@ -765,6 +781,7 @@ fn the_element_count_follows_the_family_alone() {
                 output_capacity: capacity,
                 input_count: 1,
                 private_tx_hash: &zero,
+                delegate_asset: &zero,
                 signers: SignerSet::default(),
                 roots: &roots,
                 public_assets: &slots,
@@ -832,6 +849,7 @@ fn the_anonymous_transfer_statement_follows_the_contract_order() {
         output_capacity: 4,
         input_count: 3,
         private_tx_hash: &values.fields[3],
+        delegate_asset: &values.fields[5],
         signers,
         roots: &roots,
         public_assets: &slots,
@@ -845,9 +863,51 @@ fn the_anonymous_transfer_statement_follows_the_contract_order() {
         Poseidon::hashv(&[
             &ciphertext_digest(statement.head.envelope).unwrap(),
             &ciphertext_digest(statement.head.recipient_keys).unwrap(),
+            &zero,
         ])
         .unwrap()
     );
+    // A vouched head digests the voucher's sealed key apart from the slot keys and moves no other element.
+    let vouched_stream = AuditStreamLayout {
+        vouched: true,
+        ..stream(key, 3, &outputs)
+    };
+    let vouched_layout = AuditLayout {
+        entry: false,
+        vouched: true,
+    };
+    let vouched = TransferStatement {
+        head: values.head(vouched_layout, vouched_stream),
+        ..statement
+    };
+    let (slot_keys, voucher_key) = vouched
+        .head
+        .recipient_keys
+        .split_last_chunk::<32>()
+        .unwrap();
+    assert_eq!(slot_keys, statement.head.recipient_keys);
+    let vouched_elements = vouched.elements().unwrap();
+    assert_eq!(
+        vouched_elements[7],
+        Poseidon::hashv(&[
+            &ciphertext_digest(vouched.head.envelope).unwrap(),
+            &ciphertext_digest(slot_keys).unwrap(),
+            &hash_bytes(voucher_key).unwrap(),
+        ])
+        .unwrap()
+    );
+    assert_eq!(vouched_elements[9], right_aligned(1));
+    assert_eq!(vouched_elements[..7], elements[..7]);
+    assert_eq!(vouched_elements[8], elements[8]);
+    assert_eq!(vouched_elements[10..], elements[10..]);
+    let keyless = TransferStatement {
+        head: AuditHead {
+            recipient_keys: &[],
+            ..vouched.head
+        },
+        ..statement
+    };
+    assert!(keyless.elements().is_err());
     let mut tail = vec![
         right_aligned(0),
         right_aligned(0),
@@ -860,6 +920,7 @@ fn the_anonymous_transfer_statement_follows_the_contract_order() {
         right_aligned(3),
         values.fields[3],
         zero,
+        values.fields[5],
     ];
     tail.extend(parties);
     tail.extend([
@@ -912,6 +973,7 @@ fn delivery_bytes_stay_outside_the_statement() {
         output_capacity: 4,
         input_count: 3,
         private_tx_hash: &zero,
+        delegate_asset: &zero,
         signers: SignerSet::default(),
         roots: &roots,
         public_assets: &slots,

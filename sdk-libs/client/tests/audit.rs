@@ -792,6 +792,42 @@ async fn the_merge_audit_reads_every_merge() {
 }
 
 #[test]
+fn a_vouched_frame_names_its_voucher_and_an_unvouched_frame_nobody() {
+    let transfer = Transfer::fixture();
+    let plain = build(&transfer, Rail::Delivered, delivered_outputs());
+    assert_eq!(
+        audit(&plain.transaction, plain.layout).unwrap().voucher,
+        None
+    );
+    let voucher = [0xc9; 32];
+    let mut disclosure = plain.disclosure.clone();
+    disclosure.layout.vouched = true;
+    disclosure.voucher = Some(voucher);
+    let vouched = publish(&transfer, Rail::Delivered, delivered_outputs(), disclosure);
+    assert_eq!(
+        RingOrigin {
+            transact: Some(vouched.frame.clone()),
+            ..confirmed(&vouched.transaction)
+        }
+        .audit_frame(RingMode::Confidential)
+        .unwrap(),
+        vouched.layout
+    );
+    let audited = audit(&vouched.transaction, vouched.layout).unwrap();
+    assert_eq!(audited.voucher, Some(voucher));
+    expect_every_slot(&vouched, &audited);
+    for (transaction, layout) in [
+        (&vouched.transaction, plain.layout),
+        (&plain.transaction, vouched.layout),
+    ] {
+        assert!(matches!(
+            audit(transaction, layout),
+            Err(AuditError::AuditorMessageLength(_))
+        ));
+    }
+}
+
+#[test]
 fn the_envelope_must_seal_the_published_transaction_key() {
     let built = build(&Transfer::fixture(), Rail::Delivered, delivered_outputs());
     let mut forged = built.transaction.clone();
@@ -803,6 +839,7 @@ fn the_envelope_must_seal_the_published_transaction_key() {
         real_inputs: built.disclosure.real_inputs,
         evidence: built.disclosure.evidence.clone(),
         recipient_keys: built.disclosure.recipient_keys.clone(),
+        voucher: None,
     }
     .seal(&auditor().pubkey())
     .unwrap();
