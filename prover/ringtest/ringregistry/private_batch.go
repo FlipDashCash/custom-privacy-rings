@@ -37,31 +37,19 @@ func NewOwnerWrite(t testing.TB, salt *big.Int) OwnerWrite {
 	if !opening.Present {
 		t.Fatal("ringregistry: the salted owner is not enrolled")
 	}
-	return OwnerWrite{Tracking: tracking, Owner: privateOwner(member, salt, opening), Key: ListKey(t, member, salt)}
+	return OwnerWrite{Tracking: tracking, Owner: privateOwner(member, salt, false, opening), Key: ListKey(t, member, salt)}
 }
 
-// NewAbsentOwnerWrite writes for member 103 under salt, the tracking tree holds member 101 alone.
-func NewAbsentOwnerWrite(t testing.TB, salt *big.Int) OwnerWrite {
+// NewRingOwnerWrite writes under RingListKey for member, 101 is enrolled under the tag of 13 and any other member absent.
+func NewRingOwnerWrite(t testing.TB, member int64, salt *big.Int) OwnerWrite {
 	t.Helper()
 	tracking := SaltedTracking(t, big.NewInt(13))
-	member := big.NewInt(103)
-	opening := tracking.Opening(member)
-	if opening.Present {
-		t.Fatal("ringregistry: the absent owner is enrolled")
-	}
-	return OwnerWrite{Tracking: tracking, Owner: privateOwner(member, salt, opening), Key: ListKey(t, member, salt)}
+	owner := big.NewInt(member)
+	return OwnerWrite{Tracking: tracking, Owner: privateOwner(owner, salt, true, tracking.Opening(owner)), Key: RingListKey(t, owner, salt)}
 }
 
-// NewEnrolledOwnerWrite writes for member 101 under salt, its row commits the tag of 13.
-func NewEnrolledOwnerWrite(t testing.TB, salt *big.Int) OwnerWrite {
-	t.Helper()
-	tracking := SaltedTracking(t, big.NewInt(13))
-	member := big.NewInt(101)
-	return OwnerWrite{Tracking: tracking, Owner: privateOwner(member, salt, tracking.Opening(member)), Key: ListKey(t, member, salt)}
-}
-
-func privateOwner(member, salt *big.Int, opening TrackingOpening) registry.PrivateOwner {
-	return registry.PrivateOwner{Owner: member, ListSalt: salt, TrackingOpening: registry.TrackingOpening{
+func privateOwner(member, salt *big.Int, ring bool, opening TrackingOpening) registry.PrivateOwner {
+	return registry.PrivateOwner{Owner: member, ListSalt: salt, Ring: ringtest.Bit(ring), TrackingOpening: registry.TrackingOpening{
 		Present: ringtest.Bit(opening.Present), Record: opening.Record.Wires(), Path: opening.Path.Wires(),
 	}}
 }
@@ -69,7 +57,7 @@ func privateOwner(member, salt *big.Int, opening TrackingOpening) registry.Priva
 // ZeroPrivateOwner is the all zero slot an unselected write carries.
 func ZeroPrivateOwner() registry.PrivateOwner {
 	zero := ZeroTrackingWrite()
-	return registry.PrivateOwner{Owner: 0, ListSalt: 0, TrackingOpening: registry.TrackingOpening{Present: 0, Record: zero.Low.Wires(), Path: zero.Slot.Wires()}}
+	return registry.PrivateOwner{Owner: 0, ListSalt: 0, Ring: 0, TrackingOpening: registry.TrackingOpening{Present: 0, Record: zero.Low.Wires(), Path: zero.Slot.Wires()}}
 }
 
 // PrivateBatch writes mask on the salted owner key at slot 0 of a private key of capacity writes, the other slots stay inactive.

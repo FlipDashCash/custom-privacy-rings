@@ -286,7 +286,9 @@ type PrivateApplyRecordsParams struct {
 
 type PrivateOwnerParams struct {
 	ListSalt Field `json:"listSalt"`
-	// The owner Record brackets, set on a write under the ring salt.
+	// Ring keys the write under the ring salt.
+	Ring bool `json:"ring,omitempty"`
+	// The owner Record brackets, only a write under the ring salt names one.
 	Absent *Field               `json:"absent,omitempty"`
 	Record TrackingRecordParams `json:"record"`
 	Index  uint64               `json:"index"`

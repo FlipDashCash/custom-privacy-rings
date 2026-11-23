@@ -358,6 +358,13 @@ func TestSaltedKeyMatchesRust(t *testing.T) {
 	}
 }
 
+func TestRingSaltedKeyMatchesRust(t *testing.T) {
+	want, _ := new(big.Int).SetString("15a7b631d43ec4b96f98ec8966e6c29bd975793a919b2d1180dc0b9c500b9ebe", 16)
+	if ringregistry.RingListKey(t, big.NewInt(7), big.NewInt(9)).Cmp(want) != 0 {
+		t.Fatal("the ring salted key drifted from Member::ring_salted")
+	}
+}
+
 func trackingSubject(t *testing.T, b ringpolicy.Witness, member *big.Int) int {
 	t.Helper()
 	for i, subject := range b.Circuit.TrackingSubjects {

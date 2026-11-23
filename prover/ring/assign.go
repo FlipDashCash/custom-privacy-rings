@@ -171,13 +171,14 @@ func (w TrackingWrite) view() any {
 type privateOwnerView struct {
 	Owner    Field
 	ListSalt Field
+	Ring     bool
 	Present  bool
 	Record   TrackingRecordParams
 	Path     quadPath
 }
 
 func (o PrivateOwnerParams) view() any {
-	view := privateOwnerView{Owner: o.Record.Member, ListSalt: o.ListSalt, Present: o.Absent == nil, Record: o.Record, Path: newQuadPath(o.Index, o.Path)}
+	view := privateOwnerView{Owner: o.Record.Member, ListSalt: o.ListSalt, Ring: o.Ring, Present: o.Absent == nil, Record: o.Record, Path: newQuadPath(o.Index, o.Path)}
 	if o.Absent != nil {
 		view.Owner = *o.Absent
 	}

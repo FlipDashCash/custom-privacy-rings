@@ -71,37 +71,47 @@ func TestPrivateKeyRefusesAPublicMask(t *testing.T) {
 	ringtest.RequireRefused(t, solvePrivate(ringregistry.PrivateBatch(t, 2, ringregistry.AllowBit)), "registry.(*PrivateApplyRecordsCircuit).Define")
 }
 
-// A write for an owner the tracking root proves absent takes any nonzero salt, the ring's in practice.
-func TestPrivateWriteForAnAbsentOwner(t *testing.T) {
-	absent := func(salt int64) *registry.PrivateApplyRecordsCircuit {
-		return ringregistry.PrivateBatchFor(t, 2, ringregistry.PrivateBlockBit, ringregistry.NewAbsentOwnerWrite(t, big.NewInt(salt)))
+// A write under the ring domain needs no enrolled row and no tag, a write under the owner's salt keeps both.
+func TestPrivateWriteUnderTheRingDomain(t *testing.T) {
+	ringWrite := func(member, salt int64) *registry.PrivateApplyRecordsCircuit {
+		return ringregistry.PrivateBatchFor(t, 2, ringregistry.PrivateBlockBit, ringregistry.NewRingOwnerWrite(t, member, big.NewInt(salt)))
 	}
-	if err := solvePrivate(absent(0x5a17)); err != nil {
-		t.Fatal(err)
+	for _, member := range []int64{101, 103} {
+		if err := solvePrivate(ringWrite(member, 0x5a17)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	const owner = "registry.PrivateOwner.Assert"
-	t.Run("a zero salt names the public record", func(t *testing.T) {
-		ringtest.RequireRefused(t, solvePrivate(absent(0)), owner)
-	})
-	t.Run("an absent owner called present", func(t *testing.T) {
-		c := absent(0x5a17)
-		c.Owners[0].Present = 1
-		ringtest.RequireRefused(t, solvePrivate(c), owner)
-	})
-	t.Run("an enrolled owner called absent", func(t *testing.T) {
-		c := ringregistry.PrivateBatch(t, 2, ringregistry.PrivateBlockBit)
-		c.Owners[0].Present = 0
-		ringtest.RequireRefused(t, solvePrivate(c), owner)
-	})
-}
-
-// An enrolled owner's entry under another salt is written through its row, the salt stays nonzero.
-func TestPrivateWriteForAnEnrolledOwnerUnderAnotherSalt(t *testing.T) {
-	enrolled := func(salt int64) *registry.PrivateApplyRecordsCircuit {
-		return ringregistry.PrivateBatchFor(t, 2, ringregistry.PrivateBlockBit, ringregistry.NewEnrolledOwnerWrite(t, big.NewInt(salt)))
+	for _, tc := range []struct {
+		name   string
+		batch  func() *registry.PrivateApplyRecordsCircuit
+		mutate func(*registry.PrivateApplyRecordsCircuit)
+	}{
+		{"an absent owner keyed under its own salt domain", func() *registry.PrivateApplyRecordsCircuit { return ringWrite(103, 0x5a17) }, func(c *registry.PrivateApplyRecordsCircuit) {
+			c.Owners[0].Ring = 0
+		}},
+		{"a ring key claimed for the owner's salt domain", func() *registry.PrivateApplyRecordsCircuit { return ringWrite(101, 13) }, func(c *registry.PrivateApplyRecordsCircuit) {
+			c.Owners[0].Ring = 0
+		}},
+		{"an own salted key claimed for the ring domain", func() *registry.PrivateApplyRecordsCircuit {
+			return ringregistry.PrivateBatch(t, 2, ringregistry.PrivateBlockBit)
+		}, func(c *registry.PrivateApplyRecordsCircuit) {
+			c.Owners[0].Ring = 1
+		}},
+		{"an absent owner called present", func() *registry.PrivateApplyRecordsCircuit { return ringWrite(103, 0x5a17) }, func(c *registry.PrivateApplyRecordsCircuit) {
+			c.Owners[0].Present = 1
+		}},
+		{"an enrolled owner called absent", func() *registry.PrivateApplyRecordsCircuit { return ringWrite(101, 0x5a17) }, func(c *registry.PrivateApplyRecordsCircuit) {
+			c.Owners[0].Present = 0
+		}},
+		{"another owner behind the ring key", func() *registry.PrivateApplyRecordsCircuit { return ringWrite(103, 0x5a17) }, func(c *registry.PrivateApplyRecordsCircuit) {
+			c.Owners[0].Owner = 104
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := tc.batch()
+			tc.mutate(c)
+			ringtest.RequireRefused(t, solvePrivate(c), owner)
+		})
 	}
-	if err := solvePrivate(enrolled(0x5a17)); err != nil {
-		t.Fatal(err)
-	}
-	ringtest.RequireRefused(t, solvePrivate(enrolled(0)), "registry.PrivateOwner.Assert")
 }

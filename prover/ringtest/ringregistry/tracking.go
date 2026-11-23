@@ -56,6 +56,11 @@ func ListKey(t testing.TB, owner, listSalt *big.Int) *big.Int {
 	return ringtest.MustPoseidonHash(t, big.NewInt(shared.ListKeyDomain), owner, listSalt)
 }
 
+func RingListKey(t testing.TB, owner, ringSalt *big.Int) *big.Int {
+	t.Helper()
+	return ringtest.MustPoseidonHash(t, big.NewInt(shared.RingListKeyDomain), owner, ringSalt)
+}
+
 // PublicKey is the zero salt ListKey every public owner record sits under.
 func PublicKey(t testing.TB, owner *big.Int) *big.Int {
 	t.Helper()

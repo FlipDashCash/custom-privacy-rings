@@ -64,7 +64,7 @@ func FillPools(t testing.TB, policyWitness *policy.Policy, outputs, inputs []sha
 			ownerEntry.CuratorSalted[0] = curator.add(key, saltedCurated)
 		}
 		if ringSalted {
-			key := ringregistry.ListKey(t, identity, RingSalt)
+			key := ringregistry.RingListKey(t, identity, RingSalt)
 			ownerEntry.OwnRing = own.add(key, saltedOwn)
 			ownerEntry.CuratorRing[0] = curator.add(key, saltedCurated)
 		}

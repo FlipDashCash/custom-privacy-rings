@@ -117,7 +117,7 @@ func (p *Policy) resolveSubjects(api frontend.API, table tableView, g Gates, spe
 		abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: enrolled, A: shared.ListTag(api, entry.ListSalt), B: row.ListTag})
 		ownLists := salted(enrolled, shared.ListKey(api, member, entry.ListSalt), entry.OwnSalted, entry.CuratorSalted[0])
 		// The read under the ring salt ignores the tracking row, enrollment sheds no entry written before it.
-		ringLists := salted(api.Mul(active, ringSalted), shared.ListKey(api, member, p.RingSalt), entry.OwnRing, entry.CuratorRing[0])
+		ringLists := salted(api.Mul(active, ringSalted), shared.RingListKey(api, member, p.RingSalt), entry.OwnRing, entry.CuratorRing[0])
 		for i := range ownLists {
 			ownLists[i] = api.Or(ownLists[i], ringLists[i])
 		}
