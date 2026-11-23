@@ -76,6 +76,7 @@ impl<'a> RingTransfer<Owner<'a>> {
                 voucher: None,
             },
             list_salts: Vec::new(),
+            ring_salt: None,
             approval: ApprovalDisclosure::None,
             seal_row: None,
         }

@@ -54,7 +54,7 @@ import {
   type PublicGross,
 } from "../protocol/membership/owner-debits.js";
 import { listTagOf } from "../crypto/keys/list-salt.js";
-import { privateListKey, publicListKey } from "../protocol/membership/private-list.js";
+import { privateListKey, publicListKey, ringListKey } from "../protocol/membership/private-list.js";
 import {
   evaluateInputAssets,
   evaluatePayments,
@@ -125,6 +125,8 @@ export interface PolicyInputs {
   readonly senderEntries: readonly PolicyOwnerEntry[];
   /** The zero entry off a vouched frame and off a screened ring. */
   readonly voucherEntry: PolicyOwnerEntry;
+  /** Set while a salted list reads under a ring salt the policy commits. */
+  readonly ringSalt?: Bytes32;
   /** The output slots then the withdrawals, the request pads them to the key. */
   readonly ownerEntries: readonly PolicyOwnerEntry[];
   readonly assetEntries: readonly PolicySubjectEntry[];
@@ -172,6 +174,8 @@ export type PolicyDemandInput = Readonly<{
   listSalts: readonly RingListSalt[];
   /** The owner identity of the voucher's key, absent off a vouched frame. */
   voucher?: Bytes32;
+  /** Every owner reads the salted lists under it on a ring whose policy commits its tag. */
+  ringSalt?: Bytes32;
 }>;
 
 export type PolicyReadInput = PolicyDemandInput &
@@ -190,6 +194,8 @@ const ABSENT_OWNER: PolicyOwnerEntry = Object.freeze({
   listSalt: ZERO_32,
   ownSalted: 0,
   curatorSalted: 0,
+  ownRing: 0,
+  curatorRing: 0,
 });
 /** A subject when nothing live opens a row, it brackets under the sentinel or holds its own leaf. */
 const PADDING_SUBJECT = Uint8Array.from({ length: 32 }, (_, at) => (at === 31 ? 1 : 0)) as Bytes32;
@@ -344,7 +350,10 @@ export async function policyDemand(
       ? []
       : subjects.ownerMembers.flatMap((member) => {
           const salt = salts.get(bytesKey(member));
-          return salt === undefined ? [] : [privateListKey(member, salt)];
+          return [
+            ...(salt === undefined ? [] : [privateListKey(member, salt)]),
+            ...(input.ringSalt === undefined ? [] : [ringListKey(member, input.ringSalt)]),
+          ];
         });
   const members = poolMembers(subjects, saltedKeys);
   return Object.freeze({
@@ -406,7 +415,13 @@ export async function readPolicy(
       return [owner, privateListKey(member as Bytes32, salt)] as const;
     }),
   );
-  const members = poolMembers(subjects, [...keyOf.values()]);
+  const ringSalt = anySalted
+    ? committedRingSalt(pinned?.ringListTag ?? ZERO_32, input.ringSalt)
+    : undefined;
+  const ringKeyOf = (member: Bytes32): Bytes32 | undefined =>
+    ringSalt === undefined ? undefined : ringListKey(member, ringSalt);
+  const ringKeys = subjects.ownerMembers.flatMap((member) => ringKeyOf(member) ?? []);
+  const members = poolMembers(subjects, [...keyOf.values(), ...ringKeys]);
   const capacity = transferPoolCapacity(circuit);
   const ownMembers = members.own.length === 0 ? [PADDING_SUBJECT] : members.own;
   // A lagging pool answer holds only for its root, each attempt reads the roots again.
@@ -464,24 +479,30 @@ export async function readPolicy(
   const ownerEntry = (member: Bytes32 | undefined): PolicyOwnerEntry => {
     if (member === undefined || !screening) return ABSENT_OWNER;
     const key = keyOf.get(bytesKey(member));
+    const ringKey = ringKeyOf(member);
     return {
       ...entry(publicKey(member)),
       tracking: trackingEntry(member),
       listSalt: saltOf.get(bytesKey(member)) ?? ZERO_32,
       ownSalted: subject(ownReads, key),
       curatorSalted: curatorReads === undefined ? 0 : subject(curatorReads, key),
+      ownRing: subject(ownReads, ringKey),
+      curatorRing: curatorReads === undefined ? 0 : subject(curatorReads, ringKey),
     };
   };
   const on = (reads: SubjectReads | undefined, read: Bytes32 | undefined): bigint =>
     read === undefined ? 0n : (reads?.get(bytesKey(read))?.read.record()?.lists ?? 0n);
   const ownerLists = (member: Bytes32 | undefined): RecordLists => {
-    const key = member === undefined ? undefined : keyOf.get(bytesKey(member));
+    const keys = member === undefined ? [] : [keyOf.get(bytesKey(member)), ringKeyOf(member)];
     const foreign = BigInt(view?.foreign ?? 0);
     const shown = publicKey(member);
     return Object.freeze({
       own: on(ownReads, shown),
       curator: on(curatorReads, shown),
-      salted: (on(ownReads, key) & ~foreign) | (on(curatorReads, key) & foreign),
+      salted: keys.reduce(
+        (lists, key) => lists | (on(ownReads, key) & ~foreign) | (on(curatorReads, key) & foreign),
+        0n,
+      ),
     });
   };
   const assetLists = (asset: Bytes32 | undefined): RecordLists =>
@@ -546,9 +567,10 @@ export async function readPolicy(
     ...(pinned === undefined
       ? {}
       : {
-          table: policyTableProofInputs(pinned.table, pinned.sources),
+          table: policyTableProofInputs(pinned.table, pinned.sources, pinned.ringListTag),
           policyHash: pinned.policyHash,
         }),
+    ...(ringSalt === undefined ? {} : { ringSalt }),
     own,
     ...(curatorRoot === undefined ? {} : { curator: curatorRoot }),
     ownPool: ownPool.pool,
@@ -594,6 +616,14 @@ export function enrolledSalt(
     throw new RingError("RING_ADDRESS_MISMATCH", {
       details: { field: "listSalt", member: bytesKey(member) },
     });
+  return salt;
+}
+
+/** `undefined` under a zero tag, else the salt every owner reads under, Go `resolveOwner`. */
+export function committedRingSalt(tag: Bytes32, salt: Bytes32 | undefined): Bytes32 | undefined {
+  if (isZero(tag)) return undefined;
+  if (salt === undefined || !equalBytes(listTagOf(salt), tag))
+    throw new RingError("RING_LIST_SALT_MISSING", { details: { ringSalt: true } });
   return salt;
 }
 
@@ -801,6 +831,7 @@ export function policyParams(policy: PolicyInputs, proving: PolicyProving): Poli
     curatorPool: policy.curatorPool ?? unopenedRecordPool(capacity.curator),
     senderEntries: policy.senderEntries,
     voucherEntry: policy.voucherEntry,
+    ...(policy.ringSalt === undefined ? {} : { ringSalt: policy.ringSalt }),
     ownerEntries: pad(policy.ownerEntries, slots, ABSENT_OWNER),
     assetEntries: [
       ...pad(policy.assetEntries, slots, ABSENT_ENTRY),
@@ -933,6 +964,7 @@ function emptyTable(): PolicyTableProofInputs {
     salted: 0,
     policyLen: 0,
     rules: Object.freeze(Array.from({ length: RING_RULE_SLOTS }, () => ZERO_32)),
+    ringListTag: ZERO_32,
   });
 }
 

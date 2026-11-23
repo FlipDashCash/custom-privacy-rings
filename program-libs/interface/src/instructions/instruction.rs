@@ -198,6 +198,9 @@ pub enum UpdatePolicyIxData {
     /// One trailing records registry under any authority.
     #[wincode(tag = 2)]
     Records,
+    /// `list_tag` of the ring salt, zero commits none.
+    #[wincode(tag = 3)]
+    RingListTag([u8; 32]),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]

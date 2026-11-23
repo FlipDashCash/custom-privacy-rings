@@ -45,6 +45,8 @@ Added
 
 - `signRegisterEnrollmentRingRequest` signs a ring's registration with the enrollment writer `RingRpc.health` names, `RingRpc.registerEnrollmentRing` sends it under the ring's policy authority so Ring RPC writes the ring's enrollments, and `RingRpcRefusal` names `enrollmentRingsFull` at -32186.
 - `RingRpcRefusal` names `enrollmentInFlight` at -32187, the refusal of a vault enrollment while the ring has a transaction in flight.
+- `updateRingPolicyInstruction` takes a `ringListTag` update that commits a ring salt and `RingPolicy.ringListTag` reads it, so a private list reads every owner under that salt beside the owner's own, an entry written before an enrollment stays in force after it, and the transfer builders take the salt as `ringSalt`, which a proof made without Ring RPC needs on a ring that commits one and reads a private list.
+- `RingRpc.getListSalt` returns the ring salt for an owner with no enrollment on a ring that commits one, `SubmitRecordUpdateRequest.unregisteredOwners` names the owners a private list write lists under it, and `RingRpcRefusal` names `ringSaltNotCommitted` at -32279 and `unregisteredOwnerUnmatched` at -32280.
 - The main entry exports `STORAGE_PROGRAM_ID`, the Storage program that holds each ring's records and tracking registry.
 - The `advanced` entry exports `nullifierKeyMergeSealer`, `completeRingMerge` and `seededMergeOutputBlinding`, so a holder of the nullifier key seals and proves its own ring merge.
 - `AnonymousSpendOwner.ownerExposure` reaches `AnonymousTransfer.withOwnerExposure`, so the anonymous rail of the transfer, exit, entry and withdrawal builders and relays admits a hidden owner that funds a leg, receives an exit or spends a zero-key note when the caller passes `"accepted"`.

@@ -127,6 +127,8 @@ export interface RingSpendParams {
   readonly cosigners?: readonly SignerAccount[];
   /** The sender's and any other enrolled owner's salt a salted list reads, a paid `RingAddress` adds its own. */
   readonly listSalts?: readonly RingListSalt[];
+  /** A direct proof reads the private lists under it on a ring that commits its tag. */
+  readonly ringSalt?: Bytes32;
   readonly priorityFeeLamports?: bigint;
 }
 
@@ -876,6 +878,7 @@ async function stageRingSpend<R>(
     assets: params.wallet.registry,
     ...(input.coSigners === undefined ? {} : { coSigners: input.coSigners }),
     listSalts: spendListSalts(params),
+    ...(params.ringSalt === undefined ? {} : { ringSalt: params.ringSalt }),
   });
   return Object.freeze({
     selected,

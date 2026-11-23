@@ -363,6 +363,8 @@ mod tests {
             AuthorityLapsed,
             InvalidLimits,
             LimitsWithoutRecord,
+            RingSaltNotCommitted,
+            UnregisteredOwnerUnmatched,
         ] {
             let code = match refusal {
                 Disabled => -32140,
@@ -387,6 +389,8 @@ mod tests {
                 AuthorityLapsed => -32275,
                 InvalidLimits => -32276,
                 LimitsWithoutRecord => -32277,
+                RingSaltNotCommitted => -32279,
+                UnregisteredOwnerUnmatched => -32280,
             };
             assert_eq!(refusal.code(), code);
         }

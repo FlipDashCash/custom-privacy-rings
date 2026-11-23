@@ -646,7 +646,12 @@ export {
   type TrackingRecord,
   type TrackingRegistry,
 } from "../protocol/membership/tracking.js";
-export { privateListKey, publicListKey } from "../protocol/membership/private-list.js";
+export {
+  committedRingListKey,
+  privateListKey,
+  publicListKey,
+  ringListKey,
+} from "../protocol/membership/private-list.js";
 export { listSaltOf, listTagOf } from "../crypto/keys/list-salt.js";
 export {
   ENROLLMENT_BATCH,

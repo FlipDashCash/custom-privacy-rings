@@ -181,6 +181,8 @@ pub enum RingError {
     DepositUnkeyed,
     #[error("a salted list reads enrolled owner {member:?} and no list salt is known")]
     ListSaltUnknown { member: [u8; 32] },
+    #[error("a salted list reads under the ring salt and no salt opens the ring list tag")]
+    RingSaltUnknown,
     #[error("no known list salt of owner {member:?} opens its tracking leaf's list tag")]
     ListSaltMismatch { member: [u8; 32] },
     #[error(
@@ -362,6 +364,8 @@ pub enum RingError {
     ViewingKeyNotHeld { owner: Address },
     #[error("the owner of write {write_index} holds no applied tracking row")]
     WriteOwnerNotEnrolled { write_index: u8 },
+    #[error("the salt of write {write_index} opens no ring list tag the policy commits")]
+    RingSaltUncommitted { write_index: u8 },
     #[error("write {write_index} is not the list key of its owner under the salt")]
     ListKeyMismatch { write_index: u8 },
     #[error("the salted owners name other write positions than the private writes")]

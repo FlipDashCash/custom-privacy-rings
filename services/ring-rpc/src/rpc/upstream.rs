@@ -289,6 +289,8 @@ pub struct RingConfiguration {
     pub roles: RingRoles,
     pub mode: RingMode,
     pub delegate: Option<Address>,
+    /// Zero commits no ring salt.
+    pub ring_list_tag: [u8; 32],
 }
 
 #[must_use]
@@ -806,6 +808,7 @@ impl CanonicalAccount<'_> {
             roles: config.roles,
             mode: config.mode().map_err(|_| invalid())?,
             delegate: config.delegate().copied(),
+            ring_list_tag: config.ring_list_tag,
         })
     }
 }

@@ -170,6 +170,8 @@ pub struct RingPolicy {
     pub generation: [u8; 4],
     /// Little endian, the slot of the write `generation` counts.
     pub generation_slot: [u8; 8],
+    /// `list_tag` of the ring salt, zero commits none.
+    pub ring_list_tag: [u8; 32],
 }
 
 /// At `[CO_SIGNER_PDA_SEED, signer]`.
@@ -273,7 +275,7 @@ impl RingPolicy {
             rules,
             slot,
         } = update;
-        let source_map = source_map_of(&sources)?;
+        let source_map = source_map_of(&sources, self.ring_list_tag)?;
         rules.validate(&source_map)?;
         let policy_hash = rules.hash(&source_map)?;
         self.count_generation(slot)?;
@@ -281,6 +283,24 @@ impl RingPolicy {
         self.sources = sources;
         self.rules = rules;
         Ok(())
+    }
+
+    /// A tag off the field fails the table hash.
+    pub fn set_ring_list_tag(
+        &mut self,
+        ring_list_tag: [u8; 32],
+        slot: u64,
+    ) -> Result<(), CustomRingError> {
+        let previous = core::mem::replace(&mut self.ring_list_tag, ring_list_tag);
+        let written = self.set_policy(PolicyUpdate {
+            sources: self.sources,
+            rules: self.rules,
+            slot,
+        });
+        if written.is_err() {
+            self.ring_list_tag = previous;
+        }
+        written
     }
 
     pub fn rebind_records(&mut self, records: Address, slot: u64) -> Result<(), CustomRingError> {
@@ -318,7 +338,7 @@ impl RingPolicy {
 
     /// The map `policy_hash` was computed over.
     pub fn source_map(&self) -> Result<SourceMap, CustomRingError> {
-        source_map_of(&self.sources)
+        source_map_of(&self.sources, self.ring_list_tag)
     }
 
     /// `SourceMap::salted` of `source_map`, read from the slots with no registry hash.
@@ -726,17 +746,20 @@ fn source_address<'a>(slot: &'a SourceSlot, records: &'a Address) -> &'a Address
     }
 }
 
-fn source_map_of(sources: &[SourceSlot; N_SOURCE_SLOTS]) -> Result<SourceMap, CustomRingError> {
+fn source_map_of(
+    sources: &[SourceSlot; N_SOURCE_SLOTS],
+    ring_list_tag: [u8; 32],
+) -> Result<SourceMap, CustomRingError> {
     let mut slots = [PolicySource::default(); N_SOURCE_SLOTS];
     for (dst, slot) in slots.iter_mut().zip(sources) {
         *dst = slot.policy_source()?;
     }
-    Ok(SourceMap::from_slots(slots)?)
+    Ok(SourceMap::from_slots(slots)?.with_ring_list_tag(ring_list_tag))
 }
 
 const _: () = assert!(core::mem::size_of::<SourceSlot>() == 33);
 const _: () = assert!(ROOT_HISTORY <= u8::MAX as usize);
-const _: () = assert!(RingPolicy::SIZE == 1157);
+const _: () = assert!(RingPolicy::SIZE == 1189);
 const _: () = assert!(core::mem::offset_of!(RingPolicy, roles) == 6);
 const _: () = assert!(core::mem::offset_of!(RingPolicy, delegate) == 166);
 const _: () = assert!(core::mem::offset_of!(RingPolicy, auditor_pubkey) == 198);

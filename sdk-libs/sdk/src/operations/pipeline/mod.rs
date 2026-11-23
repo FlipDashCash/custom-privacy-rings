@@ -191,6 +191,7 @@ pub struct RingTransfer<R: Rail> {
     co_signers: Vec<Address>,
     priority_fee: Option<u64>,
     list_salts: Vec<SubjectListSalt>,
+    ring_salt: Option<[u8; 32]>,
     approval: ApprovalDisclosure,
     /// `None` seals ahead of the relay's reads under the row the public counts select.
     seal_row: Option<SealRow>,
@@ -376,6 +377,13 @@ impl<R: Rail> RingTransfer<R> {
         self
     }
 
+    /// A salted list on a ring that commits a ring list tag refuses a proof with no ring salt.
+    #[must_use = "use the updated transfer"]
+    pub fn with_ring_salt(mut self, ring_salt: [u8; 32]) -> Self {
+        self.ring_salt = Some(ring_salt);
+        self
+    }
+
     /// Read in call order while a demanded class stays uncovered.
     #[must_use = "use the updated transfer"]
     pub fn with_co_signer(mut self, signer: Address) -> Self {
@@ -500,6 +508,7 @@ impl<R: Rail> RingTransfer<R> {
                 priority_fee: self.priority_fee,
                 approval_blinder,
                 voucher,
+                ring_salt: self.ring_salt,
             }
             .prepare(client)
         })
@@ -515,6 +524,7 @@ struct Pipeline<'a> {
     priority_fee: Option<u64>,
     approval_blinder: Option<[u8; 32]>,
     voucher: Option<Voucher<'a>>,
+    ring_salt: Option<[u8; 32]>,
 }
 
 struct Frame {
@@ -711,6 +721,7 @@ impl<'a> Pipeline<'a> {
                 priority_fee: self.priority_fee,
                 approval_blinder: self.approval_blinder,
                 voucher: self.voucher,
+                ring_salt: self.ring_salt,
                 ring: self.ring,
                 config: self.config,
                 co_signers: self.co_signers,
@@ -741,7 +752,7 @@ impl<'a> Prepared<'a> {
         let staged = &self.pipeline.staged;
         let proof_inputs = &staged.proof_inputs;
         let public = public_slots(&proof_inputs.external_data.interface_transfers)?;
-        let salts = KnownSalts::new(staged.list_salts.clone());
+        let salts = KnownSalts::new(staged.list_salts.clone(), self.pipeline.ring_salt);
         let planner = self.planner()?;
         // A relayed frame arrives sealed, a read keeps it only under the row its owner sealed.
         let sealed = staged
@@ -823,6 +834,7 @@ impl<'a> Prepared<'a> {
             priority_fee,
             approval_blinder,
             voucher,
+            ring_salt,
         } = pipeline;
         let Staged {
             mut proof_inputs,
@@ -880,6 +892,7 @@ impl<'a> Prepared<'a> {
                 priority_fee,
                 approval_blinder,
                 voucher,
+                ring_salt,
                 ring,
                 config,
                 co_signers,
@@ -919,6 +932,7 @@ impl<'a> Sealed<'a> {
                     priority_fee,
                     approval_blinder,
                     voucher,
+                    ring_salt: _,
                 },
             sealed,
             trees,

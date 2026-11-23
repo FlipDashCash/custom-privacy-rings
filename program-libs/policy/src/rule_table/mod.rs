@@ -13,7 +13,7 @@
 //! 1. `Allow`, `Approval` and `PrivateAllow` are grant lists, read by presence. A rule over several passes on any one, within the rule the lists join with OR.
 //! 2. `Block`, `Frozen`, `PrivateBlock` and `PrivateFrozen` are deny lists, read by absence, one per rule. Rules join with AND, so a public and a private block are two rules.
 //! 3. No rule reads `Reader` or the member written `RingViewing`, so an owner admits itself to nothing and a reader grant moves no funds.
-//! 4. `PrivateAllow`, `PrivateBlock` and `PrivateFrozen` are always salted. An owner reads them at its salted key once its tracking row is present, and an asset reads its public record. An owner with no row reads no salted list, so a deny rule on one passes and an allow rule on one fails.
+//! 4. `PrivateAllow`, `PrivateBlock` and `PrivateFrozen` are always salted. An owner reads them at its salted key once its tracking row is present, and an asset reads its public record. An owner with no row reads them at the key of the ring salt the table commits. Under a zero tag it reads no salted list, so a deny rule on one passes and an allow rule on one fails.
 //!
 //! Invariants of a stored table.
 //! 1. Every row is one `Rule::encoded` emits and no two rows share a signature, the circuit's equation alone admits more.
@@ -35,7 +35,7 @@ pub const MAX_SOURCES: usize = 9;
 /// `"CRTB"`, the first field of the table hash, `domain::POLICY_TABLE` of the interface.
 pub const POLICY_TABLE_DOMAIN: u32 = 0x4352_5442;
 pub const POLICY_TABLE_FIELDS: usize =
-    (3 + 2 * MAX_SOURCES + MAX_RULES).div_ceil(POLICY_TABLE_RATE) * POLICY_TABLE_RATE;
+    (4 + 2 * MAX_SOURCES + MAX_RULES).div_ceil(POLICY_TABLE_RATE) * POLICY_TABLE_RATE;
 /// Fields absorbed per Poseidon call beside the accumulator, the 12-input syscall maximum.
 pub(crate) const POLICY_TABLE_RATE: usize = 11;
 
@@ -54,6 +54,8 @@ pub struct PolicySource {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SourceMap {
     slots: [PolicySource; MAX_SOURCES],
+    /// `Poseidon(CRPT, ring_salt)`, zero commits no ring salt.
+    ring_list_tag: [u8; 32],
 }
 
 impl SourceMap {
@@ -82,9 +84,23 @@ impl SourceMap {
                 return Err(SourceMapError::NotPositional);
             }
         }
-        let map = Self { slots };
+        let map = Self {
+            slots,
+            ring_list_tag: [0; 32],
+        };
         map.check_curators()?;
         Ok(map)
+    }
+
+    #[must_use]
+    pub const fn with_ring_list_tag(mut self, ring_list_tag: [u8; 32]) -> Self {
+        self.ring_list_tag = ring_list_tag;
+        self
+    }
+
+    /// An owner with no tracking row reads the salted lists under the salt of a nonzero tag.
+    pub const fn ring_list_tag(&self) -> &[u8; 32] {
+        &self.ring_list_tag
     }
 
     /// Every curator slot names the one registry the circuit opens beside the ring's own.
@@ -681,7 +697,8 @@ impl EncodedRuleTable {
                 right_align(&sources.salted().bits().to_be_bytes()),
                 field_u8(self.rule_count),
             ])
-            .chain(self.rules.iter().copied());
+            .chain(self.rules.iter().copied())
+            .chain([*sources.ring_list_tag()]);
         let mut fields = [[0u8; 32]; POLICY_TABLE_FIELDS];
         for (field, value) in fields.iter_mut().zip(values) {
             *field = value;

@@ -105,6 +105,8 @@ pub enum PolicyUpdate<'a> {
         list_id: ListId,
         source: SourceOwner,
     },
+    /// `list_tag` of the ring salt, zero commits none.
+    RingListTag([u8; 32]),
     /// Own lists read the new records from the next transfer on.
     Records(Address),
 }
@@ -242,6 +244,7 @@ impl UpdatePolicy<'_> {
                     source: u8::from(matches!(source, SourceOwner::Curator(_))),
                 })
             }
+            PolicyUpdate::RingListTag(tag) => UpdatePolicyIxData::RingListTag(tag),
             PolicyUpdate::Records(records) => {
                 accounts.push(AccountMeta::new_readonly(records, false));
                 UpdatePolicyIxData::Records

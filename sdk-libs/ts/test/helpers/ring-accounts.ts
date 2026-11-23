@@ -159,6 +159,7 @@ export function ringPolicyData(
     sources?: readonly RingSourceSlot[];
     table?: RuleTable;
     generation?: number;
+    ringListTag?: Bytes32;
   }>,
 ): Uint8Array {
   const roles = { ...FIXTURE_ROLES, ...input.roles };
@@ -189,6 +190,7 @@ function writePolicyFields(
     sources?: readonly RingSourceSlot[];
     table?: RuleTable;
     generation?: number;
+    ringListTag?: Bytes32;
   }>,
 ): Writer {
   writer.bytes(input.policyHash ?? new Uint8Array(32));
@@ -196,7 +198,10 @@ function writePolicyFields(
   for (const source of sources)
     writer.u8(source.listId, "listId").bytes(addressBytes(source.registry));
   counted(writer, (input.table ?? { rules: [] }).rules.map(encodeRule), 16);
-  return writer.u32(input.generation ?? 0, "generation").u64(0n, "generationSlot");
+  return writer
+    .u32(input.generation ?? 0, "generation")
+    .u64(0n, "generationSlot")
+    .bytes(input.ringListTag ?? new Uint8Array(32), 32, "ringListTag");
 }
 
 function counted(writer: Writer, rows: readonly Uint8Array[], slots: number): void {

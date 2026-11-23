@@ -21,7 +21,9 @@ use zolana_ring_transaction::ClassifiedInput;
 use super::{
     audit::is_default_ring,
     plan::{PlannedTransfer, TransferPlanner},
-    pool_subjects::{pool_at_width, KnownSalts, OwnerQuery, PoolSubjects, RecordPlan, SourceGates},
+    pool_subjects::{
+        pool_at_width, KnownSalts, OwnerQuery, PoolSubjects, RecordPlan, SaltedKey, SourceGates,
+    },
 };
 use crate::{
     limits::Outflows,
@@ -61,6 +63,8 @@ pub(super) struct PolicyInputs {
     curator_pool: Option<RecordPoolRead>,
     sender_entries: Vec<OwnerEntry>,
     voucher_entry: OwnerEntry,
+    /// `None` unless a salted list reads under a ring salt the policy commits.
+    ring_salt: Option<[u8; 32]>,
     owner_entries: Vec<OwnerEntry>,
     asset_entries: Vec<PoolEntry>,
     /// One per input slot of the key, past every payment in the request.
@@ -149,6 +153,10 @@ impl PolicyRead<'_> {
             .iter()
             .map(|owner| tracked.index(*owner))
             .collect();
+        let ring_salt = match pinned.as_ref().filter(|_| gates.any_salted()) {
+            Some(pinned) => self.salts.ring_salt(pinned.sources.ring_list_tag())?,
+            None => None,
+        };
         // Every screened owner's row decides the key width.
         let rows_read = match gates.any_salted() {
             true => {
@@ -186,6 +194,7 @@ impl PolicyRead<'_> {
             tracked: &tracked,
             rows_read: rows_read.as_ref(),
             salts: self.salts,
+            ring_salt,
         }
         .plan(&mut plan)?;
         // A direct frame and a relayed one select the same key from the same read. A relayed seal
@@ -250,6 +259,7 @@ impl PolicyRead<'_> {
             curator_pool: None,
             sender_entries,
             voucher_entry,
+            ring_salt,
             owner_entries,
             asset_entries,
             input_asset_entries,
@@ -425,6 +435,7 @@ struct EntryPlan<'a> {
     /// `None` off a table reading a salted list.
     rows_read: Option<&'a TrackingPoolRead>,
     salts: &'a KnownSalts,
+    ring_salt: Option<[u8; 32]>,
 }
 
 impl EntryPlan<'_> {
@@ -445,10 +456,15 @@ impl EntryPlan<'_> {
                 ),
                 None => (0, None),
             };
+            let ring = self
+                .ring_salt
+                .map(|salt| SaltedKey::ring(&member, salt))
+                .transpose()?;
             plan.owner(OwnerQuery {
                 member,
                 tracking,
                 salted,
+                ring,
             })
         };
         let senders = self
@@ -772,6 +788,7 @@ impl PolicyInputs {
             },
             sender_entries: self.sender_entries.clone(),
             voucher_entry: self.voucher_entry.clone(),
+            ring_salt: self.ring_salt.unwrap_or_default(),
             owner_entries,
             asset_entries,
             public_asset_entries: self.public_asset_entries.clone(),

@@ -198,6 +198,8 @@ pub(crate) struct OwnerEntry {
     pub list_salt: [u8; 32],
     pub own_salted: u32,
     pub curator_salted: [u32; 1],
+    pub own_ring: u32,
+    pub curator_ring: [u32; 1],
 }
 
 #[derive(Serialize)]
@@ -433,6 +435,8 @@ impl Serialize for PolicyTable<'_> {
             policy_len: u8,
             #[serde(serialize_with = "fe::seq")]
             rules: &'a [[u8; 32]],
+            #[serde(with = "fe")]
+            ring_list_tag: [u8; 32],
         }
         let rules = self.rules;
         let slots = self.sources.slots();
@@ -444,6 +448,7 @@ impl Serialize for PolicyTable<'_> {
             salted: self.sources.salted().bits(),
             policy_len: rules.rule_count,
             rules: &rules.rules,
+            ring_list_tag: *self.sources.ring_list_tag(),
         }
         .serialize(serializer)
     }
@@ -479,6 +484,9 @@ pub(crate) struct PolicyParams<'a> {
     pub sender_entries: Vec<OwnerEntry>,
     /// Zero off a screened vouched frame.
     pub voucher_entry: OwnerEntry,
+    /// Zero unless a salted list reads under a ring salt the policy commits.
+    #[serde(with = "fe")]
+    pub ring_salt: [u8; 32],
     pub owner_entries: Vec<OwnerEntry>,
     pub asset_entries: Vec<PoolEntry>,
     pub public_asset_entries: Vec<u32>,
@@ -680,12 +688,18 @@ pub(crate) struct PrivateApplyRecords {
     pub owners: Vec<Option<PrivateOwnerRequest>>,
 }
 
-/// Go `PrivateOwnerParams`, the enrolled row whose salted key a private write names.
+/// Go `PrivateOwnerParams`, the owner's enrolled row or the row bracketing an unregistered owner.
 #[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PrivateOwnerRequest {
     #[serde(with = "fe")]
     pub list_salt: [u8; 32],
+    /// Keys the write under the ring salt.
+    #[serde(skip_serializing_if = "core::ops::Not::not")]
+    pub ring: bool,
+    /// The unregistered owner `record` brackets.
+    #[serde(skip_serializing_if = "Option::is_none", with = "fe::option")]
+    pub absent: Option<[u8; 32]>,
     pub record: TrackingLeafRequest,
     pub index: u64,
     #[serde(serialize_with = "fe::seq")]

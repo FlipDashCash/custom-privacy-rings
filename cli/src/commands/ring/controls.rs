@@ -197,6 +197,7 @@ pub fn reader(ctx: &Context, command: ReaderCommand) -> Result<()> {
     let subject = Subject {
         member: reader.record_key()?,
         label: format!("reader {reader}"),
+        unregistered: None,
     };
     let outcomes = ListUpdate {
         list_id: ListId::Reader,

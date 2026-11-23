@@ -221,13 +221,17 @@ function entry(value: unknown): PolicySubjectEntry {
 function ownerEntry(value: unknown): PolicyOwnerEntry {
   const item = record(value);
   const [curatorSalted, ...rest] = list(item["curatorSalted"]);
+  const [curatorRing, ...ringRest] = list(item["curatorRing"]);
   if (curatorSalted === undefined || rest.length !== 0) throw new Error("golden salted entry");
+  if (curatorRing === undefined || ringRest.length !== 0) throw new Error("golden ring entry");
   return {
     ...entry(item),
     tracking: count(item["tracking"]),
     listSalt: field(item["listSalt"]),
     ownSalted: count(item["ownSalted"]),
     curatorSalted: count(curatorSalted),
+    ownRing: count(item["ownRing"]),
+    curatorRing: count(curatorRing),
   };
 }
 

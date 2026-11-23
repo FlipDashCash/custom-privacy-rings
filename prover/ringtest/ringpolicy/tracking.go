@@ -12,6 +12,9 @@ import (
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringregistry"
 )
 
+// RingSalt opens the tag a ring salted table commits.
+var RingSalt = big.NewInt(0x5a17)
+
 func ListSaltIn(t testing.TB, owner, ringID *big.Int) *big.Int {
 	t.Helper()
 	return ringtest.MustPoseidonHash(t, new(big.Int).Add(owner, big.NewInt(4)), ringID)

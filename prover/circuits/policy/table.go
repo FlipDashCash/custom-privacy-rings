@@ -11,7 +11,7 @@
 // 1. While screened, the table is the preimage of policy_hash under the CRTB domain, in EncodedRuleTable::fields order.
 // 2. The first PolicyLen rows are active, a count past NRules has no solution.
 // 3. Each row decodes to one set of parts below 2^120, every part a bound width, and no part aliases another.
-// 4. Each list slot reads foreign or own from its Registry and salted or public from Salted.
+// 4. Each list slot reads foreign or own from its Registry and salted or public from Salted, and RingListTag enters the hash after the rules.
 // 5. A rule's admission is linear in the subject's list bits and never wraps to zero.
 
 package policy
@@ -66,6 +66,8 @@ type Table struct {
 	PolicyLen frontend.Variable
 	// Each rule is its 32-byte row read as one field.
 	Rules [NRules]frontend.Variable
+	// Commits the salt an owner with no tracking row reads private lists under, zero commits none.
+	RingListTag frontend.Variable
 }
 
 // SourceWires slot i sources list i+1, a zero Registry names the ring's own registry.
@@ -132,6 +134,7 @@ func (t Table) Fields() []frontend.Variable {
 	}
 	fields = append(fields, t.Salted, t.PolicyLen)
 	fields = append(fields, t.Rules[:]...)
+	fields = append(fields, t.RingListTag)
 	for len(fields) < PolicyTableFields {
 		fields = append(fields, 0)
 	}

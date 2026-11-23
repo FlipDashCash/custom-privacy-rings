@@ -174,6 +174,7 @@ impl<'a> RingTransfer<Delegated<'a>> {
                 tx_viewing_key: ViewingKey::new(),
             },
             list_salts: Vec::new(),
+            ring_salt: None,
             approval: ApprovalDisclosure::None,
             seal_row: None,
         }

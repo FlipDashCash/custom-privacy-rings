@@ -775,6 +775,7 @@ mod tests {
             },
             mode: custom_ring_interface::RingMode::Confidential,
             delegate: None,
+            ring_list_tag: [0; 32],
         });
         Arc::new(
             Hub::builder(source, identity(TEST_GENESIS))
@@ -918,6 +919,7 @@ mod tests {
             },
             signer: Address::new_from_array([6; 32]).into(),
             signature: Signature::default().into(),
+            unregistered_owners: Vec::new(),
         };
         reqwest::Client::new()
             .post(url)

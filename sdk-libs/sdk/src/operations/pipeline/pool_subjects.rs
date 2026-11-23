@@ -122,7 +122,10 @@ impl SourceGates {
 }
 
 #[derive(Default)]
-pub(crate) struct KnownSalts(Vec<SubjectListSalt>);
+pub(crate) struct KnownSalts {
+    owners: Vec<SubjectListSalt>,
+    ring: Option<[u8; 32]>,
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct SaltedKey {
@@ -131,8 +134,19 @@ pub(crate) struct SaltedKey {
 }
 
 impl KnownSalts {
-    pub fn new(salts: Vec<SubjectListSalt>) -> Self {
-        Self(salts)
+    pub fn new(owners: Vec<SubjectListSalt>, ring: Option<[u8; 32]>) -> Self {
+        Self { owners, ring }
+    }
+
+    /// `None` under a zero tag, the circuit holds the salt of any other tag to it.
+    pub fn ring_salt(&self, ring_list_tag: &[u8; 32]) -> Result<Option<[u8; 32]>, RingError> {
+        if *ring_list_tag == [0; 32] {
+            return Ok(None);
+        }
+        self.ring
+            .filter(|salt| domain::list_tag(salt).is_ok_and(|tag| tag == *ring_list_tag))
+            .map(Some)
+            .ok_or(RingError::RingSaltUnknown)
     }
 
     /// `None` only with no tracking row.
@@ -145,7 +159,7 @@ impl KnownSalts {
             return Ok(None);
         };
         let mut known = self
-            .0
+            .owners
             .iter()
             .filter(|salt| salt.member == *member && salt.list_salt != [0; 32])
             .peekable();
@@ -156,11 +170,25 @@ impl KnownSalts {
             .map(|salt| salt.list_salt)
             .find(|salt| domain::list_tag(salt).is_ok_and(|tag| tag == row.list_tag))
             .ok_or(RingError::ListSaltMismatch { member: *member })?;
+        SaltedKey::of(member, list_salt).map(Some)
+    }
+}
+
+impl SaltedKey {
+    fn of(member: &[u8; 32], list_salt: [u8; 32]) -> Result<Self, RingError> {
         let key = Member::salted(&Member::from_bytes(*member)?, &list_salt)?;
-        Ok(Some(SaltedKey {
+        Ok(Self {
             list_salt,
             key: *key.as_bytes(),
-        }))
+        })
+    }
+
+    pub fn ring(member: &[u8; 32], ring_salt: [u8; 32]) -> Result<Self, RingError> {
+        let key = Member::ring_salted(&Member::from_bytes(*member)?, &ring_salt)?;
+        Ok(Self {
+            list_salt: ring_salt,
+            key: *key.as_bytes(),
+        })
     }
 }
 
@@ -170,6 +198,8 @@ pub(crate) struct OwnerQuery {
     pub tracking: u32,
     /// `None` with no tracking row.
     pub salted: Option<SaltedKey>,
+    /// `None` on a ring with no ring salt.
+    pub ring: Option<SaltedKey>,
 }
 
 #[derive(Default)]
@@ -190,12 +220,13 @@ impl RecordPlan {
         }
     }
 
-    /// The owner's public lists sit under `Member::public`, its salted lists under its salted key.
+    /// Public lists sit under `Member::public`, salted lists under the owner's and the ring's key.
     pub fn owner(&mut self, query: OwnerQuery) -> Result<OwnerEntry, RingError> {
         let OwnerQuery {
             member,
             tracking,
             salted,
+            ring,
         } = query;
         let gates = self.gates;
         let public = *Member::public(&Member::from_bytes(member)?)?.as_bytes();
@@ -206,10 +237,13 @@ impl RecordPlan {
             own: self.own.index(Some(public)),
             curator: [self.curator.index(gates.public_foreign().then_some(public))],
         };
-        let salted_key = salted.map(|salted| salted.key);
-        if let Some(key) = salted_key {
-            self.salted_keys.push((member, key));
-        }
+        let (salted_key, ring_key) = (salted.map(|key| key.key), ring.map(|key| key.key));
+        self.salted_keys.extend(
+            [salted_key, ring_key]
+                .into_iter()
+                .flatten()
+                .map(|key| (member, key)),
+        );
         Ok(OwnerEntry {
             entry,
             tracking,
@@ -218,6 +252,10 @@ impl RecordPlan {
             curator_salted: [self
                 .curator
                 .index(salted_key.filter(|_| gates.salted_curated()))],
+            own_ring: self.own.index(ring_key.filter(|_| gates.salted_own())),
+            curator_ring: [self
+                .curator
+                .index(ring_key.filter(|_| gates.salted_curated()))],
         })
     }
 
@@ -243,7 +281,7 @@ impl RecordPlan {
         }
     }
 
-    /// Mirror `sourceView.lists` over the salted record.
+    /// Mirror `sourceView.lists` over the records under the owner's salt and the ring salt.
     pub fn lists(
         &self,
         member: &[u8; 32],
@@ -253,8 +291,10 @@ impl RecordPlan {
         let salted = self
             .salted_keys
             .iter()
-            .find(|(owner, _)| owner == member)
-            .map_or(0, |(_, key)| self.gates.served(own(key), curator(key)));
+            .filter(|(owner, _)| owner == member)
+            .fold(0, |lists, (_, key)| {
+                lists | self.gates.served(own(key), curator(key))
+            });
         let record = self
             .public_keys
             .iter()

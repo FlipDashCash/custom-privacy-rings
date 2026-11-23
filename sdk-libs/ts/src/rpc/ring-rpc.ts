@@ -2192,7 +2192,7 @@ export class RingRpc {
     );
   }
 
-  /** `undefined` while the owner has no tracking row. */
+  /** The owner's salt, or with no tracking row the ring salt the policy commits. */
   async getListSalt(
     request: GetListSaltRequest,
     context?: RequestContext,
@@ -2203,7 +2203,8 @@ export class RingRpc {
       NO_FIELDS,
       "result",
     );
-    return absent(wire["listSalt"]) ? undefined : hash(wire["listSalt"], "result.listSalt");
+    const salt = wire["listSalt"] ?? wire["ringSalt"];
+    return absent(salt) ? undefined : hash(salt, "result.listSalt");
   }
 
   async prepareAuthorityTransfer(
@@ -3104,7 +3105,7 @@ const DEFAULT_INPUT_FIELDS = new Set([
   "amount",
   "commitment",
 ]);
-const LIST_SALT_FIELDS = new Set(["listSalt"]);
+const LIST_SALT_FIELDS = new Set(["listSalt", "ringSalt"]);
 const NO_FIELDS = new Set<string>();
 const AUDITED_MERGES_PAGE_FIELDS = new Set(["opened", "cursor"]);
 const AUDITED_MERGE_REQUIRED_FIELDS = new Set([

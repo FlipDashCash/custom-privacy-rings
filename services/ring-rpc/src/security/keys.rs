@@ -7,6 +7,7 @@ use crate::{config::RootSecret, error::RingRpcError};
 
 const DERIVATION_INFO: &[u8] = b"zolana/ring-auditor";
 pub const GRANT_ROW_KEY_INFO: &[u8] = b"zolana/ring-rpc-grant-rows";
+const RING_SALT_INFO: &[u8] = b"zolana/ring-salt";
 /// Part of the pinned derivation info of every registered auditor key.
 const DERIVATION_SUFFIX: &[u8] = &[0];
 
@@ -44,9 +45,53 @@ impl AuditorKeyDerivation<'_> {
     }
 }
 
+/// The cluster and ring bind each ring salt, the label keeps it apart from the auditor's X25519 role.
+#[must_use]
+pub(crate) struct RingSaltDerivation<'a> {
+    pub auditor: &'a X25519Keypair,
+    pub genesis_hash: &'a [u8; 32],
+    pub ring: Address,
+}
+
+impl RingSaltDerivation<'_> {
+    /// Canonical by its zero top byte, nonzero by its low bit.
+    pub fn derive(self) -> Result<Zeroizing<[u8; 32]>, RingRpcError> {
+        let mut salt = Zeroizing::new([0u8; 32]);
+        hkdf::Hkdf::<sha2::Sha256>::new(None, self.auditor.secret_bytes().as_slice())
+            .expand_multi_info(
+                &[RING_SALT_INFO, self.genesis_hash, self.ring.as_ref()],
+                &mut salt[1..],
+            )
+            .map_err(|_| KeypairError::Hkdf)?;
+        salt[31] |= 1;
+        Ok(salt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ring_salt_is_a_nonzero_field_element_of_its_ring_and_cluster() {
+        let auditor = X25519Keypair::from_bytes(&[7; 32]);
+        let salt = |genesis_hash: [u8; 32], ring: u8| {
+            RingSaltDerivation {
+                auditor: &auditor,
+                genesis_hash: &genesis_hash,
+                ring: Address::new_from_array([ring; 32]),
+            }
+            .derive()
+            .expect("ring salt")
+        };
+        let derived = salt([9; 32], 5);
+
+        assert_eq!((derived[0], derived[31] & 1), (0, 1));
+        assert_eq!(derived, salt([9; 32], 5));
+        assert_ne!(derived, salt([9; 32], 6));
+        assert_ne!(derived, salt([8; 32], 5));
+        assert_ne!(*derived, *auditor.secret_bytes());
+    }
 
     /// The ring config pins its auditor key forever, so a new derivation domain orphans every ring.
     #[test]

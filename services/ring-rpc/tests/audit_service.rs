@@ -1087,6 +1087,7 @@ impl Fixture {
                     },
                     mode: RingMode::Confidential,
                     delegate: None,
+                    ring_list_tag: [0; 32],
                 },
             )]),
             chain: HashMap::new(),

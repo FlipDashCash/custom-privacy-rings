@@ -129,6 +129,8 @@ type PolicyTable struct {
 	Salted    uint16  `json:"salted"`
 	PolicyLen uint8   `json:"policyLen"`
 	Rules     []Field `json:"rules"`
+	// Nil or zero on a ring with no ring salt.
+	RingListTag *Field `json:"ringListTag,omitempty"`
 }
 
 type Withdrawal struct {
@@ -177,6 +179,8 @@ type PooledOwnerEntry struct {
 	ListSalt      Field    `json:"listSalt"`
 	OwnSalted     uint32   `json:"ownSalted"`
 	CuratorSalted []uint32 `json:"curatorSalted"`
+	OwnRing       uint32   `json:"ownRing"`
+	CuratorRing   []uint32 `json:"curatorRing"`
 }
 
 type SharedRegistryPath struct {
@@ -199,6 +203,8 @@ type PolicyParams struct {
 	CuratorSubjects []PooledSubject     `json:"curatorSubjects"`
 	SenderEntries   []PooledOwnerEntry  `json:"senderEntries"`
 	VoucherEntry    PooledOwnerEntry    `json:"voucherEntry"`
+	// Nil on a ring with no ring salt.
+	RingSalt *Field `json:"ringSalt,omitempty"`
 	// OwnerEntries[o] and AssetEntries[o] index payment o's owner and asset subjects.
 	OwnerEntries       []PooledOwnerEntry `json:"ownerEntries"`
 	AssetEntries       []PooledEntry      `json:"assetEntries"`
@@ -279,10 +285,14 @@ type PrivateApplyRecordsParams struct {
 }
 
 type PrivateOwnerParams struct {
-	ListSalt Field                `json:"listSalt"`
-	Record   TrackingRecordParams `json:"record"`
-	Index    uint64               `json:"index"`
-	Path     []Field              `json:"path"`
+	ListSalt Field `json:"listSalt"`
+	// Ring keys the write under the ring salt.
+	Ring bool `json:"ring,omitempty"`
+	// The owner Record brackets, only a write under the ring salt names one.
+	Absent *Field               `json:"absent,omitempty"`
+	Record TrackingRecordParams `json:"record"`
+	Index  uint64               `json:"index"`
+	Path   []Field              `json:"path"`
 }
 
 type ApplyEnrollmentsParams struct {

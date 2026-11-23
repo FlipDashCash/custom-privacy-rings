@@ -151,6 +151,8 @@ export interface CustomRingTransferInput {
   readonly coSigners?: readonly Address[];
   /** Every enrolled owner a salted list reads, the sender and the recipients alike. */
   readonly listSalts?: readonly RingListSalt[];
+  /** A direct proof reads the private lists under it on a ring that commits its tag. */
+  readonly ringSalt?: Bytes32;
   /** SPP's optional fields the frame carries through, the proof's own digests are set per attempt. */
   readonly extensions?: Omit<FrameExtensions, "approvalTotals" | "cache">;
   /** The frame carries a digest of its totals, Rust `with_exact_approval`. */
@@ -403,6 +405,7 @@ export class CustomRingTransfer {
           ...suppliedCoSigners(this.#input.coSigners),
           listSalts: this.#input.listSalts ?? [],
           ...suppliedVoucher(this.#input),
+          ...ringSalted(this.#input.ringSalt),
           ...approvedStage(approval, prepared),
         },
         context,
@@ -716,6 +719,7 @@ export class AnonymousTransfer {
           ...suppliedCoSigners(this.#owner.coSigners),
           listSalts: this.#owner.listSalts ?? [],
           ...suppliedVoucher(this.#owner),
+          ...ringSalted(this.#owner.ringSalt),
           ...approvedStage(approval, prepared),
         },
         context,
@@ -1084,6 +1088,7 @@ export class PublicOwnerTransfer {
           ...suppliedCoSigners(this.#owner.coSigners),
           listSalts: this.#owner.listSalts ?? [],
           ...suppliedVoucher(this.#owner),
+          ...ringSalted(this.#owner.ringSalt),
           ...approvedStage(approval, prepared),
         },
         context,
@@ -1770,4 +1775,8 @@ function leafIndexOf(input: ProofInputUtxo, notes: readonly WalletUtxo[]): bigin
   if (note === undefined)
     throw new RingError("RING_RELAY_PROOF_INPUTS", { details: { reason: "leafIndex" } });
   return note.outputContext.leafIndex;
+}
+
+function ringSalted(ringSalt: Bytes32 | undefined): Readonly<{ ringSalt?: Bytes32 }> {
+  return ringSalt === undefined ? {} : { ringSalt };
 }

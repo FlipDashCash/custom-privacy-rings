@@ -48,6 +48,8 @@ const (
 	ListTagDomain = 0x43525054
 	// ListKeyDomain = "CRPL"
 	ListKeyDomain = 0x4352504c
+	// RingListKeyDomain = "CRPR"
+	RingListKeyDomain = 0x43525052
 	// DeliveredSlotDomain = "CRDS"
 	DeliveredSlotDomain = 0x43524453
 	// VouchDomain = "CRVC"
@@ -88,6 +90,11 @@ func BlindingSeed(api frontend.API, txViewingSk [2]frontend.Variable, salt front
 // ListTag is Poseidon(CRPT, listSalt), the tracking leaf's commitment to the owner's one salt.
 func ListTag(api frontend.API, listSalt frontend.Variable) frontend.Variable {
 	return gadget.PoseidonHash(api, []frontend.Variable{ListTagDomain, listSalt})
+}
+
+// RingListKey is the member key of an owner's record under the ring salt, its domain keeps it off every ListKey.
+func RingListKey(api frontend.API, owner, ringSalt frontend.Variable) frontend.Variable {
+	return gadget.PoseidonHash(api, []frontend.Variable{RingListKeyDomain, owner, ringSalt})
 }
 
 // ListKey is the member key of an owner's salted record, pseudorandom without the salt.

@@ -44,8 +44,12 @@ func (w World) BuildRows(t testing.TB, rows Rows) Witness {
 	}
 	own, curator := registry(t, w.Own, key), registry(t, w.Curator, key)
 	write(t, own, w.Unkeyed, big.NewInt)
-	WriteSalted(t, own, w.Salted)
-	WriteSalted(t, curator, w.CuratorSalted)
+	ownKey := func(t testing.TB, owner *big.Int) *big.Int {
+		return ringregistry.ListKey(t, owner, ListSaltOf(t, owner))
+	}
+	WriteSalted(t, own, w.Salted, ownKey)
+	WriteSalted(t, curator, w.CuratorSalted, ownKey)
+	WriteSalted(t, own, w.RingSalted, func(t testing.TB, owner *big.Int) *big.Int { return ringregistry.RingListKey(t, owner, RingSalt) })
 	mintPolicies := map[string]*big.Int{}
 	assets := map[string]*big.Int{}
 	for i, a := range rows.InlineAssets {
@@ -185,7 +189,7 @@ func (b Witness) Rebind(t testing.TB) {
 	b.Circuit.PublicInputHash = spptest.MustHashChain4(t, ringtest.ToBigInts(b.Circuit.Statement()))
 }
 
-func WriteSalted(t testing.TB, tree *ringregistry.Registry, records map[int64]uint64) {
+func WriteSalted(t testing.TB, tree *ringregistry.Registry, records map[int64]uint64, key func(testing.TB, *big.Int) *big.Int) {
 	t.Helper()
 	owners := make([]int64, 0, len(records))
 	for owner := range records {
@@ -196,7 +200,7 @@ func WriteSalted(t testing.TB, tree *ringregistry.Registry, records map[int64]ui
 	for _, owner := range owners {
 		identity := big.NewInt(owner)
 		bits := new(big.Int).SetUint64(records[owner])
-		tree.Apply(t, ringregistry.Entry{Member: ringregistry.ListKey(t, identity, ListSaltOf(t, identity)), Mask: bits, Value: bits, MintPolicy: zero, WithdrawalThreshold: zero})
+		tree.Apply(t, ringregistry.Entry{Member: key(t, identity), Mask: bits, Value: bits, MintPolicy: zero, WithdrawalThreshold: zero})
 	}
 }
 

@@ -9,7 +9,12 @@ import {
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { InterfaceError } from "@heliuslabs/spr/interface";
-import { bigIntBytes, bytesField, type ExpectedProvingKey } from "@heliuslabs/spr/internal";
+import {
+  ZERO_32,
+  bigIntBytes,
+  bytesField,
+  type ExpectedProvingKey,
+} from "@heliuslabs/spr/internal";
 import type { Bytes16, Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
 import { ClientError } from "@heliuslabs/spr/client";
 import {
@@ -113,6 +118,8 @@ export interface PolicyTableProofInputs {
   readonly salted: number;
   readonly policyLen: number;
   readonly rules: readonly Bytes32[];
+  /** Absent or zero commits no ring salt. */
+  readonly ringListTag?: Bytes32;
 }
 
 /** Go `PooledEntry`, the curator index 0 without a curator registry. */
@@ -127,6 +134,9 @@ export interface PolicyOwnerEntry extends PolicySubjectEntry {
   readonly listSalt: Bytes32;
   readonly ownSalted: number;
   readonly curatorSalted: number;
+  /** The owner's records under the ring salt, 0 on a ring with none. */
+  readonly ownRing: number;
+  readonly curatorRing: number;
 }
 
 /** Go `PolicyParams`, one owner and one asset entry per output and withdrawal slot, both pools at the key's widths. */
@@ -148,6 +158,8 @@ export interface PolicyProofInputs extends PolicyTableProofInputs {
   readonly senderEntries: readonly PolicyOwnerEntry[];
   /** The zero entry off a vouched frame and off a screened ring. */
   readonly voucherEntry: PolicyOwnerEntry;
+  /** Opens `ringListTag`, absent on a ring that reads no list under a ring salt. */
+  readonly ringSalt?: Bytes32;
   readonly ownerEntries: readonly PolicyOwnerEntry[];
   readonly assetEntries: readonly PolicySubjectEntry[];
   readonly publicAssetEntries: readonly number[];
@@ -234,9 +246,13 @@ export interface PrivateApplyProofInput {
   readonly owners: readonly (PrivateOwnerProofInput | undefined)[];
 }
 
-/** Go `PrivateOwnerParams`, a marked write's owner row, present under a nonzero key. */
+/** Go `PrivateOwnerParams`, a marked write's enrolled row or the row bracketing an unregistered owner. */
 export interface PrivateOwnerProofInput {
   readonly listSalt: Bytes32;
+  /** Keys the write under the ring salt. */
+  readonly ring?: boolean;
+  /** The unregistered owner `record` brackets, its write sits under the ring salt. */
+  readonly absent?: Bytes32;
   readonly record: TrackingRecord;
   readonly path: QuadPath;
 }
@@ -685,6 +701,7 @@ function policyJson(policy: PolicyProofInputs, shape: PolicySectionShape): Json 
       ownerEntryJson(entry, capacity, `senderEntries[${i}]`),
     ),
     voucherEntry: ownerEntryJson(policy.voucherEntry, capacity, "voucherEntry"),
+    ringSalt: field(policy.ringSalt ?? ZERO_32, "ringSalt"),
     ownerEntries: sized(policy.ownerEntries, slots, "ownerEntries").map((entry, i) =>
       ownerEntryJson(entry, capacity, `ownerEntries[${i}]`),
     ),
@@ -708,6 +725,7 @@ function tableJson(table: PolicyTableProofInputs): Json {
     salted: integer(table.salted, "salted", 0, (1 << RING_SOURCE_SLOTS) - 1),
     policyLen: integer(table.policyLen, "policyLen", 0, RING_RULE_SLOTS),
     rules: fields(table.rules, RING_RULE_SLOTS, "rules"),
+    ringListTag: field(table.ringListTag ?? ZERO_32, "ringListTag"),
   };
 }
 
@@ -749,6 +767,8 @@ function ownerEntryJson(entry: PolicyOwnerEntry, capacity: PolicyPoolCapacity, n
     listSalt: field(entry.listSalt, `${name}.listSalt`),
     ownSalted: integer(entry.ownSalted, `${name}.ownSalted`, 0, capacity.own - 1),
     curatorSalted: [integer(entry.curatorSalted, `${name}.curatorSalted`, 0, capacity.curator - 1)],
+    ownRing: integer(entry.ownRing, `${name}.ownRing`, 0, capacity.own - 1),
+    curatorRing: [integer(entry.curatorRing, `${name}.curatorRing`, 0, capacity.curator - 1)],
   };
 }
 
@@ -783,6 +803,8 @@ function privateApplyJson(input: PrivateApplyProofInput, capacity: number): Json
       capacity,
       (owner, name) => ({
         listSalt: field(owner.listSalt, `${name}.listSalt`),
+        ...(owner.ring === true ? { ring: true } : {}),
+        ...(owner.absent === undefined ? {} : { absent: field(owner.absent, `${name}.absent`) }),
         record: trackingRecordJson(owner.record, `${name}.record`),
         ...quadPathJson(owner.path, TRACKING_QUAD_HEIGHT, name, "index", "path"),
       }),

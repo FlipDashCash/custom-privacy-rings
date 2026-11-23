@@ -73,6 +73,9 @@ pub struct SubmitRecordUpdateRequest {
     pub signer: SerializablePubkey,
     /// Raw Ed25519 over [`RecordUpdateStatement::message`].
     pub signature: SerializableSignature,
+    /// Unsigned, each owner must key a written entry under the ring salt.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unregistered_owners: Vec<SerializablePubkey>,
 }
 
 /// The statement hash, a resubmitted update keeps its id.
@@ -226,11 +229,18 @@ impl RecordUpdate {
             update: self,
             signer: signer.pubkey().into(),
             signature: signature.into(),
+            unregistered_owners: Vec::new(),
         })
     }
 }
 
 impl SubmitRecordUpdateRequest {
+    #[must_use]
+    pub fn with_unregistered_owners(mut self, owners: &[Address]) -> Self {
+        self.unregistered_owners = owners.iter().copied().map(Into::into).collect();
+        self
+    }
+
     pub fn statement(&self) -> Result<RecordUpdateStatement, RecordUpdateError> {
         self.update.statement(self.registry.0)
     }

@@ -146,6 +146,8 @@ export interface SubmitRecordUpdateRequest {
   readonly update: RecordUpdate;
   readonly signer: Address;
   readonly signature: Signature;
+  /** Unsigned, each owner must key a written entry under the ring salt. */
+  readonly unregisteredOwners?: readonly Address[];
 }
 
 /** Rust `RecordUpdateStatus`. */

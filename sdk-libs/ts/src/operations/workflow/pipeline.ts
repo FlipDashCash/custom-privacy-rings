@@ -311,6 +311,8 @@ export type StagedTransferInput = Readonly<{
   listSalts?: readonly RingListSalt[];
   /** A listed wallet vouching for every sender and payment owner, its salt in `listSalts` once enrolled. */
   voucher?: VouchSigner;
+  /** Every owner reads the private lists under it on a ring that commits its tag. */
+  ringSalt?: Bytes32;
   transaction?: RingTransactionFrame;
   approve?: (coSigners: readonly Address[], proofInputs: SppProofInputs) => Promise<void>;
 }>;
@@ -423,6 +425,7 @@ async function selectStagedKey(input: StagedTransferInput, context: RequestConte
     ...(input.voucher === undefined
       ? {}
       : { voucher: input.voucher.publicKey().ownerProofInputHash() }),
+    ...(input.ringSalt === undefined ? {} : { ringSalt: input.ringSalt }),
     ...tokenOwnerHint(spend.anonymous?.tokenOwner ?? staged.withdrawalOwner),
   };
   const demand = await policyDemand({ ...demandInput, rows: liveRows }, context);

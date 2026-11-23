@@ -147,6 +147,24 @@ fn a_policy_write_validates_and_repins_the_table() {
         Err(CustomRingError::InvalidPolicyRules)
     );
     assert_eq!(policy.policy_hash(), Ok(&hash));
+    // A ring list tag repins the same table, a tag off the field stores nothing.
+    let mut tag = [0u8; 32];
+    tag[31] = 7;
+    policy.set_ring_list_tag(tag, 5).unwrap();
+    let tagged = *policy.policy_hash().unwrap();
+    assert_ne!(tagged, hash);
+    assert_eq!(tagged, table.hash(&policy.source_map().unwrap()).unwrap());
+    assert_eq!(policy.source_map().unwrap().ring_list_tag(), &tag);
+    assert_eq!(
+        policy.set_ring_list_tag([0xff; 32], 6),
+        Err(CustomRingError::HashingFailed)
+    );
+    assert_eq!(
+        (policy.ring_list_tag, policy.policy_hash()),
+        (tag, Ok(&tagged))
+    );
+    policy.set_ring_list_tag([0; 32], 7).unwrap();
+    assert_eq!(policy.policy_hash(), Ok(&hash));
 }
 
 #[test]

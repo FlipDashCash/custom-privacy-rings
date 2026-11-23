@@ -56,6 +56,7 @@ impl<'a> RingTransfer<Owner<'a>> {
                 payments: Vec::new(),
             },
             list_salts: self.list_salts,
+            ring_salt: self.ring_salt,
             approval: self.approval,
             seal_row: self.seal_row,
         }

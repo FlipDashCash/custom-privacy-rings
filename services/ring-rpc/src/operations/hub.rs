@@ -296,6 +296,10 @@ impl<S: TransactionSource + 'static> ServedRings for HubRings<S> {
         }
     }
 
+    async fn ring_salt(&self, ring: Address) -> Result<Option<[u8; 32]>, RingRpcError> {
+        Ok(Some(*self.0.service(Some(ring))?.ring_salt()?))
+    }
+
     async fn delegate(&self, ring: Address) -> Result<Option<Address>, RingRpcError> {
         Ok(self
             .0
@@ -658,6 +662,10 @@ where
             .service(Some(ring))?
             .salted_owner(&written_key)
             .await
+    }
+
+    async fn ring_salt(&self, ring: Address) -> Result<[u8; 32], RingRpcError> {
+        Ok(*self.shared.service(Some(ring))?.ring_salt()?)
     }
 
     async fn prove(&self, write: PrivateStorageWrite<'_>) -> Result<ProvenPrivateWrite, RingError> {

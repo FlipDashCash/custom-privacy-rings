@@ -89,7 +89,7 @@ impl MigrationTrait for Schema {
             format!("CREATE TABLE grants (id {serial}, reader {blob} NOT NULL, sealed {blob} NOT NULL)"),
             format!("CREATE TABLE merge_inputs (nullifier {blob} PRIMARY KEY, ring {blob} NOT NULL, relay_id {blob} NOT NULL)"),
             format!("CREATE TABLE merge_settings (ring {blob} NOT NULL, owner {blob} NOT NULL, mint {blob} NOT NULL, target_note_count BIGINT NOT NULL, min_average_amount {blob} NOT NULL, signed_at BIGINT NOT NULL, PRIMARY KEY(ring, owner, mint))"),
-            format!("CREATE TABLE records_updates (seq {serial}, id {blob} NOT NULL UNIQUE, registry {blob} NOT NULL, ring {blob} NOT NULL, request TEXT NOT NULL, writes {blob} NOT NULL, queued_slot BIGINT NOT NULL, valid_until_slot BIGINT NOT NULL, status TEXT NOT NULL, batch BIGINT REFERENCES records_batches(id), reason TEXT, attempts BIGINT NOT NULL DEFAULT 0, awaited BIGINT NOT NULL DEFAULT 0, joined {blob}, member {blob}, signer {blob}, role TEXT)"),
+            format!("CREATE TABLE records_updates (seq {serial}, id {blob} NOT NULL UNIQUE, registry {blob} NOT NULL, ring {blob} NOT NULL, request TEXT NOT NULL, writes {blob} NOT NULL, queued_slot BIGINT NOT NULL, valid_until_slot BIGINT NOT NULL, status TEXT NOT NULL, batch BIGINT REFERENCES records_batches(id), reason TEXT, attempts BIGINT NOT NULL DEFAULT 0, awaited BIGINT NOT NULL DEFAULT 0, joined {blob}, member {blob}, signer {blob}, role TEXT, unregistered {blob})"),
             format!(
                 "CREATE TABLE relay_reservations (key {blob} NOT NULL PRIMARY KEY, relay_id {blob} NOT NULL, \
                  signer {blob} NOT NULL, lamports BIGINT NOT NULL, fee_allowance BIGINT NOT NULL, \

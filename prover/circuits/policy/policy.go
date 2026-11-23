@@ -74,6 +74,8 @@ type Policy struct {
 	OwnerEntries    []OwnerEntry
 	// VoucherEntry indexes the voucher's records in the pools the owners share, no pool grows for it.
 	VoucherEntry OwnerEntry
+	// RingSalt opens RingListTag, every owner reads the private lists under it beside its own salt.
+	RingSalt frontend.Variable
 	// AssetEntries index each payment's asset subject, then each input slot's.
 	AssetEntries       []PoolEntry
 	PublicAssetEntries []frontend.Variable
