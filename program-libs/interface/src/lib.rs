@@ -124,7 +124,7 @@ pub fn tagged_x25519(u: &[u8; 32]) -> [u8; TAGGED_X25519_KEY_LEN] {
 pub struct AuditorMessage<'a> {
     pub eph_pk: &'a [u8; TAGGED_X25519_KEY_LEN],
     pub envelope: &'a [u8],
-    /// One sealed key per published slot.
+    /// One sealed key per published slot, then the voucher's on a vouched frame.
     pub recipient_keys: &'a [u8],
     /// One record per exit in slot order, every other record opens its slot's body.
     pub exit_records: &'a [u8],

@@ -86,7 +86,7 @@ use self::{
     plan::{PlannedTransfer, TransferPlanner},
     policy::{owner_rows, PolicyInputs, PolicyRead},
     spp::{Spp, SppRail, SppWitness},
-    voucher::{Vouch, VoucherKey},
+    voucher::{Vouch, Voucher},
 };
 use crate::client::{RingClient, RingIndexerBackend};
 use crate::{
@@ -414,7 +414,9 @@ impl<R: Rail> RingTransfer<R> {
             RailKind::Anonymous(rail) => rail.owner.voucher,
             RailKind::PublicOwners(public) => public.owner.voucher,
             RailKind::Delegated(_) | RailKind::Relayed(_) => None,
-        };
+        }
+        .map(Voucher::of)
+        .transpose()?;
         let approval_blinder = match (self.rail.kind(), self.approval) {
             (RailKind::Relayed(relayed), _) => relayed.approval_blinder(),
             (RailKind::Delegated(_), _) | (_, ApprovalDisclosure::None) => None,
@@ -443,7 +445,7 @@ struct Pipeline<'a> {
     co_signers: Vec<Address>,
     priority_fee: Option<u64>,
     approval_blinder: Option<[u8; 32]>,
-    voucher: Option<&'a dyn VouchSigner>,
+    voucher: Option<Voucher<'a>>,
 }
 
 struct Frame {
@@ -472,7 +474,7 @@ struct Unwitnessed<'a> {
     spend: Spend<'a>,
     trees: SpendTrees,
     priority_fee: Option<u64>,
-    voucher: Option<&'a dyn VouchSigner>,
+    voucher: Option<Voucher<'a>>,
 }
 
 /// A transfer whose external data is final.
@@ -682,7 +684,7 @@ impl<'a> Prepared<'a> {
             voucher: self
                 .pipeline
                 .voucher
-                .map(|voucher| VoucherKey::of(voucher)?.identity())
+                .map(|voucher| voucher.identity())
                 .transpose()?,
             token_owner_hint: match &staged.spend {
                 Spend::Anonymous(a) => a.token_owner,
@@ -794,7 +796,7 @@ impl<'a> Prepared<'a> {
                 flags,
                 inputs: &proof_inputs,
                 auditor: &auditor,
-                voucher: voucher.map(VoucherKey::of).transpose()?,
+                voucher: voucher.map(|voucher| voucher.key),
             }
             .seal()?,
         };

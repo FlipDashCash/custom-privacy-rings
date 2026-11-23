@@ -2,7 +2,7 @@
 
 use custom_ring_interface::tracking::ZERO_NULLIFIER_PUBKEY;
 use custom_ring_interface::{
-    ciphertext_digest, decode_recipient_keys, disclosure::AuditLayout, encode_recipient_keys,
+    ciphertext_digest, decode_recipient_keys, disclosure::SealedKeys, encode_recipient_keys,
     key_catalog::TRANSFER_SHAPES, AuditEnvelope, AuditEvidence, AuditKey, AuditStreamLayout,
     AuditorMessage, CustomRingError, EntryRecord, OutputRecord, RecipientPayload, RecordKey,
     RecordKind, SenderBundle, ENTRY_RECORD_LEN, EXIT_RECORD_LEN, RECORD_ZERO_KEY_BIT,
@@ -435,12 +435,8 @@ fn the_auditor_message_holds_the_voucher_key_only_on_a_vouched_layout() {
     data.extend([0x22; 2 * SEALED_KEY_LEN]);
     let split = |data: &[u8], stream: AuditStreamLayout| {
         let message = AuditorMessage::parse(data, stream, 0)?;
-        let layout = AuditLayout {
-            entry: false,
-            vouched: stream.vouched,
-        };
-        let (keys, voucher) = layout.split_keys(message.recipient_keys)?;
-        Some((keys.to_vec(), voucher.copied()))
+        let keys = stream.split_keys(message.recipient_keys)?;
+        Some((keys.slots.to_vec(), keys.voucher.copied()))
     };
     assert_eq!(split(&data, stream), Some((vec![0x22; 64], None)));
     assert_eq!(split(&data, vouched(stream)), None);
@@ -582,12 +578,10 @@ fn the_solved_go_stream_reads_back_under_the_rust_layout() {
             case.name
         );
         assert_eq!(sealed_keys.len(), layout.keys_len(), "{}", case.name);
-        let (slot_keys, voucher) = AuditLayout {
-            entry: layout.key.entry,
-            vouched: layout.vouched,
-        }
-        .split_keys(&sealed_keys)
-        .unwrap();
+        let SealedKeys {
+            slots: slot_keys,
+            voucher,
+        } = layout.split_keys(&sealed_keys).unwrap();
         assert_eq!(voucher.is_some(), case.name == "vouched");
         let digest = Poseidon::hashv(&[
             &ciphertext_digest(&sealed_envelope).unwrap(),

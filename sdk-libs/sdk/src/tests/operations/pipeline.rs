@@ -2109,6 +2109,14 @@ async fn the_request_carries_a_signature_over_the_vouch_digest_vouched_or_not() 
             .await,
         Err(RingError::VouchedRelay)
     ));
+    let unscreened = Chain::ring(RingSettings::new(RingMode::Confidential)).client();
+    assert!(matches!(
+        transfer()
+            .with_voucher(vouching)
+            .assemble(&unscreened)
+            .await,
+        Err(RingError::VoucherUnscreened)
+    ));
 }
 
 /// The records follow the ring account, a curator registry only where a source names one.

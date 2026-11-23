@@ -28,19 +28,43 @@ impl VouchSigner for SigningKey {
 #[derive(Clone, Copy)]
 pub(super) struct VoucherKey(pub [u8; 32]);
 
-impl VoucherKey {
-    pub fn of(voucher: &dyn VouchSigner) -> Result<Self, RingError> {
-        Ok(Self(voucher.public_key().as_ed25519()?))
+/// A signer under the key it named once, the member screened, the key sealed and the key proven are that key.
+#[derive(Clone, Copy)]
+pub(super) struct Voucher<'a> {
+    signer: &'a dyn VouchSigner,
+    public_key: PublicKey,
+    pub key: VoucherKey,
+}
+
+impl<'a> Voucher<'a> {
+    pub fn of(signer: &'a dyn VouchSigner) -> Result<Self, RingError> {
+        let public_key = signer.public_key();
+        Ok(Self {
+            signer,
+            public_key,
+            key: VoucherKey(public_key.as_ed25519()?),
+        })
     }
 
     /// The member the voucher's records sit under.
-    pub fn identity(self) -> Result<[u8; 32], RingError> {
-        Ok(solana_owner_identity(&self.0)?)
+    pub fn identity(&self) -> Result<[u8; 32], RingError> {
+        Ok(solana_owner_identity(&self.key.0)?)
+    }
+
+    fn sign(&self, digest: &[u8; 32]) -> Result<VoucherParams, RingError> {
+        let signature = self.signer.sign_vouch(digest)?;
+        if !self.public_key.verify_message(digest, &signature) {
+            return Err(RingError::VoucherSignatureMismatch);
+        }
+        Ok(VoucherParams {
+            public_key: self.key.0,
+            signature,
+        })
     }
 }
 
 pub(super) struct Vouch<'a> {
-    pub voucher: Option<&'a dyn VouchSigner>,
+    pub voucher: Option<Voucher<'a>>,
     pub message: VouchMessage<'a>,
 }
 
@@ -48,15 +72,9 @@ impl Vouch<'_> {
     /// The circuit verifies a signature on every proof, a fresh key signs where nobody vouches.
     pub fn sign(self) -> Result<VoucherParams, RingError> {
         let digest = self.message.digest()?;
-        let throwaway = SigningKey::new_ed25519();
-        let voucher = self.voucher.unwrap_or(&throwaway);
-        let signature = voucher.sign_vouch(&digest)?;
-        if !voucher.public_key().verify_message(&digest, &signature) {
-            return Err(RingError::VoucherSignatureMismatch);
+        match self.voucher {
+            Some(voucher) => voucher.sign(&digest),
+            None => Voucher::of(&SigningKey::new_ed25519())?.sign(&digest),
         }
-        Ok(VoucherParams {
-            public_key: VoucherKey::of(voucher)?.0,
-            signature,
-        })
     }
 }

@@ -15,7 +15,11 @@
 
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
 
-use crate::{bytes::Bytes, error::CustomRingError};
+use crate::{
+    bytes::Bytes,
+    disclosure::{AuditLayout, SealedKeys},
+    error::CustomRingError,
+};
 
 pub const STREAM_BLOCK_LEN: usize = 16;
 pub const STREAM_FIRST_COUNTER: u32 = 2;
@@ -175,9 +179,19 @@ impl AuditStreamLayout {
         }
     }
 
-    /// The slot keys, then the voucher's key on a vouched frame.
     pub const fn keys_len(self) -> usize {
         SEALED_KEY_LEN * self.outputs + self.voucher().len
+    }
+
+    /// `None` at any length but `keys_len`.
+    pub fn split_keys(self, sealed: &[u8]) -> Option<SealedKeys<'_>> {
+        let layout = AuditLayout {
+            entry: self.key.entry,
+            vouched: self.vouched,
+        };
+        layout
+            .split_keys(sealed)
+            .filter(|_| sealed.len() == self.keys_len())
     }
 
     pub const fn sealed_len(self) -> usize {

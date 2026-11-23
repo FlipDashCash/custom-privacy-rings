@@ -55,7 +55,7 @@ pub struct AuditHead<'a> {
 impl AuditHead<'_> {
     /// `Poseidon(digest(envelope), digest(slot keys), hash_bytes(voucher key))`, zero in the last place off a vouched frame.
     fn stream_digest(&self) -> Result<[u8; 32], HasherError> {
-        let (keys, voucher) =
+        let keys =
             self.layout
                 .split_keys(self.recipient_keys)
                 .ok_or(HasherError::InvalidInputLength(
@@ -64,8 +64,8 @@ impl AuditHead<'_> {
                 ))?;
         Poseidon::hashv(&[
             &ciphertext_digest(self.envelope)?,
-            &ciphertext_digest(keys)?,
-            &voucher.map_or(Ok(ZERO_FIELD), hash_bytes)?,
+            &ciphertext_digest(keys.slots)?,
+            &keys.voucher.map_or(Ok(ZERO_FIELD), hash_bytes)?,
         ])
     }
 

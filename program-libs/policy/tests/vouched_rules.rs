@@ -8,6 +8,8 @@ use zolana_ring_policy::{
 const ALLOW: u64 = ListId::Allow.record_bit();
 const BLOCK: u64 = ListId::Block.record_bit();
 const APPROVAL: u64 = ListId::Approval.record_bit();
+const FROZEN: u64 = ListId::Frozen.record_bit();
+const PRIVATE_ALLOW: u64 = ListId::PrivateAllow.record_bit();
 
 const SENDER_ALLOW: usize = 0;
 const OWNER_BLOCK: usize = 2;
@@ -41,14 +43,13 @@ impl Transfer {
             table = table.rule(Rule::require(Subject::OutputOwner, ListId::Approval));
         }
         let table = table.build();
-        let voucher = self.voucher.map(own);
-        let covered = |lists: u64| match &voucher {
-            Some(voucher) => own(lists).vouched_by(voucher),
-            None => own(lists),
+        let voucher = self
+            .voucher
+            .map(|voucher| table.evaluate_voucher(&sources, own(voucher)))
+            .transpose()?;
+        let covered = |lists: u64| {
+            voucher.map_or_else(|| own(lists), |voucher| own(lists).vouched_by(voucher))
         };
-        if let Some(voucher) = &voucher {
-            table.evaluate_voucher(&sources, voucher)?;
-        }
         table.evaluate_senders(&sources, &[covered(self.sender)])?;
         table.evaluate_payments(
             &sources,
@@ -128,22 +129,74 @@ fn a_voucher_covers_no_list_outside_the_vouched_set() {
         refused(OWNER_APPROVAL, TransferSubject::Owner(0))
     );
     assert_eq!(approved(APPROVAL).screen(), Ok(()));
+}
+
+#[test]
+fn cover_adds_the_vouched_bits_of_each_record_and_no_other() {
+    let sources = SourceMap::new(&[(ListId::Allow, [0; 32])]).unwrap();
     let every_list = RecordLists {
         own: u64::MAX,
         curator: u64::MAX,
         salted: u64::MAX,
     };
-    let cover = ListSet::VOUCHED.record_bits();
+    let voucher = RuleTable::builder()
+        .build()
+        .evaluate_voucher(&sources, every_list)
+        .unwrap();
+    let cover = ALLOW | PRIVATE_ALLOW;
+    assert_eq!(ListSet::VOUCHED.record_bits(), cover);
     assert_eq!(
-        own(BLOCK).vouched_by(&every_list),
+        own(BLOCK).vouched_by(voucher),
         RecordLists {
             own: BLOCK | cover,
             curator: cover,
             salted: cover,
         }
     );
+}
+
+#[test]
+fn a_listed_voucher_stays_under_every_sender_rule() {
+    let sources =
+        SourceMap::new(&[ListId::Allow, ListId::Frozen].map(|list_id| (list_id, [0; 32]))).unwrap();
+    let table = RuleTable::builder()
+        .rule(Rule::require(Subject::Sender, ListId::Allow))
+        .rule(Rule::forbid(Subject::Sender, ListId::Frozen))
+        .build();
+    assert!(table.evaluate_voucher(&sources, own(ALLOW)).is_ok());
     assert_eq!(
-        ListSet::VOUCHED,
-        ListSet::of(&[ListId::Allow, ListId::PrivateAllow])
+        table.evaluate_voucher(&sources, own(ALLOW | FROZEN)),
+        Err(RuleRefusal::Lists {
+            rule: 1,
+            subject: TransferSubject::Voucher,
+        })
     );
+}
+
+#[test]
+fn the_voucher_reads_each_allow_list_from_the_record_its_source_names() {
+    let curated = SourceMap::new(&[(ListId::Allow, [7; 32])]).unwrap();
+    let private = SourceMap::new(&[(ListId::PrivateAllow, [0; 32])]).unwrap();
+    let table = RuleTable::builder().build();
+    let curator = RecordLists {
+        curator: ALLOW,
+        ..RecordLists::default()
+    };
+    let salted = RecordLists {
+        salted: PRIVATE_ALLOW,
+        ..RecordLists::default()
+    };
+    assert!(table.evaluate_voucher(&curated, curator).is_ok());
+    assert!(table.evaluate_voucher(&private, salted).is_ok());
+    for (sources, misplaced) in [
+        (&curated, own(ALLOW)),
+        (&curated, salted),
+        (&private, own(PRIVATE_ALLOW)),
+        (&private, curator),
+    ] {
+        assert_eq!(
+            table.evaluate_voucher(sources, misplaced),
+            Err(RuleRefusal::VoucherUnlisted)
+        );
+    }
 }

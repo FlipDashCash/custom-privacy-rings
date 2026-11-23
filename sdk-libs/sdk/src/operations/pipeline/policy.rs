@@ -583,11 +583,20 @@ impl ScreenedRecords<'_> {
                     |member| curator_pool.as_ref().map_or(0, |pool| on(pool, member)),
                 )
             };
-            let voucher = spend.voucher.map(lists);
+            let voucher = spend
+                .voucher
+                .map(|voucher| {
+                    pinned
+                        .table
+                        .evaluate_voucher(&pinned.sources, lists(voucher))
+                })
+                .transpose()?;
             // Mirror `subjectView.cover`, an asset reads its own lists alone.
-            let covered = |member: [u8; 32]| match &voucher {
-                Some(voucher) => lists(member).vouched_by(voucher),
-                None => lists(member),
+            let covered = |member: [u8; 32]| {
+                voucher.map_or_else(
+                    || lists(member),
+                    |voucher| lists(member).vouched_by(voucher),
+                )
             };
             let subject =
                 |ring: bool, owner: [u8; 32], asset: [u8; 32], amount: u64| OutputSubjects {
@@ -627,9 +636,6 @@ impl ScreenedRecords<'_> {
                 .filter(|sender| **sender != [0; 32])
                 .map(|sender| covered(*sender))
                 .collect();
-            if let Some(voucher) = &voucher {
-                pinned.table.evaluate_voucher(&pinned.sources, voucher)?;
-            }
             pinned.table.evaluate_senders(&pinned.sources, &senders)?;
             pinned.table.evaluate_payments(
                 &pinned.sources,

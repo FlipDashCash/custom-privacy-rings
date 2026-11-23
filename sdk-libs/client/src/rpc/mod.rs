@@ -424,7 +424,7 @@ pub struct DecryptedTransaction {
     pub signers: Vec<SerializablePubkey>,
     /// Public settlement legs, where value left the ring.
     pub withdrawals: Vec<DecryptedWithdrawal>,
-    /// The key that vouched for the transfer.
+    /// Ed25519, the transfer proof verified its vouch signature.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vouched_by: Option<SerializablePubkey>,
 }

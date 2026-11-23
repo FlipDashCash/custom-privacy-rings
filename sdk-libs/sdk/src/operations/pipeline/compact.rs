@@ -171,8 +171,7 @@ pub(crate) struct TransactParts {
     pub replies: Option<(u16, Vec<u8>)>,
     pub sender: Option<OwnedSenderBundle>,
     pub envelope: Vec<u8>,
-    /// One sealed recipient key per published slot.
-    /// The voucher's sealed key follows under `vouched`.
+    /// One sealed recipient key per published slot, then the voucher's under `vouched`.
     pub recipient_keys: Vec<u8>,
     pub private_tx_hash: [u8; 32],
     pub anonymous: Option<OwnedAnonymousProofData>,

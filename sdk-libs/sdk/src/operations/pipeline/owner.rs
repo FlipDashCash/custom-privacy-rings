@@ -91,7 +91,7 @@ impl<'a> RingTransfer<Owner<'a>> {
         self
     }
 
-    /// A listed wallet signs `VouchMessage::digest` of the transfer, its Allow and PrivateAllow entries admit every sender and payment owner and the auditor reads its key.
+    /// A listed wallet signs `VouchMessage::digest` of the transfer, its Allow and PrivateAllow entries admit every sender and payment owner, the auditor reads its key, and a salted list of the table needs its salt through `with_list_salt`.
     #[must_use = "use the updated transfer"]
     pub fn with_voucher(mut self, voucher: &'a dyn VouchSigner) -> Self {
         self.rail.voucher = Some(voucher);

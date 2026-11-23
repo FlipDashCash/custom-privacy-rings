@@ -28,8 +28,7 @@ pub(crate) struct SealedAudit {
     pub flags: AuditLayout,
     pub eph_u: [u8; 32],
     pub envelope: Vec<u8>,
-    /// One sealed recipient key per published slot.
-    /// The voucher's sealed key follows on a vouched frame.
+    /// One sealed recipient key per published slot, then the voucher's on a vouched frame.
     pub keys: Vec<u8>,
     /// One record per exit in slot order.
     pub exit_records: Vec<[u8; EXIT_RECORD_LEN]>,

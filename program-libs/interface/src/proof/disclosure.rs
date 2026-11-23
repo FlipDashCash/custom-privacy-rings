@@ -23,15 +23,28 @@ impl AuditLayout {
         self.vouched as u8 | (self.entry as u8) << 1
     }
 
-    /// The slot keys and the voucher's key of a sealed key region, `None` on a vouched region shorter than one key.
-    pub fn split_keys(self, sealed: &[u8]) -> Option<(&[u8], Option<&[u8; SEALED_KEY_LEN]>)> {
+    /// `None` on a vouched region shorter than one key.
+    pub fn split_keys(self, sealed: &[u8]) -> Option<SealedKeys<'_>> {
         match self.vouched {
-            false => Some((sealed, None)),
+            false => Some(SealedKeys {
+                slots: sealed,
+                voucher: None,
+            }),
             true => sealed
                 .split_last_chunk()
-                .map(|(keys, voucher)| (keys, Some(voucher))),
+                .map(|(slots, voucher)| SealedKeys {
+                    slots,
+                    voucher: Some(voucher),
+                }),
         }
     }
+}
+
+/// A frame's sealed key region, the slot keys then the voucher's key on a vouched frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SealedKeys<'a> {
+    pub slots: &'a [u8],
+    pub voucher: Option<&'a [u8; SEALED_KEY_LEN]>,
 }
 
 /// Zero pads the plaintext at its end to whole 31-byte chunks, one chunk per field.
