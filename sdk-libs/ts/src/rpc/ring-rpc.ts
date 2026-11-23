@@ -1284,7 +1284,6 @@ export interface DecryptedRingTransaction {
   readonly signers: readonly Address[];
   /** Empty when nothing left the ring. */
   readonly withdrawals: readonly DecryptedRingWithdrawal[];
-  /** The key that vouched for the transfer. */
   readonly vouchedBy?: Address;
 }
 

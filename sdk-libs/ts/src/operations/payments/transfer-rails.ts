@@ -68,6 +68,7 @@ import {
   type OwnerExposure,
   type AnonymousSpendSigner,
 } from "./anonymous.js";
+import type { VouchSigner } from "../../proof/vouch.js";
 import type { RingPolicy } from "../../protocol/codec/ring-codecs.js";
 import { fetchRingPolicy, requireActiveRing } from "../../protocol/membership/config.js";
 import { RingInstructionTag } from "../../protocol/transaction/instruction-tag.js";
@@ -155,7 +156,7 @@ export interface CustomRingTransferInput {
   /** The settlement accounts of each deposit leg `transfer` names, in leg order. */
   readonly deposits?: readonly TransactDeposit[];
   /** A listed wallet vouching for the transfer. */
-  readonly voucher?: AnonymousSpendSigner;
+  readonly voucher?: VouchSigner;
 }
 
 /** The confidential rail, the owner signs its spends in public or inside the proof, Rust `RingTransfer<Owner>`. */
@@ -194,7 +195,7 @@ export class CustomRingTransfer {
   }
 
   /** `voucher` signs the transfer inside the proof, its allow entry stands in for every sender and payment owner. */
-  withVoucher(voucher: AnonymousSpendSigner): CustomRingTransfer {
+  withVoucher(voucher: VouchSigner): CustomRingTransfer {
     return new CustomRingTransfer(
       { ...this.#input, voucher },
       this.#withdrawal,
@@ -641,7 +642,7 @@ export class AnonymousTransfer {
   }
 
   /** `voucher` signs the transfer inside the proof, its allow entry stands in for every sender and payment owner. */
-  withVoucher(voucher: AnonymousSpendSigner): AnonymousTransfer {
+  withVoucher(voucher: VouchSigner): AnonymousTransfer {
     return new AnonymousTransfer({ ...this.#fields(), owner: { ...this.#owner, voucher } });
   }
 
@@ -1025,7 +1026,7 @@ export class PublicOwnerTransfer {
   }
 
   /** `voucher` signs the transfer inside the proof, its allow entry stands in for every sender and payment owner. */
-  withVoucher(voucher: AnonymousSpendSigner): PublicOwnerTransfer {
+  withVoucher(voucher: VouchSigner): PublicOwnerTransfer {
     return new PublicOwnerTransfer({
       owner: { ...this.#owner, voucher },
       withdrawal: this.#withdrawal,
@@ -1457,7 +1458,6 @@ function suppliedCoSigners(
   return coSigners === undefined ? {} : { coSigners };
 }
 
-/** A Solana address names a wallet or a PDA alike, a key rebuilt as Ed25519 never equals a PDA owner. */
 function suppliedVoucher(
   input: Pick<CustomRingTransferInput, "voucher">,
 ): Pick<StagedTransferInput, "voucher"> {
@@ -1469,6 +1469,7 @@ function checkRelayUnvouched(input: Pick<CustomRingTransferInput, "voucher">): v
   if (input.voucher !== undefined) throw new RingError("RING_RELAY_VOUCHER_UNSUPPORTED");
 }
 
+/** A Solana address names a wallet or a PDA alike, a key rebuilt as Ed25519 never equals a PDA owner. */
 function ownedBy(spent: ProofInputUtxo, owner: Address): boolean {
   return equalBytes(spent.utxo.owner.confidentialViewTag(), addressBytes(owner));
 }

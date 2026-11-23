@@ -752,6 +752,19 @@ describe("policy ring", () => {
     ).rejects.toThrow(ringError("RING_RELAY_VOUCHER_UNSUPPORTED"));
   });
 
+  it("refuses a voucher on a ring with no rule table before any read", async () => {
+    const fixture = await ringFixture();
+    const sender = ShieldedKeypair.generate();
+    const rail = CustomRingTransfer.new({
+      ringProgramId: fixture.ringProgramId,
+      keys: walletKeys(sender),
+      transfer: transferTo(fixture, sender, [ShieldedKeypair.generate()], { each: 100n }),
+      assets,
+    }).withVoucher(signingKeySpendSigner(SigningKey.generate()));
+    await expect(rail.prove(fixture.client)).rejects.toThrow(ringError("RING_VOUCHER_UNSCREENED"));
+    expect(fixture.ringRequests).toHaveLength(0);
+  });
+
   it("signs an unvouched transfer under a throwaway key and reads no voucher record", async () => {
     const sender = ShieldedKeypair.generate();
     const recipient = ShieldedKeypair.generate();

@@ -85,8 +85,7 @@ import {
 import type { ApprovalOpening } from "../../protocol/membership/approval-totals.js";
 import type { OwnerDebit } from "../../protocol/membership/owner-debits.js";
 import { policyWithdrawalHash } from "../../proof/withdrawals.js";
-import { signVouch } from "../../proof/vouch.js";
-import type { AnonymousSpendSigner } from "../payments/anonymous.js";
+import { signVouch, type VouchSigner } from "../../proof/vouch.js";
 import {
   framesData,
   publishedOutputs,
@@ -311,7 +310,7 @@ export type StagedTransferInput = Readonly<{
   /** An enrolled subject on a ring reading a salted list needs its salt here. */
   listSalts?: readonly RingListSalt[];
   /** A listed wallet vouching for every sender and payment owner, its salt in `listSalts` once enrolled. */
-  voucher?: AnonymousSpendSigner;
+  voucher?: VouchSigner;
   transaction?: RingTransactionFrame;
   approve?: (coSigners: readonly Address[]) => Promise<void>;
 }>;
@@ -443,7 +442,7 @@ function stagedPlanFrame(
     config: RingPolicy;
     staged: Pick<StagedTransfer, "proofInputs"> &
       Readonly<{ spend: Pick<RailSpend, "rail" | "publicOwners"> }>;
-    voucher?: AnonymousSpendSigner;
+    voucher?: VouchSigner;
   }>,
 ): PlanFrame {
   const { config, staged } = input;
@@ -510,7 +509,7 @@ function sealStagedTransfer(
     plan: PlannedTransfer;
     staged: Omit<StagedTransfer, "spend"> &
       Readonly<{ spend: Pick<RailSpend, "rail" | "inProofOwner" | "publicOwners"> }>;
-    voucher?: AnonymousSpendSigner;
+    voucher?: VouchSigner;
   }>,
 ): SealedTransfer {
   const { ringProgramId, config, staged, plan } = input;

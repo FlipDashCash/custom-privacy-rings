@@ -259,6 +259,8 @@ export {
   ruleAlternatives,
   vouchedBy,
   evaluateVoucher,
+  VOUCHED_LIST_BITS,
+  type VoucherRefusal,
   walletGrantMember,
 } from "../protocol/membership/policy.js";
 export { vouchDigest, type VouchMessage } from "../proof/vouch.js";

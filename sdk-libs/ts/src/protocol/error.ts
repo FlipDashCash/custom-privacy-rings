@@ -222,6 +222,7 @@ export const RING_ERROR_CODES = [
   "RING_VIEWING_KEY_NOT_HELD",
   "RING_RELAY_VOUCHER_UNSUPPORTED",
   "RING_VOUCHER_UNSCREENED",
+  "RING_VOUCHER_SIGNATURE_MISMATCH",
 ] as const;
 import { extractCauseCodes, hideCause, sanitizeDetails } from "@heliuslabs/spr/internal";
 import type { ErrorEnvelope } from "@heliuslabs/spr";

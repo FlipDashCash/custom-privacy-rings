@@ -206,6 +206,7 @@ export type {
   RingApprovalRequest,
   RingTransactionIntent,
 } from "../protocol/transaction/intent.js";
+export type { VouchSigner } from "../proof/vouch.js";
 export type {
   AnonymousPayment,
   AnonymousSpendSigner,

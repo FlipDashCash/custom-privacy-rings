@@ -19,6 +19,7 @@ import {
   auditorMessageLen,
   envelopeRegion,
   recipientKeysLen,
+  voucherRegion,
   type AuditStreamLayout,
 } from "../../protocol/codec/ring-disclosure-layout.js";
 import { packBytesBe } from "../derivation/hasher.js";
@@ -304,8 +305,8 @@ export function parseAuditorMessage(
 ): AuditorMessage {
   const bytes = checkedBytes(data, auditorMessageLen(layout, exits), "auditor message");
   const keysAt = TAGGED_KEY_LEN + envelopeRegion(layout).length;
-  const voucherAt = keysAt + RECIPIENT_KEY_LEN * layout.outputs;
   const recordsAt = keysAt + recipientKeysLen(layout);
+  const voucherAt = recordsAt - voucherRegion(layout).length;
   const cut = (at: number, length: number, count: number): readonly Uint8Array[] =>
     Object.freeze(
       Array.from({ length: count }, (_, slot) =>

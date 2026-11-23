@@ -8,6 +8,7 @@ import { poseidon, SigningKey } from "@heliuslabs/spr/keypair";
 
 import { signingKeySpendSigner } from "../../src/operations/payments/anonymous.js";
 import { signVouch, vouchDigest } from "../../src/proof/vouch.js";
+import { ringError } from "../helpers/ring-pipeline.js";
 
 await initializePoseidon();
 
@@ -42,6 +43,15 @@ describe("signVouch", () => {
         signed.publicKey,
       ),
     ).toBe(false);
+  });
+
+  it("refuses a signature the voucher's key did not make over the digest", async () => {
+    const key = SigningKey.generate();
+    const other = signingKeySpendSigner(SigningKey.generate());
+    const wrongKey = { publicKey: () => key.publicKey(), sign: other.sign.bind(other) };
+    await expect(signVouch(wrongKey, message)).rejects.toThrow(
+      ringError("RING_VOUCHER_SIGNATURE_MISMATCH"),
+    );
   });
 
   it("signs under a fresh throwaway key when nobody vouches", async () => {

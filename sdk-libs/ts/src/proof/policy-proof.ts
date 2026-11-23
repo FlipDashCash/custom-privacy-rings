@@ -241,6 +241,8 @@ function policySubjects(
 ): PolicySubjects {
   const { config, rail, proofInputs } = input;
   const pinned = config.hasPolicy && !isDelegateRail(rail) ? pinnedPolicy(config) : undefined;
+  if (pinned === undefined && input.voucher !== undefined)
+    throw new RingError("RING_VOUCHER_UNSCREENED");
   const view = pinned === undefined ? undefined : policySourceView(pinned.sources);
   const liveRows = input.rows.filter((row) => !isZero(row));
   const { outputs } = proofInputs;
@@ -489,8 +491,6 @@ export async function readPolicy(
   const padding = <T>(zero: T): readonly T[] =>
     Array.from({ length: circuit.outputs - owners.length }, () => zero);
   const spent = spentNotes(proofInputs);
-  if (pinned === undefined && input.voucher !== undefined)
-    throw new RingError("RING_VOUCHER_UNSCREENED");
   if (pinned !== undefined) {
     const sources = pinned.sources;
     const live = proofInputs.outputs.flatMap((output, slot) =>

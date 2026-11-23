@@ -199,9 +199,13 @@ export function openExitRecord(slotSecret: Bytes32, recordCiphertext: Uint8Array
   }
 }
 
-/** The plaintext concatenation the circuit hashes, `envelope ‖ keys`. */
+/** The plaintext concatenation the circuit hashes, `envelope ‖ keys ‖ voucher`. */
 export function disclosurePlaintext(disclosure: RingDisclosure): Uint8Array {
-  return concatBytes(encodeAuditEnvelope(disclosure.envelope), ...disclosure.recipientKeys);
+  return concatBytes(
+    encodeAuditEnvelope(disclosure.envelope),
+    ...disclosure.recipientKeys,
+    ...(disclosure.voucher === undefined ? [] : [disclosure.voucher]),
+  );
 }
 
 /** Wipes `recovered`, the circuit seals the clamped encoding and an alias is refused. */
@@ -240,7 +244,7 @@ function readDisclosure(schedule: AuditSchedule, published: PublishedAudit): Rin
       (key, slot) => schedule.apply(recipientKeyRegion(layout, slot).startCounter, key) as Bytes32,
     );
     const voucher =
-      message.voucher === undefined || !layout.vouched
+      message.voucher === undefined
         ? undefined
         : (schedule.apply(voucherRegion(layout).startCounter, message.voucher) as Bytes32);
     return Object.freeze({
