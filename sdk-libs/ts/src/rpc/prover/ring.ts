@@ -9,7 +9,12 @@ import {
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { InterfaceError } from "@heliuslabs/spr/interface";
-import { bigIntBytes, bytesField, isZero, type ExpectedProvingKey } from "@heliuslabs/spr/internal";
+import {
+  ZERO_32,
+  bigIntBytes,
+  bytesField,
+  type ExpectedProvingKey,
+} from "@heliuslabs/spr/internal";
 import type { Bytes16, Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
 import { ClientError } from "@heliuslabs/spr/client";
 import {
@@ -696,7 +701,7 @@ function policyJson(policy: PolicyProofInputs, shape: PolicySectionShape): Json 
       ownerEntryJson(entry, capacity, `senderEntries[${i}]`),
     ),
     voucherEntry: ownerEntryJson(policy.voucherEntry, capacity, "voucherEntry"),
-    ...(policy.ringSalt === undefined ? {} : { ringSalt: field(policy.ringSalt, "ringSalt") }),
+    ringSalt: field(policy.ringSalt ?? ZERO_32, "ringSalt"),
     ownerEntries: sized(policy.ownerEntries, slots, "ownerEntries").map((entry, i) =>
       ownerEntryJson(entry, capacity, `ownerEntries[${i}]`),
     ),
@@ -720,9 +725,7 @@ function tableJson(table: PolicyTableProofInputs): Json {
     salted: integer(table.salted, "salted", 0, (1 << RING_SOURCE_SLOTS) - 1),
     policyLen: integer(table.policyLen, "policyLen", 0, RING_RULE_SLOTS),
     rules: fields(table.rules, RING_RULE_SLOTS, "rules"),
-    ...(table.ringListTag === undefined || isZero(table.ringListTag)
-      ? {}
-      : { ringListTag: field(table.ringListTag, "ringListTag") }),
+    ringListTag: field(table.ringListTag ?? ZERO_32, "ringListTag"),
   };
 }
 

@@ -435,8 +435,8 @@ impl Serialize for PolicyTable<'_> {
             policy_len: u8,
             #[serde(serialize_with = "fe::seq")]
             rules: &'a [[u8; 32]],
-            #[serde(skip_serializing_if = "Option::is_none", with = "fe::option")]
-            ring_list_tag: Option<[u8; 32]>,
+            #[serde(with = "fe")]
+            ring_list_tag: [u8; 32],
         }
         let rules = self.rules;
         let slots = self.sources.slots();
@@ -448,7 +448,7 @@ impl Serialize for PolicyTable<'_> {
             salted: self.sources.salted().bits(),
             policy_len: rules.rule_count,
             rules: &rules.rules,
-            ring_list_tag: Some(*self.sources.ring_list_tag()).filter(|tag| *tag != [0; 32]),
+            ring_list_tag: *self.sources.ring_list_tag(),
         }
         .serialize(serializer)
     }
@@ -484,8 +484,9 @@ pub(crate) struct PolicyParams<'a> {
     pub sender_entries: Vec<OwnerEntry>,
     /// Zero off a screened vouched frame.
     pub voucher_entry: OwnerEntry,
-    #[serde(skip_serializing_if = "Option::is_none", with = "fe::option")]
-    pub ring_salt: Option<[u8; 32]>,
+    /// Zero unless a salted list reads under a ring salt the policy commits.
+    #[serde(with = "fe")]
+    pub ring_salt: [u8; 32],
     pub owner_entries: Vec<OwnerEntry>,
     pub asset_entries: Vec<PoolEntry>,
     pub public_asset_entries: Vec<u32>,

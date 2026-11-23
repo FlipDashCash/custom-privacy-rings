@@ -788,7 +788,7 @@ impl PolicyInputs {
             },
             sender_entries: self.sender_entries.clone(),
             voucher_entry: self.voucher_entry.clone(),
-            ring_salt: self.ring_salt,
+            ring_salt: self.ring_salt.unwrap_or_default(),
             owner_entries,
             asset_entries,
             public_asset_entries: self.public_asset_entries.clone(),
