@@ -26,7 +26,7 @@ pub enum RingCircuit {
         owners: u8,
         /// One evidence slot per input, the key also spends default-ring notes.
         entry: bool,
-        /// A salted and a public record per owner fit.
+        /// A public record and the records under the owner's salt and the ring salt fit.
         wide: bool,
     },
     ApplyRecords {
@@ -116,19 +116,19 @@ const NARROW_SHAPES: [TransferShape; 4] = [
     narrow(2, 24, 4, 4, [6, 12]),
     narrow(4, 24, 4, 4, [8, 16]),
     narrow(8, 16, 4, 4, [12, 24]),
-    // No wide row holds 16 outputs, each owner row, output and leg owner takes a salted read beside its public records.
-    narrow(16, 4, 4, 2, [21, 56]),
+    // No wide row holds 16 outputs, each owner row and output takes two salted reads.
+    narrow(16, 4, 4, 2, [21, 74]),
 ];
 /// The wide flag takes the first row holding the frame, the last only past 24 inputs.
 const WIDE_SHAPES: [TransferShape; 2] =
-    [wide(8, 24, 32, 13, [42, 88]), wide(2, 40, 4, 9, [12, 18])];
+    [wide(8, 24, 32, 13, [42, 115]), wide(2, 40, 4, 9, [12, 19])];
 /// A frame takes the first row holding its width.
 const ENTRY_SHAPES: [TransferShape; 3] = [
-    entry(4, 8, 4, 8, [16, 36]),
-    entry(8, 2, 4, 2, [14, 36]),
-    entry(8, 5, 4, 4, [16, 40]),
+    entry(4, 8, 4, 8, [16, 52]),
+    entry(8, 2, 4, 2, [14, 50]),
+    entry(8, 5, 4, 4, [16, 56]),
 ];
-const WIDE_ENTRY_SHAPE: TransferShape = entry(8, 8, 32, 8, [41, 83]);
+const WIDE_ENTRY_SHAPE: TransferShape = entry(8, 8, 32, 8, [41, 110]);
 
 pub const TRANSFER_SHAPES: [TransferShape; 10] = [
     NARROW_SHAPES[0],
@@ -687,12 +687,12 @@ mod tests {
         assert_eq!(pools(TWO), (39, 39, 6));
         assert_eq!(pools(FOUR), (43, 43, 8));
         assert_eq!(pools(EIGHT), (43, 43, 12));
-        assert_eq!(pools(WIDE), (115, 115, 42));
-        assert_eq!(pools(WIDE_INPUTS), (61, 61, 12));
-        assert_eq!(pools(ENTRY_FOUR), (47, 47, 16));
-        assert_eq!(pools(ENTRY_EIGHT_TWO), (41, 41, 14));
-        assert_eq!(pools(ENTRY_EIGHT_FIVE), (48, 48, 16));
-        assert_eq!(pools(WIDE_ENTRY), (94, 94, 41));
+        assert_eq!(pools(WIDE), (142, 142, 42));
+        assert_eq!(pools(WIDE_INPUTS), (62, 62, 12));
+        assert_eq!(pools(ENTRY_FOUR), (63, 63, 16));
+        assert_eq!(pools(ENTRY_EIGHT_TWO), (55, 55, 14));
+        assert_eq!(pools(ENTRY_EIGHT_FIVE), (64, 64, 16));
+        assert_eq!(pools(WIDE_ENTRY), (121, 121, 41));
     }
 
     #[test]
