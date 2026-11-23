@@ -64,10 +64,10 @@ import {
   policySourceView,
   policyTableProofInputs,
   vouchedBy,
-  vouchedSenders,
+  evaluateVoucher,
+  type VoucherRefusal,
   type PinnedPolicy,
   type RecordLists,
-  type RuleRefusal,
   type SourceView,
 } from "../protocol/membership/policy.js";
 import {
@@ -489,6 +489,8 @@ export async function readPolicy(
   const padding = <T>(zero: T): readonly T[] =>
     Array.from({ length: circuit.outputs - owners.length }, () => zero);
   const spent = spentNotes(proofInputs);
+  if (pinned === undefined && input.voucher !== undefined)
+    throw new RingError("RING_VOUCHER_UNSCREENED");
   if (pinned !== undefined) {
     const sources = pinned.sources;
     const live = proofInputs.outputs.flatMap((output, slot) =>
@@ -519,11 +521,10 @@ export async function readPolicy(
     // A co-owner who receives nothing is screened, every row passes the sender rules. Payments
     // read once with or without a row, a dummy sender would hold a deposit to sender rules.
     const refusal =
-      evaluateSenders(
-        pinned.table,
-        sources,
-        vouchedSenders(liveRows.map(ownerLists), voucherLists),
-      ) ??
+      (voucherLists === undefined
+        ? undefined
+        : evaluateVoucher(pinned.table, sources, voucherLists)) ??
+      evaluateSenders(pinned.table, sources, liveRows.map(covered)) ??
       evaluatePayments(pinned.table, sources, { ringInputs, outputs: payments }) ??
       evaluateInputAssets(
         pinned.table,
@@ -936,12 +937,16 @@ function emptyTable(): PolicyTableProofInputs {
 }
 
 /** The rule and the subject a refusal names, outputs by their SPP slot. */
-function ruleUnsatisfied(refusal: RuleRefusal, live: readonly number[]): RingError {
+function ruleUnsatisfied(refusal: VoucherRefusal, live: readonly number[]): RingError {
+  if (refusal.kind === "voucherUnlisted")
+    return new RingError("RING_POLICY_RULE_UNSATISFIED", {
+      details: { reason: refusal.kind, subject: "voucher" },
+    });
   const { subject } = refusal;
   const reason = { reason: refusal.kind, ruleIndex: refusal.rule, subject: subject.kind };
   return new RingError("RING_POLICY_RULE_UNSATISFIED", {
     details:
-      subject.kind === "sender"
+      subject.kind === "sender" || subject.kind === "voucher"
         ? reason
         : subject.kind === "inputAsset"
           ? { ...reason, inputIndex: subject.input }

@@ -18,7 +18,7 @@ import {
   ListId,
   recordBit,
   vouchedBy,
-  vouchedSenders,
+  evaluateVoucher,
   policyTableFields,
   policyTableHash,
   type RecordLists,
@@ -192,11 +192,20 @@ describe("a vouched screen", () => {
   const senders = {
     rules: [rule("sender", [ListId.allow], []), rule("sender", [], [ListId.block])],
   };
-  const refusedRule = (rows: readonly RecordLists[], voucher: RecordLists | undefined) =>
-    evaluateSenders(senders, sources, vouchedSenders(rows, voucher))?.rule;
+  const refusedRule = (rows: readonly RecordLists[], voucher: RecordLists | undefined) => {
+    const refusal =
+      voucher === undefined
+        ? evaluateSenders(senders, sources, rows)
+        : (evaluateVoucher(senders, sources, voucher) ??
+          evaluateSenders(
+            senders,
+            sources,
+            rows.map((row) => vouchedBy(row, voucher)),
+          ));
+    return refusal?.kind === "lists" ? refusal.rule : refusal?.kind;
+  };
 
   it("refuses an unlisted sender nobody vouches for", () => {
-    expect(vouchedSenders([off], undefined)).toEqual([off]);
     expect(refusedRule([off], undefined)).toBe(0);
   });
 
@@ -210,7 +219,10 @@ describe("a vouched screen", () => {
   });
 
   it("refuses a voucher off the allow list though every sender is listed", () => {
-    expect(refusedRule([allowed], off)).toBe(0);
+    expect(refusedRule([allowed], off)).toBe("voucherUnlisted");
+    const blocklist = { rules: [rule("sender", [], [ListId.block])] };
+    expect(evaluateVoucher(blocklist, sources, off)).toEqual({ kind: "voucherUnlisted" });
+    expect(evaluateVoucher(blocklist, sources, allowed)).toBeUndefined();
   });
 
   it("refuses a blocked voucher and copies none of its deny entries", () => {

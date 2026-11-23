@@ -739,7 +739,7 @@ describe("policy ring", () => {
 
     // An unlisted voucher covers nobody, and Ring RPC proves no vouch.
     await expect(rail(SigningKey.generate()).prove(fixture.client)).rejects.toThrow(
-      ringError("RING_POLICY_RULE_UNSATISFIED", { subject: "owner", slotIndex: 1 }),
+      ringError("RING_POLICY_RULE_UNSATISFIED", { reason: "voucherUnlisted", subject: "voucher" }),
     );
     await expect(
       rail(vouching)

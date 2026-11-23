@@ -402,16 +402,6 @@ export function vouchedBy(subject: RecordLists, voucher: RecordLists): RecordLis
   });
 }
 
-/** The sender rows a vouched screen reads, the voucher last over its own lists, Go `assertSenderRules`. */
-export function vouchedSenders(
-  senders: readonly RecordLists[],
-  voucher: RecordLists | undefined,
-): readonly RecordLists[] {
-  return voucher === undefined
-    ? senders
-    : [...senders.map((sender) => vouchedBy(sender, voucher)), voucher];
-}
-
 /** Rust `OutputSubjects`. */
 export interface OutputSubjects {
   /** Set on a same-ring output, clear on an exit or a withdrawal. */
@@ -443,10 +433,14 @@ export type TransferSubject =
   | Readonly<{ kind: "sender" }>
   | Readonly<{ kind: "owner"; output: number }>
   | Readonly<{ kind: "asset"; output: number }>
-  | Readonly<{ kind: "inputAsset"; input: number }>;
+  | Readonly<{ kind: "inputAsset"; input: number }>
+  | Readonly<{ kind: "voucher" }>;
 
 /** Rust `RuleRefusal`. */
 export type RuleRefusal = Readonly<{ kind: "lists"; rule: number; subject: TransferSubject }>;
+
+/** Rust `RuleRefusal::VoucherUnlisted` beside a rule's refusal. */
+export type VoucherRefusal = RuleRefusal | Readonly<{ kind: "voucherUnlisted" }>;
 
 /** Rust `RuleTable::admit`, the first refusal in the table's order, caps, outflow and co-sign left out. */
 export function admitTransfer(
@@ -464,6 +458,19 @@ export function evaluateSenders(
   senders: readonly RecordLists[],
 ): RuleRefusal | undefined {
   return screen(table, sources, { senders, payments: { ringInputs: [], outputs: [] } });
+}
+
+/** Rust `RuleTable::evaluate_voucher`, a signer on a list it covers under every sender rule. */
+export function evaluateVoucher(
+  table: RuleTable,
+  sources: PolicySources,
+  voucher: RecordLists,
+): VoucherRefusal | undefined {
+  const subject: TransferSubject = { kind: "voucher" };
+  if ((listReads(sources)(subject, voucher) & BigInt(VOUCHED_LIST_BITS)) === 0n)
+    return { kind: "voucherUnlisted" };
+  const refusal = evaluateSenders(table, sources, [voucher]);
+  return refusal === undefined ? undefined : { ...refusal, subject };
 }
 
 /**
