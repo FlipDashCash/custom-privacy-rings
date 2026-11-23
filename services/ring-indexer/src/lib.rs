@@ -25,6 +25,7 @@ mod tracking_registry;
 
 use std::{
     net::{IpAddr, SocketAddr},
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -32,11 +33,15 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use sea_orm::{ConnectOptions, ConnectionTrait, Database, DatabaseBackend, DatabaseConnection};
 use sea_orm_migration::MigratorTrait;
+use solana_keypair::Keypair;
+use solana_signer::Signer;
+use spr_rpc_http::{announce::Announcer, forward::UpstreamUrl};
+use zolana_secret_file::{read_key32, Access};
 
 pub use error::RingApiError;
 pub use indexer::{Readiness, StartSlot};
 pub use migration::Migrator;
-pub use server::{PhotonUrl, RING_METHODS};
+pub use server::RING_METHODS;
 
 use indexer::Indexer;
 use rpc::{BlockHeaders, SolanaRpc};
@@ -55,7 +60,19 @@ pub struct Args {
 
     /// Photon URL, it serves every call but the ring methods.
     #[arg(long)]
-    pub photon_url: PhotonUrl,
+    pub photon_url: UpstreamUrl,
+
+    /// Photon's private registry, set to have Photon forward the ring methods here.
+    #[arg(long, requires_all = ["public_url", "service_key_file"])]
+    pub photon_registry_url: Option<UpstreamUrl>,
+
+    /// The indexer URL Photon connects to.
+    #[arg(long, requires = "photon_registry_url")]
+    pub public_url: Option<UpstreamUrl>,
+
+    /// Lowercase hex Ed25519 seed, the Photon operator approves its public key.
+    #[arg(long, requires = "photon_registry_url")]
+    pub service_key_file: Option<PathBuf>,
 
     #[arg(long, env = "RING_INDEXER_BIND", default_value = "127.0.0.1")]
     pub bind: IpAddr,
@@ -115,6 +132,20 @@ pub async fn run(args: Args) -> Result<()> {
     .start(SocketAddr::new(args.bind, args.port))
     .await?;
     log::info!("ring indexer listens on {address}");
+    if let (Some(registry), Some(url), Some(key_file)) = (
+        args.photon_registry_url,
+        args.public_url,
+        &args.service_key_file,
+    ) {
+        let service = Keypair::new_from_array(*read_key32(key_file, Access::OwnerOnly)?);
+        Announcer {
+            registry,
+            url,
+            methods: RING_METHODS.map(str::to_owned).into(),
+            pubkey: service.pubkey(),
+        }
+        .spawn(move |message| service.sign_message(message));
+    }
     tokio::select! {
         () = server.stopped() => bail!("the ring indexer server stopped"),
         joined = indexing => bail!("the ring indexer loop stopped ({joined:?})"),
