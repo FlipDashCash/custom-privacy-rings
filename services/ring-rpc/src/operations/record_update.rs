@@ -6,6 +6,7 @@
 use std::collections::BTreeMap;
 
 use custom_ring_interface::{
+    domain,
     storage::{Revision, StorageRegistry},
     ListRegistry, RecordWrite, RecordWriteData, RingPolicy, APPLY_BATCH,
 };
@@ -76,6 +77,10 @@ pub enum RecordUpdateRefusal {
     RecordsNotCreated = -32260,
     #[error("signer no longer holds the ring policy role")]
     AuthorityLapsed = -32275,
+    #[error("ring policy commits no tag of the service ring salt")]
+    RingSaltNotCommitted = -32279,
+    #[error("an unregistered owner keys no entry of the update under the ring salt")]
+    UnregisteredOwnerUnmatched = -32280,
     #[error("mint limits are unpaired or exceed the window bound")]
     InvalidLimits = -32276,
     #[error("mint limits name an asset without a record")]
@@ -144,6 +149,8 @@ pub(crate) struct QueuedUpdate {
     pub registry: Address,
     pub joined: Vec<[u8; 32]>,
     pub writes: Vec<RecordWriteData>,
+    /// Owners the submit matched to a written key under the ring salt.
+    pub unregistered: Vec<Address>,
     pub signer: UpdateSigner,
     pub queued_slot: u64,
     pub valid_until_slot: u64,
@@ -201,6 +208,15 @@ pub(crate) struct CheckedInputs {
 impl RecordUpdateRefusal {
     pub const fn code(self) -> i32 {
         self as i32
+    }
+
+    pub(crate) fn unless_committed(salt: &[u8; 32], ring_list_tag: &[u8; 32]) -> Result<(), Self> {
+        let committed = *ring_list_tag != [0; 32]
+            && domain::list_tag(salt).is_ok_and(|tag| tag == *ring_list_tag);
+        match committed {
+            true => Ok(()),
+            false => Err(Self::RingSaltNotCommitted),
+        }
     }
 }
 

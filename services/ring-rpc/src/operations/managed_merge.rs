@@ -569,6 +569,8 @@ pub(crate) mod tests {
 
     pub(crate) struct EscrowRingSource {
         config: RingConfiguration,
+        /// Zero until a test commits one.
+        pub(crate) ring_list_tag: Mutex<[u8; 32]>,
         pub(crate) origins: Mutex<HashMap<Signature, RingOrigin>>,
         pub(crate) tracking: TrackingLedger,
     }
@@ -645,7 +647,10 @@ pub(crate) mod tests {
             &self,
             _ring: Address,
         ) -> Result<Option<RingConfiguration>, ClientError> {
-            Ok(Some(self.config))
+            Ok(Some(RingConfiguration {
+                ring_list_tag: *self.ring_list_tag.lock().unwrap(),
+                ..self.config
+            }))
         }
 
         async fn ring_chain_status(&self, _ring: Address) -> Result<RingChainStatus, ClientError> {
@@ -867,7 +872,9 @@ pub(crate) mod tests {
                     },
                     mode: RingMode::Confidential,
                     delegate,
+                    ring_list_tag: [0; 32],
                 },
+                ring_list_tag: Mutex::default(),
                 origins: Mutex::default(),
                 tracking: TrackingLedger::default(),
             };

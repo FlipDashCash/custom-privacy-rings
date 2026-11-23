@@ -47,6 +47,7 @@ async fn only_granted_readers_with_the_configured_auditor_key_can_read() {
             },
             mode: RingMode::Confidential,
             delegate: None,
+            ring_list_tag: [0; 32],
         },
     );
     let service = fixture.hub(source).service(None).expect("service");
@@ -271,6 +272,7 @@ async fn a_ring_registered_with_another_auditor_stays_closed() {
             },
             mode: RingMode::Confidential,
             delegate: None,
+            ring_list_tag: [0; 32],
         },
     )]);
     let hub = Hub::builder(source, identity(GENESIS))

@@ -664,6 +664,10 @@ where
             .await
     }
 
+    async fn ring_salt(&self, ring: Address) -> Result<[u8; 32], RingRpcError> {
+        Ok(*self.shared.service(Some(ring))?.ring_salt()?)
+    }
+
     async fn prove(&self, write: PrivateStorageWrite<'_>) -> Result<ProvenPrivateWrite, RingError> {
         write.prove(&self.client).await
     }
