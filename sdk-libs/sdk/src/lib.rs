@@ -55,6 +55,8 @@ mod tests;
 mod trees;
 #[path = "operations/viewing_rotation.rs"]
 mod viewing_rotation;
+#[path = "operations/wallet_payment.rs"]
+mod wallet_payment;
 
 pub(crate) const REDACTED: &str = "<redacted>";
 
@@ -132,4 +134,5 @@ pub use crate::{
     },
     trees::{tree_id, written_tree_fees},
     viewing_rotation::RotateViewingKey,
+    wallet_payment::{AnonymousRingTransfers, OwnerRingTransfers, RingProving},
 };
