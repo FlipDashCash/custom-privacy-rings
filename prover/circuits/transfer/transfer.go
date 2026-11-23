@@ -9,8 +9,8 @@
 //
 // Read after zolana/prover/server/circuits/spp_transaction/shared/transaction.go, the statement
 // the ring extends. Read before, in the order Define calls them, shared/utxo.go, audit/audit.go,
-// transfer/input.go, policy/record_pool.go, policy/tracking.go, transfer/owners.go,
-// policy/policy.go. Then prover/ring/ring.go, outside Define.
+// policy/voucher.go, transfer/input.go, policy/record_pool.go, policy/tracking.go,
+// transfer/owners.go, policy/policy.go. Then prover/ring/ring.go, outside Define.
 //
 // Both proofs reopen private_tx_hash over the note, output and address chains and the transaction blinding.
 // The ring derives that blinding from the sealed key and the statement's first nullifier, and SPP derives
@@ -34,13 +34,14 @@
 //   - Input asset subjects are in policy/subjects.go and policy/rules.go.
 //   - Owner rows and the zero key rule are in transfer/owners.go.
 //   - Approval totals are in policy/screen.go.
+//   - The voucher's signature and the allow bits it lends are in policy/voucher.go.
 //
 // Properties, the statement proves the following on the rail its bits select.
 //  1. Every real output and spent note opens to the commitment SPP publishes or spends, through
 //     private_tx_hash, the same wires serve every section below.
 //  2. Each published slot's record seals its opening to the slot's recipient key, and the auditor stream
-//     seals every recipient key, each default-ring note's entry record and the note count under the
-//     auditor key. A ring note opens through the record that created it.
+//     seals every recipient key, each default-ring note's entry record, the note count and a vouched
+//     transfer's voucher key under the auditor key. A ring note opens through the record that created it.
 //  3. Every input note belongs to the bound ring, or to the default ring on an entry key. Its owner
 //     is in the published signer run, the hidden owner or the in-proof sender, the delegate rail excepted.
 //  4. A hidden owner owns the first note, stays out of the run and differs from every co-signer.
@@ -108,7 +109,9 @@ type Sections struct {
 	Layout          frontend.Variable
 	OutputCount     frontend.Variable
 	Outputs         []audit.OutputWires
-	InputCount      frontend.Variable
+	// Voucher signs the transfer, policy/voucher.go.
+	Voucher    policy.VoucherWires
+	InputCount frontend.Variable
 	// Inputs hold the spent notes in SPP's note order, then dummies.
 	Inputs []shared.UtxoWires
 	// Entries open default-ring inputs to the auditor, none off an entry key.
@@ -184,9 +187,10 @@ func (c *TransferCircuit) Define(api frontend.API) error {
 	c.assertRail(api)
 	rc := rangecheck.New(api)
 	// 2. The output slots open and the sealed key derives the transaction blinding. Every later section reads these wires, so what it proves is about the notes step 6 ties to SPP.
-	w := audit.AuditWires{FirstNullifier: c.FirstNullifier, RingProgramID: c.RingProgramID, TxViewingSk: c.TxViewingSk, AuditorPk: c.AuditorPk, Salt: c.Salt, Layout: c.Layout}
 	stream := c.Shape.Stream()
-	stream.AssertLayout(api, c.Layout)
+	// The voucher signs the notes step 6 binds and the legs the policy binds, one set of key wires feeds the stream and the policy, so the auditor reads the signer the sender rules held.
+	vouch := c.Voucher.Open(api, rc, stream.AssertLayout(api, c.Layout), shared.VouchDigest(api, c.PrivateTxHash, c.WithdrawalHash))
+	w := audit.AuditWires{FirstNullifier: c.FirstNullifier, RingProgramID: c.RingProgramID, TxViewingSk: c.TxViewingSk, AuditorPk: c.AuditorPk, Salt: c.Salt, Layout: c.Layout, Vouched: vouch.Active, Voucher: vouch.Key}
 	envelope := w.OpenEnvelope(api, rc)
 	opened := stream.OpenSlots(api, rc, c.Outputs, c.OutputCount)
 	// 3. The spent notes open in SPP's note order, and only notes incur the ring membership check.
@@ -212,7 +216,7 @@ func (c *TransferCircuit) Define(api frontend.API) error {
 	// 7. The policy screens the bound slots. The rows hold every input note owner by step 5, so no owner's funds escape the sender rules or the attribution.
 	// A ring with an own policy registry reads its root on every rail but the delegate's, no prover bit clears the thresholds.
 	g := policy.Rail{ThresholdsActive: ringgadget.IsNonZero(api, c.OwnRoot), Delegate: c.Delegate}.Gates(api, c.PolicyHash)
-	screening := c.Screen(api, rc, g, policy.Spend{Senders: rows.Members, Inputs: section.Slots, Tracking: tracking}, opened.Slots)
+	screening := c.Screen(api, rc, g, policy.Spend{Senders: rows.Members, Inputs: section.Slots, Tracking: tracking, Vouch: vouch}, opened.Slots)
 	// Zero key recipients must be absent at the accepted tracking root, including on delegate transfers.
 	AssertOutputOwners(api, tracking, opened.Slots, c.OutputEntries)
 	// The mask is equal and never at least. A short mask would drop a demanded co-signer, the program acts on these bits and derives no threshold.

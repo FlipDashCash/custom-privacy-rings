@@ -12,8 +12,15 @@ path = "src/lib.rs"
 name = "zolana-ring"
 path = "src/main.rs"
 
+# aws-config is named only for the credential features the KMS client loads.
+[package.metadata.cargo-machete]
+ignored = ["aws-config"]
+
 [dependencies]
+wincode.workspace = true
+zolana-operator-custody.workspace = true
 anyhow = { workspace = true }
+aws-config = { workspace = true, features = ["sso", "credentials-process"] }
 bytemuck = { workspace = true }
 clap = { workspace = true }
 console = { workspace = true }
@@ -27,9 +34,13 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 solana-account = { workspace = true }
 solana-address = { workspace = true }
+solana-hash = { workspace = true }
 solana-instruction = { workspace = true }
 solana-keypair = { workspace = true }
 solana-loader-v3-interface = { workspace = true, features = ["wincode"] }
+solana-message = { workspace = true }
+solana-packet = { workspace = true }
+solana-rpc-client = { workspace = true }
 solana-sbpf = { workspace = true }
 solana-signature = { workspace = true, features = ["verify"] }
 solana-signer = { workspace = true }
@@ -55,5 +66,6 @@ zolana-secret-file = { workspace = true }
 spr-transaction = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
+zolana-operator-custody = { workspace = true, features = ["test-fixtures"] }
 solana-rpc-client-api = { workspace = true }
 spr-event = { workspace = true }

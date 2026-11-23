@@ -29,8 +29,7 @@ mod scope;
 
 use async_trait::async_trait;
 use solana_address::Address;
-use solana_keypair::Keypair;
-use solana_signer::Signer;
+use zolana_operator_custody::SigningIdentity;
 
 pub(crate) use self::{direct::DirectCoSign, lists::migration as list_migration};
 pub use self::{
@@ -41,18 +40,18 @@ pub use self::{
     rule::{Chain, CoSignRule, Operation, Verdict},
 };
 use crate::{
-    cosign::{CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement},
+    cosign::{CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement, Ticket},
     error::RingRpcError,
 };
 
 /// Signs what its rule admits.
 pub struct CoSigner<R> {
-    signer: Keypair,
+    signer: SigningIdentity,
     pub(crate) rule: R,
 }
 
 impl<R: CoSignRule> CoSigner<R> {
-    pub const fn new(signer: Keypair, rule: R) -> Self {
+    pub const fn new(signer: SigningIdentity, rule: R) -> Self {
         Self { signer, rule }
     }
 
@@ -69,19 +68,21 @@ impl<R: CoSignRule> CoSigner<R> {
 #[async_trait]
 impl<R: CoSignRule> CoSignPolicy for CoSigner<R> {
     fn signer(&self) -> Option<Address> {
-        Some(self.signer.pubkey())
+        Some(self.signer.address())
     }
 
     async fn decide(&self, request: &CoSignRequest) -> Result<CoSignDecision, RingRpcError> {
-        let ticket = self.signer.sign_message(&request.message.serialize());
         let operation = Operation {
             ring: request.ring,
             message: &request.message,
             flows: &request.flows,
-            ticket,
+            ticket: Ticket::of(&self.signer.address(), &request.message),
         };
         Ok(match self.rule.admit(&operation).await? {
-            Verdict::Admitted => CoSignDecision::Signed(ticket),
+            // A failed signature keeps the reservation, a repeat of the message signs under it.
+            Verdict::Admitted => {
+                CoSignDecision::Signed(self.signer.sign(&request.message.serialize()).await?)
+            }
             Verdict::Refused(refusal) => CoSignDecision::Refused(refusal),
         })
     }

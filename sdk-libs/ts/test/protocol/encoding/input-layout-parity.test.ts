@@ -36,6 +36,7 @@ describe("the envelope", () => {
       inputs: 64,
       outputs: 1,
       capacity: 2,
+      vouched: false,
     };
     const envelope: AuditEnvelope = {
       txViewingSecret: fill(0x23),
@@ -66,6 +67,7 @@ describe("the envelope", () => {
       inputs: 2,
       outputs: 1,
       capacity: 2,
+      vouched: false,
     };
     const plaintext = encodeAuditEnvelope({
       txViewingSecret: fill(0x23),
@@ -83,6 +85,7 @@ describe("the envelope", () => {
       inputs: 3,
       outputs: 2,
       capacity: 4,
+      vouched: false,
     };
     const record = { ...EMPTY_ENTRY_RECORD, amount: 0x0102_0304_0506_0708n, ownerKey: fill(0x31) };
     const envelope: AuditEnvelope = {

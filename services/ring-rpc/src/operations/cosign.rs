@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use clap::ValueEnum;
 use custom_ring_interface::CoSignScope;
 use jsonrpsee::types::ErrorObjectOwned;
+use sha2::{Digest, Sha256};
 use solana_address::Address;
 use solana_message::VersionedMessage;
 use solana_signature::Signature;
@@ -111,10 +112,14 @@ pub enum CoSignError {
     UnrecordedAsset = -32296,
 }
 
+/// The digest of the co-signer and its serialized message, a reservation key no signer call derives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ticket([u8; 32]);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoSignSettlement {
-    Confirmed(Signature),
-    Failed(Signature),
+    Confirmed(Ticket),
+    Failed(Ticket),
 }
 
 impl ApproveClass {
@@ -138,6 +143,22 @@ impl CoSignerApproval {
         self.0
             .iter()
             .fold(CoSignScope::NONE, |scope, class| scope | class.scope())
+    }
+}
+
+impl Ticket {
+    pub fn of(signer: &Address, message: &VersionedMessage) -> Self {
+        Self(
+            Sha256::new()
+                .chain_update(signer)
+                .chain_update(message.serialize())
+                .finalize()
+                .into(),
+        )
+    }
+
+    pub(crate) const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
     }
 }
 

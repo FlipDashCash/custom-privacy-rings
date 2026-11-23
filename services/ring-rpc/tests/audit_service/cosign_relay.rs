@@ -5,6 +5,7 @@ use jsonrpsee::RpcModule;
 use sea_orm::{ConnectionTrait, Statement};
 use solana_instruction::AccountMeta;
 use spr_keypair::{ShieldedKeypair, SigningKey};
+use zolana_operator_custody::{CustodyError, OperatorSigner};
 use zolana_ring_client::rpc::{
     CoSignList, CoSignListEdit, CoSignListEntry, CoSignSubjectKind, CoSignTransactionRequest,
     CoSignTransactionResponse, EditCoSignList, EditCoSignListRequest, GetCoSignListsRequest,
@@ -141,12 +142,53 @@ impl RelayProver for FramedProver {
     }
 }
 
+struct FaultySigner {
+    keypair: Keypair,
+    unavailable: AtomicBool,
+    calls: AtomicUsize,
+}
+
+impl FaultySigner {
+    fn new(keypair: Keypair) -> Arc<Self> {
+        Arc::new(Self {
+            keypair,
+            unavailable: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+        })
+    }
+
+    fn fail(&self, unavailable: bool) {
+        self.unavailable.store(unavailable, Ordering::Relaxed);
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl OperatorSigner for FaultySigner {
+    fn address(&self) -> Address {
+        self.keypair.pubkey()
+    }
+
+    async fn sign(&self, message: &[u8]) -> Result<Signature, CustodyError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        match self.unavailable.load(Ordering::Relaxed) {
+            true => Err(CustodyError::Signature),
+            false => Ok(self.keypair.sign_message(message)),
+        }
+    }
+}
+
 struct CappedRelay {
     hub: Arc<Hub<StaticSource>>,
     module: RpcModule<Arc<Hub<StaticSource>>>,
     store: Store,
     chain: Arc<RecordingChain>,
     co_signer: Address,
+    co_signer_key: Arc<FaultySigner>,
+    fee_payer_key: Arc<FaultySigner>,
     quote: RelayQuote,
     rail: fn() -> RelayRail,
 }
@@ -209,10 +251,12 @@ impl CappedRelay {
         ]);
         let chain = Arc::new(RecordingChain::default());
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let co_signer_key = FaultySigner::new(co_signer_key());
+        let fee_payer_key = FaultySigner::new(Keypair::new_from_array([31; 32]));
         let hub = Hub::builder(source, identity(GENESIS))
             .with_origins(origins())
             .with_store(store.clone())
-            .with_co_signer(co_signer_key())
+            .with_co_signer(co_signer_key.clone())
             .with_co_signer_approval(CoSignerApproval::new([
                 ApproveClass::Transfers,
                 ApproveClass::Withdrawals,
@@ -228,7 +272,7 @@ impl CappedRelay {
                     auditor: fixture.auditor.pubkey(),
                     nullifier,
                 }),
-                fee_payer: Keypair::new_from_array([31; 32]),
+                fee_payer: fee_payer_key.clone(),
                 chain: chain.clone(),
             })
             .local(RING, fixture.auditor.clone())
@@ -258,6 +302,8 @@ impl CappedRelay {
             store,
             chain,
             co_signer,
+            co_signer_key,
+            fee_payer_key,
             quote,
             rail,
         }
@@ -802,6 +848,106 @@ async fn an_unsigned_relay_holds_no_allowance_and_the_signed_one_past_the_cap_is
     assert!(signers_verify(&sent));
 }
 
+impl CappedRelay {
+    async fn submit(
+        &self,
+        signed: &SubmitRelayRequest,
+    ) -> Result<RelayStatus, jsonrpsee::MethodsError> {
+        self.module.call(SUBMIT_RELAY, as_object(signed)).await
+    }
+}
+
+fn depositor(seed: u8) -> Keypair {
+    Keypair::new_from_array([seed; 32])
+}
+
+const INTERNAL_ERROR: i32 = -32603;
+
+#[tokio::test]
+async fn a_failed_co_signature_holds_its_reservation_until_the_relay_expires() {
+    let relay = CappedRelay::naming(anonymous_rail, None, deposit_capped()).await;
+    let unsigned = relay.deposit(&depositor(51), 700).await;
+    let beyond = relay.deposit(&depositor(52), 700).await;
+    relay.co_signer_key.fail(true);
+    assert_eq!(refusal(relay.submit(&unsigned).await), INTERNAL_ERROR);
+    relay.co_signer_key.fail(false);
+    assert_eq!(
+        refusal(relay.submit(&beyond).await),
+        RelayError::CoSignRefused.code()
+    );
+    assert_eq!(relay.co_signer_key.calls(), 1);
+
+    relay
+        .chain
+        .height
+        .store(LAST_VALID_BLOCK_HEIGHT + 1, Ordering::Relaxed);
+    let expired = relay.status(unsigned.relay_id.clone()).await;
+    assert!(matches!(expired, RelayStatus::Failed { .. }), "{expired:?}");
+
+    relay.chain.height.store(400, Ordering::Relaxed);
+    let freed = relay.deposit(&depositor(53), 700).await;
+    let landed = relay
+        .submit(&freed)
+        .await
+        .expect("the expired relay freed the cap");
+    assert!(
+        matches!(landed, RelayStatus::Confirmed { .. }),
+        "{landed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_retry_after_a_failed_co_signature_closes_under_its_first_reservation() {
+    let relay = CappedRelay::naming(anonymous_rail, None, deposit_capped()).await;
+    let retried = relay.deposit(&depositor(51), 700).await;
+    relay.co_signer_key.fail(true);
+    assert_eq!(refusal(relay.submit(&retried).await), INTERNAL_ERROR);
+    assert!(relay.chain.sent().is_empty());
+    relay.co_signer_key.fail(false);
+
+    let landed = relay
+        .submit(&retried)
+        .await
+        .expect("a second reservation would pass the cap");
+    assert!(
+        matches!(landed, RelayStatus::Confirmed { .. }),
+        "{landed:?}"
+    );
+    assert_eq!(relay.co_signer_key.calls(), 2);
+    let [sent] = relay.chain.sent().try_into().expect("one sent transaction");
+    assert!(signers_verify(&sent));
+
+    let rest = relay.deposit(&depositor(52), DEPOSIT_CAP - 700).await;
+    let landed = relay
+        .submit(&rest)
+        .await
+        .expect("one reservation leaves the rest of the cap");
+    assert!(
+        matches!(landed, RelayStatus::Confirmed { .. }),
+        "{landed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_fee_payer_signature_reaches_no_co_signer_and_reserves_nothing() {
+    let relay = CappedRelay::naming(anonymous_rail, None, deposit_capped()).await;
+    let unpaid = relay.deposit(&depositor(51), 700).await;
+    let paid = relay.deposit(&depositor(52), 700).await;
+    relay.fee_payer_key.fail(true);
+    assert_eq!(refusal(relay.submit(&unpaid).await), INTERNAL_ERROR);
+    assert_eq!(relay.co_signer_key.calls(), 0);
+    relay.fee_payer_key.fail(false);
+
+    let landed = relay
+        .submit(&paid)
+        .await
+        .expect("the unpaid relay holds no allowance");
+    assert!(
+        matches!(landed, RelayStatus::Confirmed { .. }),
+        "{landed:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_derived_relay_refuses_a_ring_whose_auditor_key_it_does_not_hold() {
     let fixture = Fixture::new();
@@ -814,7 +960,7 @@ async fn a_derived_relay_refuses_a_ring_whose_auditor_key_it_does_not_hold() {
         .with_relay(RelayParts {
             store,
             prover: prover.clone(),
-            fee_payer: Keypair::new_from_array([31; 32]),
+            fee_payer: Arc::new(Keypair::new_from_array([31; 32])),
             chain: chain.clone(),
         })
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))

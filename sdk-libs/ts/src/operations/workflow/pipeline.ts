@@ -85,6 +85,7 @@ import {
 import type { ApprovalOpening } from "../../protocol/membership/approval-totals.js";
 import type { OwnerDebit } from "../../protocol/membership/owner-debits.js";
 import { policyWithdrawalHash } from "../../proof/withdrawals.js";
+import { signVouch, type VouchSigner } from "../../proof/vouch.js";
 import {
   framesData,
   publishedOutputs,
@@ -308,8 +309,10 @@ export type StagedTransferInput = Readonly<{
   coSigners?: readonly Address[];
   /** An enrolled subject on a ring reading a salted list needs its salt here. */
   listSalts?: readonly RingListSalt[];
+  /** A listed wallet vouching for every sender and payment owner, its salt in `listSalts` once enrolled. */
+  voucher?: VouchSigner;
   transaction?: RingTransactionFrame;
-  approve?: (coSigners: readonly Address[]) => Promise<void>;
+  approve?: (coSigners: readonly Address[], proofInputs: SppProofInputs) => Promise<void>;
 }>;
 
 /** Rust `Pipeline::assemble` and `Assembled::prove`, neither proof is an input to the other. */
@@ -318,7 +321,7 @@ export function proveStagedTransfer(
   context?: RequestContext,
 ): Promise<ProvenRingTransfer> {
   return assembleStagedTransfer(input, context, async (assembled) => {
-    await input.approve?.(assembled.coSigners);
+    await input.approve?.(assembled.coSigners, assembled.proofInputs);
     return proveAssembled(input, assembled, context);
   });
 }
@@ -417,6 +420,9 @@ async function selectStagedKey(input: StagedTransferInput, context: RequestConte
     proofInputs: staged.proofInputs,
     publicSlots: publicSlots(transfers),
     listSalts: input.listSalts ?? [],
+    ...(input.voucher === undefined
+      ? {}
+      : { voucher: input.voucher.publicKey().ownerProofInputHash() }),
     ...tokenOwnerHint(spend.anonymous?.tokenOwner ?? staged.withdrawalOwner),
   };
   const demand = await policyDemand({ ...demandInput, rows: liveRows }, context);
@@ -436,6 +442,7 @@ function stagedPlanFrame(
     config: RingPolicy;
     staged: Pick<StagedTransfer, "proofInputs"> &
       Readonly<{ spend: Pick<RailSpend, "rail" | "publicOwners"> }>;
+    voucher?: VouchSigner;
   }>,
 ): PlanFrame {
   const { config, staged } = input;
@@ -467,6 +474,7 @@ function stagedPlanFrame(
         entry,
         publicOwners: spend.publicOwners === true,
         wideOwners,
+        vouched: input.voucher !== undefined,
       }),
   });
 }
@@ -501,6 +509,7 @@ function sealStagedTransfer(
     plan: PlannedTransfer;
     staged: Omit<StagedTransfer, "spend"> &
       Readonly<{ spend: Pick<RailSpend, "rail" | "inProofOwner" | "publicOwners"> }>;
+    voucher?: VouchSigner;
   }>,
 ): SealedTransfer {
   const { ringProgramId, config, staged, plan } = input;
@@ -514,7 +523,14 @@ function sealStagedTransfer(
   const senderBundle = rail.publishedSender(staged.proofInputs, sender.viewingPublicKey);
   const auditor = config.auditorPublicKey;
   // The auditor message precedes every hash over the external data.
-  const sealed = sealAudit({ rail, layout: plan.layout, published, inputs, auditor });
+  const sealed = sealAudit({
+    rail,
+    layout: plan.layout,
+    published,
+    inputs,
+    auditor,
+    ...(input.voucher === undefined ? {} : { voucher: input.voucher.publicKey().ed25519() }),
+  });
   try {
     return Object.freeze({
       sealed,
@@ -728,6 +744,11 @@ async function proveAssembled(
     inputs,
     proofInputs,
     recipientKeys: assembled.published.map((slot) => slot.recipientKey),
+    voucher: await signVouch(
+      input.voucher,
+      { privateTxHash, withdrawalHash: policyWithdrawalHash(policy.withdrawals) },
+      context,
+    ),
     auditor: config.auditorPublicKey,
     policy,
     proving: { ringId, publicSlots: assembled.slots },
@@ -930,6 +951,7 @@ function previewData(
     hasData: framesData(published.map((slot) => slot.output)),
     entry,
     wideOwners: input.wideOwners,
+    vouched: sealed.audit.vouched,
     outputs: Object.freeze(published.map((slot) => slot.wire)),
     ...(replies[0] === undefined
       ? {}
@@ -941,7 +963,10 @@ function previewData(
         }),
     ...(input.sender === undefined ? {} : { sender: input.sender }),
     envelope: sealed.envelope,
-    recipientKeys: concatBytes(...sealed.recipientKeys),
+    recipientKeys: concatBytes(
+      ...sealed.recipientKeys,
+      ...(sealed.voucher === undefined ? [] : [sealed.voucher]),
+    ),
     privateTxHash: input.privateTxHash,
     ...(input.rail === "anonymous" && !input.publicOwners
       ? {

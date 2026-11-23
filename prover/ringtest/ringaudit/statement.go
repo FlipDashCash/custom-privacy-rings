@@ -18,8 +18,10 @@ type AuditHead struct {
 	// Envelope and Keys are the transmitted envelope and recipient key ciphertexts, their digest head element 7.
 	Envelope []byte
 	Keys     []byte
-	Salt     [16]byte
-	Layout   int64
+	// Voucher is the transmitted voucher region, empty off a vouched frame.
+	Voucher []byte
+	Salt    [16]byte
+	Layout  int64
 }
 
 // ElementsUnder is the head under domain.
@@ -27,9 +29,13 @@ func (h AuditHead) ElementsUnder(t testing.TB, domain int64) []*big.Int {
 	t.Helper()
 	txLo, txHi := ringprotocol.Pack33(ringprotocol.Tagged(h.TxViewingU[:]))
 	auditorLo, auditorHi := ringprotocol.Pack33(h.AuditorPubkey)
+	voucher := new(big.Int)
+	if len(h.Voucher) != 0 {
+		voucher = ringtest.HashBytes(t, h.Voucher)
+	}
 	return []*big.Int{
 		big.NewInt(domain), h.FirstNullifier, h.RingProgramID, txLo, txHi,
-		auditorLo, auditorHi, ringtest.MustPoseidonHash(t, ringprotocol.EnvelopeDigest(t, h.Envelope), ringprotocol.EnvelopeDigest(t, h.Keys)), new(big.Int).SetBytes(h.Salt[:]), big.NewInt(h.Layout),
+		auditorLo, auditorHi, ringtest.MustPoseidonHash(t, ringprotocol.EnvelopeDigest(t, h.Envelope), ringprotocol.EnvelopeDigest(t, h.Keys), voucher), new(big.Int).SetBytes(h.Salt[:]), big.NewInt(h.Layout),
 	}
 }
 

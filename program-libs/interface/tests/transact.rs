@@ -1266,6 +1266,7 @@ fn every_rail_reads_its_audit_stream() {
             inputs,
             outputs,
             capacity: if key.entry { 4 } else { outputs },
+            vouched: false,
         };
         assert_eq!(data.audit_stream(), Ok(expected), "{key:?}");
         assert_eq!(expected.checked(), Ok(expected), "{key:?}");
@@ -1304,6 +1305,61 @@ fn the_compact_data_reads_back_at_exact_capacity() {
             .unwrap()
             .into_data();
         assert_eq!(parsed, data, "{name}");
+    }
+}
+
+#[test]
+fn a_vouched_frame_carries_the_voucher_key_after_the_slot_keys() {
+    let fixture = Fixture::new();
+    for (name, plain, compact) in encoded_cases(&fixture) {
+        let mut data = plain.clone();
+        data.vouched = true;
+        let data = fixture.with_audit_stream(data);
+        let stream = data.audit_stream().unwrap();
+        assert!(stream.vouched, "{name}");
+        assert_eq!(
+            data.recipient_keys.len(),
+            plain.recipient_keys.len() + 32,
+            "{name}"
+        );
+        assert_eq!(
+            data.audit_layout().value(),
+            plain.audit_layout().value() | 1,
+            "{name}"
+        );
+        let vouched = data.encode().unwrap();
+        assert_eq!(vouched.len(), compact.len() + 32, "{name}");
+        assert_eq!(
+            vouched[OUTPUT_COUNT_BYTE],
+            compact[OUTPUT_COUNT_BYTE] | output_flag::VOUCHED,
+            "{name}"
+        );
+        let parsed = RingTransactData::parse(&vouched, data.rail)
+            .unwrap()
+            .into_data();
+        assert_eq!(parsed, data, "{name}");
+        let exits = data
+            .outputs
+            .iter()
+            .filter(|output| output.is_exit())
+            .count();
+        let message = data.auditor_message();
+        let parsed = AuditorMessage::parse(&message, stream, exits).unwrap();
+        assert_eq!(parsed.recipient_keys, data.recipient_keys, "{name}");
+        // The flag alone moves every later section.
+        let mut flagged = compact.clone();
+        flagged[OUTPUT_COUNT_BYTE] |= output_flag::VOUCHED;
+        assert!(
+            RingTransactData::parse(&flagged, data.rail).is_err(),
+            "{name}"
+        );
+        let mut unvouched = data.clone();
+        unvouched.vouched = false;
+        assert_eq!(
+            unvouched.encode(),
+            Err(CustomRingError::RingTransactLength),
+            "{name}"
+        );
     }
 }
 

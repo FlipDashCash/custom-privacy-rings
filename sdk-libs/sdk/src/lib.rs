@@ -55,6 +55,8 @@ mod tests;
 mod trees;
 #[path = "operations/viewing_rotation.rs"]
 mod viewing_rotation;
+#[path = "operations/wallet_payment.rs"]
+mod wallet_payment;
 
 pub(crate) const REDACTED: &str = "<redacted>";
 
@@ -105,7 +107,7 @@ pub use crate::{
         DelegateSource, DelegateTransfer, DelegateTransferInput, DelegateWithdrawal, Delegated,
         EntrySpend, NoteData, Owner, OwnerExposure, ProvenRingTransfer, PublicOwnerTransfer,
         PublicOwners, Rail, RailKind, ReadCache, Relayed, RelayedTransfer, RelayedTransferInput,
-        RingPayment, RingSender, RingTransfer, SealRow, TransferKey, UnsignedRelay,
+        RingPayment, RingSender, RingTransfer, SealRow, TransferKey, UnsignedRelay, VouchSigner,
     },
     records::{
         AuthorityRecordUpdate, MemberRecords, OwnerSaltCheck, RecordUpdateService,
@@ -127,8 +129,10 @@ pub use crate::{
         SaltedOwnerWrite, StorageApplyProof, UpdateStorage, UpdateStorageAuthority,
     },
     submission::{
-        live_registry, RingOperation, RingSubmission, SettledSubmission, SubmissionStatus,
+        live_registry, LocalSigners, RingOperation, RingSubmission, SettledSubmission,
+        SubmissionSigners, SubmissionStatus,
     },
     trees::{tree_id, written_tree_fees},
     viewing_rotation::RotateViewingKey,
+    wallet_payment::{AnonymousRingTransfers, OwnerRingTransfers, RingProving},
 };

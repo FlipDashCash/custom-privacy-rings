@@ -22,7 +22,7 @@ use jsonrpsee::{
     RpcModule,
 };
 use serde::{de::DeserializeOwned, Serialize};
-use spr_rpc_http::MethodPathLayer;
+use spr_rpc_http::{announce::Announcer, forward::UpstreamUrl, MethodPathLayer};
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tower::Service;
@@ -78,6 +78,14 @@ pub struct ServerOptions {
     pub max_connections: u32,
     pub request_timeout: Duration,
     pub client_limits: ClientLimits,
+    pub announce: Option<Announce>,
+}
+
+/// Has Photon forward the served methods here once its operator approves the service key.
+pub struct Announce {
+    pub registry: UpstreamUrl,
+    /// The service URL Photon connects to.
+    pub url: UpstreamUrl,
 }
 
 #[derive(Debug, Error)]
@@ -137,8 +145,25 @@ pub async fn run_server<S: TransactionSource + 'static>(
             }),
         )
         .to_service_builder();
-    let methods = Methods::from(rpc_module(hub)?);
+    let methods = Methods::from(rpc_module(hub.clone())?);
     let (stop, handle) = stop_channel();
+    if let Some(Announce { registry, url }) = options.announce {
+        let announcing = Announcer {
+            registry,
+            url,
+            methods: methods.method_names().map(str::to_owned).collect(),
+            pubkey: hub.service_pubkey(),
+        }
+        .spawn_with(move |message| {
+            let hub = hub.clone();
+            async move { hub.sign_attestation(&message).await }
+        });
+        let stop = stop.clone();
+        tokio::spawn(async move {
+            stop.shutdown().await;
+            announcing.abort();
+        });
+    }
     // An owned accept loop, the jsonrpsee server hides the peer address from middleware.
     tokio::spawn(async move {
         loop {
@@ -198,7 +223,7 @@ pub fn rpc_module<S: TransactionSource + 'static>(
             let _slot = hub.admit(Lane::Authentication)?;
             let service = hub.service(Some(request.ring_program_id.0))?;
             let statement = service.auditor_key_statement(&request.auth).await?;
-            let signature = hub.sign_attestation(&statement);
+            let signature = hub.sign_attestation(&statement).await?;
             let (ring, auditor_pubkey) = (service.ring(), service.auditor_pubkey());
             Ok(CreateAuditorKeyResponse {
                 ring_program_id: ring.into(),
@@ -770,7 +795,7 @@ mod tests {
     fn identity(genesis_hash: [u8; 32]) -> ServiceIdentity {
         ServiceIdentity {
             genesis_hash,
-            service: Keypair::new(),
+            service: Arc::new(Keypair::new()),
         }
     }
 
@@ -799,6 +824,64 @@ mod tests {
             max_connections: 8,
             request_timeout: timeout,
             client_limits: ClientLimits::default(),
+            announce: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_service_key_announces_the_served_methods_to_the_registry() {
+        use spr_indexer_api::{AnnounceUpstreamRequest, AnnounceUpstreamResponse};
+
+        let (announced, mut announcements) = tokio::sync::mpsc::unbounded_channel();
+        let mut registry = RpcModule::new(announced);
+        registry
+            .register_method("announceUpstream", |params, announced, _| {
+                let request = params.parse::<AnnounceUpstreamRequest>()?;
+                announced.send(request).expect("receiver");
+                Ok::<_, ErrorObjectOwned>(AnnounceUpstreamResponse { approved: false })
+            })
+            .expect("method");
+        let server = ServerBuilder::default()
+            .build("127.0.0.1:0")
+            .await
+            .expect("registry");
+        let registry_url = format!("http://{}", server.local_addr().expect("address"));
+        let registry = server.start(registry);
+
+        let hub = hub(source(), Origins::default());
+        let served = rpc_module(hub.clone()).expect("module");
+        let handle = run_server(
+            hub.clone(),
+            ServerOptions {
+                announce: Some(Announce {
+                    registry: registry_url.parse().expect("registry URL"),
+                    url: "http://ring:8785".parse().expect("public URL"),
+                }),
+                ..options(port(), Duration::from_secs(1))
+            },
+        )
+        .await
+        .expect("server");
+
+        let AnnounceUpstreamRequest {
+            pubkey,
+            announcement,
+            signature,
+        } = announcements.recv().await.expect("announcement");
+        assert_eq!(pubkey.0, hub.service_pubkey());
+        assert!(signature
+            .0
+            .verify(pubkey.0.as_ref(), &announcement.message()));
+        assert_eq!(announcement.url, "http://ring:8785");
+        let mut expected = served.method_names().collect::<Vec<_>>();
+        expected.sort_unstable();
+        let mut methods = announcement.methods;
+        methods.sort_unstable();
+        assert_eq!(methods, expected);
+        assert!(methods.iter().any(|method| method == RING_STATUS));
+        assert!(!methods.iter().any(|method| method == SUBMIT_RELAY));
+        for server in [handle, registry] {
+            server.stop().expect("stop");
         }
     }
 
@@ -1125,6 +1208,7 @@ mod tests {
                 max_connections: 1,
                 request_timeout: Duration::from_secs(1),
                 client_limits: ClientLimits::default(),
+                announce: None,
             },
         )
         .await;
@@ -1138,6 +1222,7 @@ mod tests {
                 max_connections: 1,
                 request_timeout: Duration::from_secs(1),
                 client_limits: ClientLimits::default(),
+                announce: None,
             },
         )
         .await

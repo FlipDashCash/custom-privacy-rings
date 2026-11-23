@@ -32,7 +32,9 @@ solana-address = { workspace = true, features = ["curve25519"] }
 solana-clock = { workspace = true }
 solana-rpc-client = { workspace = true }
 solana-rpc-client-api = { workspace = true }
+solana-keypair = { workspace = true }
 solana-signature = { workspace = true }
+solana-signer = { workspace = true }
 solana-transaction = { workspace = true }
 solana-transaction-status-client-types = { workspace = true, features = ["agave-unstable-api"] }
 thiserror = { workspace = true }
@@ -45,6 +47,7 @@ spr-indexer-api = { workspace = true }
 zolana-ring-indexer = { workspace = true }
 zolana-ring-policy = { workspace = true }
 spr-rpc-http = { workspace = true }
+zolana-secret-file = { workspace = true }
 
 [dev-dependencies]
 base64 = { workspace = true }

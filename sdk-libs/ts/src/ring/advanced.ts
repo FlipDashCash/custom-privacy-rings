@@ -44,6 +44,8 @@ export {
   packedChunks,
   recipientKeyRegion,
   recipientKeysLen,
+  splitSealedKeys,
+  voucherRegion,
 } from "../protocol/codec/ring-disclosure-layout.js";
 export type {
   AuditKey,
@@ -255,8 +257,13 @@ export {
   recordBit,
   referencedLists,
   ruleAlternatives,
+  vouchedBy,
+  evaluateVoucher,
+  VOUCHED_LIST_BITS,
+  type VoucherRefusal,
   walletGrantMember,
 } from "../protocol/membership/policy.js";
+export { vouchDigest, type VouchMessage } from "../proof/vouch.js";
 export {
   AWAITABLE_LISTS,
   recordUpdateMessage,

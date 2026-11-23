@@ -481,6 +481,7 @@ impl Transfer {
             }),
             envelope: &[],
             recipient_keys: &[],
+            vouched: false,
             private_tx_hash: &field,
             anonymous: frame.hidden_sender().then_some(AnonymousProofData {
                 commitment: &field,

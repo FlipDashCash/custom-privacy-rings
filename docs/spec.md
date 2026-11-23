@@ -35,6 +35,8 @@ The policy defines which checks a transfer must prove. `Initialize` pins the fir
 
 An allowlist is a list of approved identities. A rule can require the sender, every recipient, or both, to be on it. A recipient rule screens every output, the sender's change and each exit included, and the owner of each withdrawal. A guard can exempt payments at or below a threshold, so only recipients above it must be listed. The threshold is one value for the rule, compared with each owner's total of each asset, or one value per asset in the asset's record. Change that the sender's own ring notes fund adds no receipt.
 
+A listed identity can vouch for one transfer. It signs the transfer, the proof verifies the signature without revealing the key, and its entry on `Allow` or `PrivateAllow` then admits every sender and recipient of that transfer. The ring must have a rule table, and the voucher must hold an entry on one of those two lists and pass every sender rule itself. A vouch covers no other list, so a blocked or frozen identity stays refused. The auditor reads the voucher's key from the transfer. A wallet or a program address its user never listed transacts this way under the user's one listed key. See [proof composition](design/proof-composition.md#a-vouchers-allow-entry-admits-the-transfer-it-signs).
+
 ### 1.2. Blocklist
 
 A blocklist is a list of identities or assets the ring refuses. A sender rule over it stops every transfer of a blocked identity. Its notes stay in the ring, it can still merge them, and the delegate can still move them. A blocklist refuses known members only. A fresh key passes it.
@@ -128,7 +130,7 @@ These limits bind only the operations the ring requires co-signing for. Ring RPC
 1. **Ring program:** one deployment per ring. Verifies the ring proofs and controls, then calls SPP signed by its ring PDA.
 2. **Storage program:** one shared deployment. Keeps the root history of policy record trees, each under one authority, and of each ring's tracking tree. It verifies the proof of each tree update and of each first enrollment. It checks no policy.
 3. **Ring RPC:** our hosted service. Holds the auditor key, writes policy records, applies enrollments, relays and pays for wallet operations, co-signs under limits, merges enrolled owners' notes and serves readers. It opens every enrolled owner's sealed secret from the ring's tracking rows.
-4. **Ring indexer:** projects every policy and tracking tree from confirmed blocks and lists pending enrollments. It serves record and tracking openings, and forwards every other call to Photon.
+4. **Ring indexer:** projects every policy and tracking tree from confirmed blocks and lists pending enrollments. It serves record and tracking openings, and forwards every other call to Photon. Ring RPC and the ring indexer can each announce their methods to Photon. Photon forwards them after its operator approves the service key, so either Photon or the ring indexer can be the one client endpoint.
 5. **Ring prover:** the zolana prover with the ring circuits added.
 6. **SDKs and CLI:** the Rust and TypeScript SDKs build ring operations. A wallet sends them through Ring RPC by default, or reads the records and Merkle paths from the ring indexer, proves and sends them itself. The operator CLI creates, deploys and governs rings.
 
@@ -168,7 +170,7 @@ Five on-chain roles govern a ring. Every role key is nonzero once set, and no ke
 
 The upgrade authority deploys the program. Among ring instructions it signs only `Initialize`, which names the four role keys. Before that it can request the auditor key and the records tree from Ring RPC. Differs from the PR 15 draft: its single Config Authority splits into these roles.
 
-Ring RPC keeps one key file per role. The auditor key opens ring activity. The service key signs auditor key releases, and every signed read and grant binds it. The storage authority signs record tree updates. The co-signer signs co-signatures. The fee payer pays for relayed transactions. The grant rows key seals database reader grants. Each key does one job. Ring RPC refuses to start when two role files hold the same secret, and its root secret yields auditor keys only.
+Ring RPC signs through separate AWS KMS Ed25519 keys for service attestations, storage updates, co-signatures, relay fees and enrollment batches. It unwraps the auditor secret and the database grant key in memory. One auditor root can derive auditors for many rings on one cluster. Each wrapped secret binds the deployment, cluster and purpose. A single-ring auditor also binds the ring program ID. Ring RPC refuses to start when two signing roles pin the same address or the grant key matches the auditor secret, and its root secret yields auditor keys only.
 
 ## Trust Assumptions
 
@@ -475,7 +477,7 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 7. An update pending list approval waits within a bounded window under rate limits, with no cap on pending updates. A cap would let spam lock list approval out.
 8. The config and the policy are one ring account. A transfer loads fewer accounts.
 9. Five on-chain roles replace the single Config Authority. A stolen key other than the admin key reaches one control.
-10. Ring RPC reads one key file per role. A leaked file exposes one job.
+10. Ring RPC pins a separate KMS signing address per role. A compromised signing key exposes one job. The root secret opens audit records for every ring that uses a derived auditor from that root.
 11. Each co-signer has its own account. A transaction carries a co-signer for each demanded class, and one co-signer may cover several. A ring can then keep separate outflow and withdrawal approvers. The hot path loads each co-signer account by owner and discriminator, as the draft's note 2 asks.
 12. Co-signer limits live per asset in the asset record, each cap with its own window. The tree already serves per-asset data under a root the program reads.
 13. Co-signing fails closed when Ring RPC cannot read the limits or the asset has no record. Either would otherwise read as no limits.

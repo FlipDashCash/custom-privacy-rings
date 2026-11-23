@@ -30,6 +30,8 @@ type Spend struct {
 	Inputs  []shared.Output
 	// Tracking binds each owner's salt.
 	Tracking TrackingPool
+	// Vouch is the transfer's verified voucher, policy/voucher.go.
+	Vouch Vouch
 }
 
 // ApprovalMask reads zero while Outflow is off.

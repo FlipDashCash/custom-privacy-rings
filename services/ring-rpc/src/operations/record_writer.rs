@@ -18,8 +18,7 @@ use custom_ring_interface::{
     storage::Revision,
     storage::StorageRegistry,
     storage_instruction::{RecordWriteClassification, StorageUpdateIxData},
-    ApplyRecordsIxData, CustomRingError, RecordWrite, RecordWriteData, RingAccount, RingPolicy,
-    PROOF_UNITS,
+    ApplyRecordsIxData, CustomRingError, RecordWrite, RecordWriteData, RingPolicy, PROOF_UNITS,
 };
 use custom_ring_sdk::{
     CustomRing, InitializeStorage, PrivateStorageWrite, ProvenPrivateWrite, RingError,
@@ -28,10 +27,9 @@ use custom_ring_sdk::{
 use log::warn;
 use sea_orm::DbErr;
 use solana_address::Address;
-use solana_keypair::Keypair;
-use solana_signer::Signer;
-use spr_client::{compile_message, sign_transaction, ComputeBudgetConfig};
+use spr_client::{compile_message, ComputeBudgetConfig};
 use spr_indexer_api::Hash;
+use zolana_operator_custody::{signed_transaction, SigningIdentity};
 use zolana_ring_client::{
     rpc::{
         GetPendingListApprovalsRequest, GetPendingListApprovalsResponse,
@@ -54,7 +52,7 @@ use crate::{
         limits_within_bounds, ApplyInputsCheck, CheckedUpdate, ListApproval, QueuedCheck,
         QueuedState, QueuedUpdate, RecordUpdateCheck, RecordUpdateRefusal, UpdateContext,
     },
-    storage_chain::StorageChain,
+    storage_chain::{ring_policy, storage_registry, StorageChain},
     update_queue::{
         ApprovalCandidates, ApprovalScope, BatchOutcome, NewBatch, NewUpdate, OpenBatch,
         PendingApprovalPage, UpdateQueue,
@@ -91,7 +89,7 @@ pub trait PrivateWrites: Send + Sync {
 pub struct RecordWriter {
     store: Store,
     chain: Arc<dyn StorageChain>,
-    authority: Keypair,
+    authority: SigningIdentity,
     genesis_hash: [u8; 32],
     reader_grants: ReaderGrantStore,
     /// Holds the queue check and the insert of one update together.
@@ -110,7 +108,7 @@ enum BatchProof {
 pub(crate) struct WriterParts {
     pub store: Store,
     pub chain: Arc<dyn StorageChain>,
-    pub authority: Keypair,
+    pub authority: SigningIdentity,
     pub genesis_hash: [u8; 32],
     pub reader_grants: ReaderGrantStore,
 }
@@ -132,7 +130,7 @@ impl WriterParts {
 
 impl RecordWriter {
     pub fn authority(&self) -> Address {
-        self.authority.pubkey()
+        self.authority.address()
     }
 
     /// Set once, a second source is returned.
@@ -158,7 +156,7 @@ impl RecordWriter {
             latest.blockhash,
             ComputeBudgetConfig::new(CREATE_COMPUTE_UNITS),
         )?;
-        let transaction = sign_transaction(message, &[&self.authority])?;
+        let transaction = signed_transaction(&message, &[self.authority.as_ref()]).await?;
         let attempt = Attempt {
             signature: transaction.signatures[0],
             last_valid_block_height: latest.last_valid_block_height,
@@ -471,6 +469,8 @@ impl RecordWriter {
             latest.blockhash,
             ComputeBudgetConfig::new(PROOF_UNITS),
         )?;
+        // Signed ahead of the checks, a slow signer never ages the slot they read.
+        let transaction = signed_transaction(&message, &[self.authority.as_ref()]).await?;
         let policies = self.queued_authorities(batch.iter()).await?;
         let slot = self.chain.slot().await?;
         let mut rejected = false;
@@ -493,7 +493,6 @@ impl RecordWriter {
         if rejected {
             return Ok(());
         }
-        let transaction = sign_transaction(message, &[&self.authority])?;
         // 4. The batch is durable before it is sent, a restart settles it by its signature.
         self.queue()
             .record_batch(NewBatch {
@@ -628,19 +627,11 @@ impl RecordWriter {
     }
 
     async fn ring_policy(&self, ring: Address) -> Result<Option<RingPolicy>, RingRpcError> {
-        let account = self
-            .chain
-            .account(CustomRing::new(ring).policy_pda())
-            .await?;
-        Ok(account.and_then(|account| RingPolicy::decode(&account.owner, &ring, &account.data)))
+        ring_policy(self.chain.as_ref(), ring).await
     }
 
     async fn registry(&self, address: Address) -> Result<Option<StorageRegistry>, RingRpcError> {
-        Ok(self
-            .chain
-            .account(address)
-            .await?
-            .and_then(|account| StorageRegistry::decode(&account.owner, &account.data)))
+        storage_registry(self.chain.as_ref(), address).await
     }
 
     fn queue(&self) -> UpdateQueue<'_> {

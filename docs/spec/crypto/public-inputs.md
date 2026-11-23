@@ -41,11 +41,11 @@ The head has 10 elements:
 | 2 | `ring_id` | `hash_bytes` of the executing program id |
 | 3, 4 | `pack_be(0x04 \|\| tx_viewing_u)` | frame, SPP `tx_viewing_pk` |
 | 5, 6 | `pack_be(auditor_pubkey)` | ring account |
-| 7 | `Poseidon(digest(envelope_ct), digest(keys_ct))` | frame, the auditor stream's envelope and recipient keys |
+| 7 | `Poseidon(digest(envelope_ct), digest(keys_ct), hash_bytes(voucher_ct))` | frame, the auditor stream's envelope, recipient keys and voucher key, zero in the last place off a vouched frame |
 | 8 | `right_align(salt)` | frame, SPP salt, 16 bytes |
-| 9 | `right_align(entry << 1)` | frame header flags |
+| 9 | `right_align(vouched \| entry << 1)` | frame header flags |
 
-The auditor stream seals under `tx_viewing_sk`, so `txpk` is also the stream's ephemeral key and no separate ephemeral key enters the head. `entry` must match the key's shape, and every other layout bit is refused. The frame's `HAS_DATA` flag enters no element, and no constraint reads a data hash but the UTXO hash.
+The auditor stream seals under `tx_viewing_sk`, so `txpk` is also the stream's ephemeral key and no separate ephemeral key enters the head. `entry` must match the key's shape, `vouched` follows the frame, and every other layout bit is refused. The frame's `HAS_DATA` flag enters no element, and no constraint reads a data hash but the UTXO hash.
 
 The rail bits:
 

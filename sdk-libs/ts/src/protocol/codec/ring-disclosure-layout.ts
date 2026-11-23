@@ -45,12 +45,26 @@ export function packedChunks(length: number): number {
 export interface AuditLayout {
   /** The key carries default bits and one evidence entry per published input. */
   readonly entry: boolean;
+  /** The frame publishes the voucher's sealed key after the slot keys. */
+  readonly vouched: boolean;
 }
 
-/** `entry << 1`. */
+/** `vouched | entry << 1`. */
 export function auditLayoutValue(layout: AuditLayout): number {
-  if (typeof layout.entry !== "boolean") throw shapeError("layout");
-  return layout.entry ? 2 : 0;
+  if (typeof layout.entry !== "boolean" || typeof layout.vouched !== "boolean")
+    throw shapeError("layout");
+  return (layout.vouched ? 1 : 0) | (layout.entry ? 2 : 0);
+}
+
+/** Rust `AuditLayout::split_keys`, a vouched region shorter than one key refused. */
+export function splitSealedKeys(
+  layout: Pick<AuditLayout, "vouched">,
+  sealed: Uint8Array,
+): Readonly<{ keys: Uint8Array; voucher?: Uint8Array }> {
+  if (!layout.vouched) return { keys: sealed };
+  const keysLen = sealed.length - RECIPIENT_KEY_LEN;
+  if (keysLen < 0) throw shapeError("recipientKeys");
+  return { keys: sealed.subarray(0, keysLen), voucher: sealed.subarray(keysLen) };
 }
 
 /** One key's envelope, every rail of a key shares one circuit, Rust `AuditKey`. */
@@ -78,6 +92,8 @@ export interface AuditStreamLayout {
   readonly outputs: number;
   /** `N`, the key's output capacity, the recipient keys span every slot of it. */
   readonly capacity: number;
+  /** The frame publishes the voucher's key. */
+  readonly vouched: boolean;
 }
 
 /** Refuses an input count off the key, a key past the bitmap and an output count off the capacity. */
@@ -89,6 +105,7 @@ export function checkedStreamLayout(layout: AuditStreamLayout): AuditStreamLayou
     inputs <= key.class &&
     key.class <= MAX_INPUT_CLASS &&
     typeof key.entry === "boolean" &&
+    typeof layout.vouched === "boolean" &&
     Number.isInteger(capacity) &&
     Number.isInteger(outputs) &&
     outputs >= 1 &&
@@ -133,9 +150,20 @@ export function recipientKeyRegion(layout: AuditStreamLayout, slot: number): Aud
   });
 }
 
-/** `32 m`, the transmitted key region. */
-export function recipientKeysLen(layout: Pick<AuditStreamLayout, "outputs">): number {
-  return RECIPIENT_KEY_LEN * layout.outputs;
+/** The voucher's key on the blocks past the last slot's, Rust `AuditStreamLayout::voucher`. */
+export function voucherRegion(
+  layout: Pick<AuditStreamLayout, "key" | "capacity" | "vouched">,
+): AuditStreamRegion {
+  return Object.freeze({
+    startCounter: firstRecipientKeyCounter(layout.key) + layout.capacity * RECIPIENT_KEY_BLOCKS,
+    maxBlocks: RECIPIENT_KEY_BLOCKS,
+    length: layout.vouched ? RECIPIENT_KEY_LEN : 0,
+  });
+}
+
+/** `32 m`, the transmitted key region, then the voucher's key on a vouched frame. */
+export function recipientKeysLen(layout: Pick<AuditStreamLayout, "outputs" | "vouched">): number {
+  return RECIPIENT_KEY_LEN * (layout.outputs + (layout.vouched ? 1 : 0));
 }
 
 /** `0x04 ‖ eph_u ‖ envelope_ct ‖ keys_ct ‖ record_ct of each exit`. */
@@ -150,7 +178,7 @@ export function auditorMessageLen(layout: AuditStreamLayout, exits: number): num
 
 /** The blocks a reader decrypts. */
 export function capacityBlocks(layout: Pick<AuditStreamLayout, "key" | "capacity">): number {
-  return envelopeBlocks(layout.key) + layout.capacity * RECIPIENT_KEY_BLOCKS;
+  return envelopeBlocks(layout.key) + (layout.capacity + 1) * RECIPIENT_KEY_BLOCKS;
 }
 
 function shapeError(name: string): InterfaceError {

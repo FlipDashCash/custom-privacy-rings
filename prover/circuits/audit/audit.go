@@ -21,7 +21,8 @@
 //
 // The auditor reads a transfer in three steps.
 //  1. X25519(auditor_sk, tx_u) and the salt give the stream's key and nonce.
-//  2. The envelope gives tx_viewing_sk, note count R and any entry evidence, the key region each V_i.
+//  2. The envelope gives tx_viewing_sk, note count R and any entry evidence, the key region each V_i,
+//     and the voucher region the key that vouched on a vouched transfer.
 //  3. X25519(tx_viewing_sk, V_i) opens record i, and the record, the frame's tree id and the payload's
 //     data hashes rebuild that slot's published hash. A dummy rebuilds as audit/record.go states.
 //
@@ -37,6 +38,8 @@
 //     as a dummy.
 //  7. Every transmitted ciphertext byte is bound, the envelope and keys through their counted digests and
 //     each record's published prefix through the record chain, the full record on an exit.
+//  8. The stream seals Voucher while Vouched is set and zeros otherwise. The caller binds Vouched to the
+//     layout's bit 0 and Voucher to the key policy/voucher.go verified, no constraint here holds either.
 //
 // It proves nothing about the key a sender supplies for a recipient, as SPP proved nothing about a
 // body. A record sealed to another key credits nobody, since a reader accepts a note only when the
@@ -73,6 +76,9 @@ type AuditWires struct {
 	AuditorPk     [32]frontend.Variable
 	Salt          [16]frontend.Variable
 	Layout        frontend.Variable
+	// Vouched is the layout's vouched flag, Voucher the signer's verified key.
+	Vouched frontend.Variable
+	Voucher [32]frontend.Variable
 }
 
 type Envelope struct {
@@ -191,22 +197,25 @@ func (w AuditWires) SealStream(api frontend.API, rc frontend.Rangechecker, e Env
 	for _, key := range opened.keys {
 		plaintext = append(plaintext, key[:]...)
 	}
+	// 3. The voucher's key takes the blocks past the last slot, zeros off a vouched transfer. The caller passes the wires its signature check read, the auditor then opens the key that signed and no other.
+	plaintext = append(plaintext, masked(api, w.Vouched, w.Voucher[:])...)
 	// A plaintext off its ranges moves every key off the counters the readers use.
 	if len(plaintext) != ranges.CapacityBlocks()*streamBlockLen {
 		panic("audit: the stream plaintext differs from its ranges")
 	}
-	// 3. One key expansion and nonce cover every block, the cipher's tables bound every plaintext and ciphertext byte.
+	// 4. One key expansion and nonce cover every block, the cipher's tables bound every plaintext and ciphertext byte.
 	// tx_viewing_sk is the ephemeral key and txPk its public key, a resend under one first nullifier repeats
 	// both, and the salt in the schedule keeps its keystream apart.
 	sealed := shared.Envelope{Plaintext: plaintext, EphSk: w.TxViewingSk, AuditorPk: w.AuditorPk, Info: shared.AuditEncInfo}.SealSalted(api, e.txPk[:], e.salt)
-	// 4. Padding and unpublished slots never leave the prover, the program digests the envelope over n and the keys over m.
+	// 5. Padding and unpublished slots never leave the prover, the program digests the envelope over n, the keys over m and the voucher region of a vouched frame. A frame that is not vouched publishes no voucher bytes and digests zero in their place.
 	head := EnvelopeKeyLen + len(evidence.head)
-	keys := sealed.Ciphertext[ranges.KeyOffset(0):]
+	keys, voucher := sealed.Ciphertext[ranges.KeyOffset(0):ranges.VoucherOffset()], sealed.Ciphertext[ranges.VoucherOffset():]
 	return Stream{
 		sealed: sealed,
 		digest: gadget.PoseidonHash(api, []frontend.Variable{
 			countedDigest(api, sealed.Ciphertext, head, ranges.entryLen(), spent.Count),
 			countedDigest(api, keys, 0, KeyLen, opened.Count),
+			api.Mul(w.Vouched, gadget.HashBoundedBytes(api, voucher)),
 		}),
 		NoSpend: api.IsZero(evidence.realInputs),
 	}

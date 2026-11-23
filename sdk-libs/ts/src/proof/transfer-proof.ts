@@ -4,7 +4,7 @@ import { NO_CACHE_WRITES, type Bytes32, type CacheAccess } from "@heliuslabs/spr
 import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
 import type { ProofInputUtxo, SppProofInputs } from "@heliuslabs/spr/transaction";
 
-import type { TransferProofRequest } from "../rpc/prover/ring.js";
+import type { TransferProofRequest, VoucherProofInput } from "../rpc/prover/ring.js";
 import type { RingOutputRail } from "../operations/payments/output-rail.js";
 import {
   fittedSpend,
@@ -134,6 +134,7 @@ export function transferProofRequest(
     proofInputs: SppProofInputs;
     /** `V_i` of each published slot. */
     recipientKeys: readonly X25519PublicKey[];
+    voucher: VoucherProofInput;
     auditor: X25519PublicKey;
     policy: PolicyInputs;
     proving: PolicyProving;
@@ -177,6 +178,7 @@ export function transferProofRequest(
       recipientKeys: input.recipientKeys,
       auditor: input.auditor,
     }),
+    voucher: input.voucher,
     inputCount: inputs.length,
     // `private_tx_hash` alone checks it, no address enters a ring input slot.
     addressChain: privateTxAddressChain(sppPrivateTxHashInput(proofInputs)),

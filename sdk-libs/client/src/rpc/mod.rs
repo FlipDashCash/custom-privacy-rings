@@ -1,9 +1,6 @@
-//! The ring rpc wire, its signed attestations and the auditor key files.
+//! Ring RPC messages and their signed attestations.
 
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashMap, path::Path};
 
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -17,10 +14,7 @@ use spr_indexer_api::{
 use spr_interface::{state::RingConfig, RING_AUTH_PDA_SEED, SHIELDED_POOL_PROGRAM_ID};
 use spr_keypair::{KeypairError, X25519Keypair, X25519Pubkey};
 use thiserror::Error;
-use zeroize::Zeroizing;
-use zolana_secret_file::{
-    create_new, read_key32, Access, KeyPairFiles, SecretFileError, Visibility,
-};
+use zolana_secret_file::{create_new, SecretFileError, Visibility};
 
 mod authority_transfer;
 mod co_sign;
@@ -426,6 +420,9 @@ pub struct DecryptedTransaction {
     pub signers: Vec<SerializablePubkey>,
     /// Public settlement legs, where value left the ring.
     pub withdrawals: Vec<DecryptedWithdrawal>,
+    /// Ed25519, the transfer proof verified its vouch signature.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vouched_by: Option<SerializablePubkey>,
 }
 
 /// The public legs and nullifiers come from the confirmed transaction.
@@ -684,8 +681,6 @@ pub enum KeyFileError {
     File(#[from] SecretFileError),
     #[error("public key file is not 66 hex characters")]
     PubkeyEncoding,
-    #[error("key path must name a file")]
-    InvalidPath,
     #[error("auditor key cannot be zero")]
     ZeroAuditorKey,
     #[error("auditor public key is invalid because {0}")]
@@ -730,6 +725,7 @@ impl From<ConfirmedAudit> for DecryptedTransaction {
                 })
                 .collect(),
             real_inputs: audited.real_inputs,
+            vouched_by: audited.voucher.map(Into::into),
             default_inputs: audited.entries.into_iter().map(Into::into).collect(),
             nullifiers: nullifiers.into_iter().map(Into::into).collect(),
             spenders: spenders
@@ -1229,34 +1225,12 @@ pub fn unix_now() -> Result<u64, RequestBuildError> {
         .map_err(|_| RequestBuildError::Clock)
 }
 
-/// Lowercase hex, with the public key beside it in `<file>.pub`.
-pub fn read_auditor_key(path: &Path, access: Access) -> Result<X25519Keypair, KeyFileError> {
-    let secret = read_key32(path, access)?;
-    auditor_keypair(&secret)
-}
-
 /// Clamping keeps every scalar off the identity, the unset all-zero secret is the only refusal.
 pub fn auditor_keypair(secret: &[u8; 32]) -> Result<X25519Keypair, KeyFileError> {
     if secret.iter().all(|byte| *byte == 0) {
         return Err(KeyFileError::ZeroAuditorKey);
     }
     Ok(X25519Keypair::from_bytes(secret))
-}
-
-/// Neither new file remains when either cannot be written.
-pub fn write_auditor_key(out: &Path) -> Result<X25519Keypair, KeyFileError> {
-    let public_path = public_key_path(out)?;
-    let key = X25519Keypair::new();
-    let secret = Zeroizing::new(hex::encode(*key.secret_bytes()));
-    let public = hex::encode(key.pubkey().as_bytes());
-    KeyPairFiles {
-        secret_path: out,
-        secret: secret.as_bytes(),
-        public_path: &public_path,
-        public: public.as_bytes(),
-    }
-    .create()?;
-    Ok(key)
 }
 
 pub fn write_auditor_pubkey(path: &Path, pubkey: &X25519Pubkey) -> Result<(), KeyFileError> {
@@ -1274,15 +1248,6 @@ pub fn read_auditor_pubkey(path: &Path) -> Result<X25519Pubkey, KeyFileError> {
         .and_then(|bytes| <[u8; 33]>::try_from(bytes).ok())
         .ok_or(KeyFileError::PubkeyEncoding)?;
     Ok(X25519Pubkey::from_bytes(bytes)?)
-}
-
-pub fn public_key_path(secret: &Path) -> Result<PathBuf, KeyFileError> {
-    let mut name = secret
-        .file_name()
-        .ok_or(KeyFileError::InvalidPath)?
-        .to_os_string();
-    name.push(".pub");
-    Ok(secret.with_file_name(name))
 }
 
 fn base64(bytes: &[u8]) -> String {

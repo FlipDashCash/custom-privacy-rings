@@ -4,23 +4,25 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::json;
 use solana_address::Address;
 use solana_signature::Signature;
-use solana_signer::Signer;
+use solana_signer::{Signer, SignerError};
 use spr_indexer_api::{Base64String, Hash};
 use spr_keypair::X25519Pubkey;
+use zolana_operator_custody::{CollectedSignature, OperatorSigner};
 use zolana_ring_client::{
     auditor_view_tag,
     rpc::{
-        unix_now, AuditorKeyStatement, CreateAuditorKeyRequest, CreateAuditorKeyResponse,
-        CreateRecordsRegistryRequest, CreateRecordsRegistryResponse, DecryptedTransaction,
-        DecryptedTransactionsPage, GetDecryptedTransactionsRequest,
-        GetDecryptedTransactionsResponse, GetListSaltResponse, GetPendingListApprovalsRequest,
-        GetPendingListApprovalsResponse, GetRecordUpdateStatusRequest, HealthResponse,
-        ListApprovalScope, ListSaltAttestation, ListSaltRequest, PendingListApproval, ReadTarget,
-        RecordUpdateStatus, RingState, RingStatusRequest, RingStatusResponse,
-        SubmitEnrollmentRequest, SubmitEnrollmentResponse, SubmitRecordUpdateRequest,
-        SubmitRecordUpdateResponse, CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY,
-        GET_DECRYPTED_TRANSACTIONS, GET_LIST_SALT, GET_PENDING_LIST_APPROVALS,
-        GET_RECORD_UPDATE_STATUS, HEALTH, RING_STATUS, SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE,
+        unix_now, AuditorKeyStatement, CoSignTransactionRequest, CoSignTransactionResponse,
+        CreateAuditorKeyRequest, CreateAuditorKeyResponse, CreateRecordsRegistryRequest,
+        CreateRecordsRegistryResponse, DecryptedTransaction, DecryptedTransactionsPage,
+        GetDecryptedTransactionsRequest, GetDecryptedTransactionsResponse, GetListSaltResponse,
+        GetPendingListApprovalsRequest, GetPendingListApprovalsResponse,
+        GetRecordUpdateStatusRequest, HealthResponse, ListApprovalScope, ListSaltAttestation,
+        ListSaltRequest, PendingListApproval, ReadTarget, RecordUpdateStatus, RingState,
+        RingStatusRequest, RingStatusResponse, SubmitEnrollmentRequest, SubmitEnrollmentResponse,
+        SubmitRecordUpdateRequest, SubmitRecordUpdateResponse, CO_SIGN_TRANSACTION,
+        CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY, GET_DECRYPTED_TRANSACTIONS, GET_LIST_SALT,
+        GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS, HEALTH, RING_STATUS,
+        SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE,
     },
 };
 
@@ -41,9 +43,43 @@ pub struct AttestedAuditorKey {
     pub service_pubkey: Address,
 }
 
+#[derive(Clone)]
 pub struct RingRpcClient {
     url: String,
     http: reqwest::blocking::Client,
+}
+
+pub(crate) struct RequestSigner<'a> {
+    context: &'a Context,
+    operator: &'a dyn OperatorSigner,
+}
+
+impl Context {
+    pub(crate) fn request_signer<'a>(
+        &'a self,
+        operator: &'a dyn OperatorSigner,
+    ) -> RequestSigner<'a> {
+        RequestSigner {
+            context: self,
+            operator,
+        }
+    }
+}
+
+impl Signer for RequestSigner<'_> {
+    fn try_pubkey(&self) -> Result<Address, SignerError> {
+        Ok(self.operator.address())
+    }
+
+    fn try_sign_message(&self, message: &[u8]) -> Result<Signature, SignerError> {
+        self.context
+            .block(async { anyhow::Ok(self.operator.sign(message).await?) })
+            .map_err(|error| SignerError::Custom(format!("{error:#}")))
+    }
+
+    fn is_interactive(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Deserialize)]
@@ -73,11 +109,11 @@ impl AttestedAuditorKey {
         match trust {
             Trust::Pinned(pinned) => ensure!(
                 pinned == actual,
-                "the ring rpc signs with {actual} but ring.toml pins {pinned}"
+                "the ring RPC signs with {actual}, expected {pinned}"
             ),
             Trust::Unpinned => {}
             Trust::Refuse => bail!(
-                "ring.toml pins no ring rpc service key, the rpc signs with {actual}. Put it in ring_rpc_pubkey after confirming it out of band, or pass --trust-ring-rpc for a local instance"
+                "no service key is pinned for the ring RPC signing with {actual}. Verify the key and set ring_rpc_pubkey or pass --trust-ring-rpc for a local instance"
             ),
         }
         Ok(self.auditor_pk)
@@ -208,6 +244,23 @@ impl RingRpcClient {
         .sign(writer)?;
         let response: GetListSaltResponse = self.call(GET_LIST_SALT, request)?;
         Ok(response.list_salt.map(|salt| salt.0))
+    }
+
+    /// The caller compares the answering signer with the ring's co-signer.
+    pub fn co_sign_transaction(
+        &self,
+        ring: Address,
+        message: Vec<u8>,
+    ) -> Result<CollectedSignature> {
+        let request = CoSignTransactionRequest {
+            ring: ring.into(),
+            message: message.into(),
+        };
+        let answer: CoSignTransactionResponse = self.call(CO_SIGN_TRANSACTION, request)?;
+        Ok(CollectedSignature {
+            signer: answer.signer.0,
+            signature: answer.signature.0,
+        })
     }
 
     /// Held by the ring's enrollment writer on return, its next batch lands it.
@@ -463,7 +516,7 @@ mod tests {
         assert!(mismatch
             .expect_err("other")
             .to_string()
-            .contains("but ring.toml pins"));
+            .contains("expected"));
         let refused = required(Trust::Refuse).expect_err("refused").to_string();
         assert!(refused.contains("--trust-ring-rpc"), "{refused}");
     }
@@ -490,6 +543,7 @@ mod tests {
             spenders: Vec::new(),
             signers: Vec::new(),
             withdrawals: Vec::new(),
+            vouched_by: None,
         }
     }
 

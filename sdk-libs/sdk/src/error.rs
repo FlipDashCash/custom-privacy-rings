@@ -250,10 +250,18 @@ pub enum RingError {
     AnonymousSignerMismatch,
     #[error("the in-proof owner does not match the sender")]
     InProofOwnerMismatch,
+    #[error("the voucher's signature does not verify over the transfer's vouch digest")]
+    VoucherSignatureMismatch,
+    #[error("a relayed transfer takes no voucher")]
+    VouchedRelay,
+    #[error("a transfer no rule table screens takes no voucher")]
+    VoucherUnscreened,
     #[error("input {index} is a default-ring note the in-proof owner rail cannot spend")]
     InProofDefaultRingInput { index: usize },
     #[error("the confidential relay carries no owner signature")]
     MissingInProofOwnerSignature,
+    #[error("core authorized no in-proof owner for the payment")]
+    OwnerUnauthorized,
     #[error("public transaction signers must differ from the hidden owner")]
     AnonymousPublicSignerLinksOwner,
     #[error("withdrawal destination {0} names the hidden owner")]
@@ -320,6 +328,11 @@ pub enum RingError {
         signature: Signature,
         error: solana_transaction_error::TransactionError,
     },
+    #[error("{signature} is unresolved after {error}")]
+    Unsettled {
+        signature: Signature,
+        error: Box<RingError>,
+    },
     #[error("{owner} is enrolled under another nullifier key, the first key is final")]
     AlreadyEnrolled { owner: Address },
     #[error(
@@ -339,6 +352,8 @@ pub enum RingError {
     RelayFailed { reason: String },
     #[error("the submission sends only an attempt its charged outflows were read from")]
     SubmissionUnproved,
+    #[error("the signers returned signatures the submission's message does not verify")]
+    SubmissionSignatures,
     #[error("{owner} holds no tracking leaf, enroll before a rotation")]
     RotationUnenrolled { owner: Address },
     #[error("the viewing history's current key differs from the key holder's")]

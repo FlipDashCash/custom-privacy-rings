@@ -49,8 +49,11 @@ The stream has one key, one nonce and one `CTREncrypt` call in the circuit over 
 |---|---|---|---|
 | Envelope | `2` | `E` | `33`, or `41 + 136 n` on an entry key |
 | Recipient key of slot `i` | `K0 + 2 i`, `K0 = 2 + E` | `2` | `32` for `i < m` |
+| Voucher key | `K0 + 2 N` | `2` | `32` on a vouched frame |
 
-`E = ceil(33 / 16) = 3` on a key without entry capacity, and `E = ceil((41 + 136 C) / 16)` on an entry key of input class `C`. The statement binds `envelope_digest = Poseidon(digest(envelope_ct), digest(keys_ct))`.
+`E = ceil(33 / 16) = 3` on a key without entry capacity, and `E = ceil((41 + 136 C) / 16)` on an entry key of input class `C`. `N` is the key's output capacity, so the voucher region moves no recipient key's counter.
+
+The voucher region holds the Ed25519 key that vouched for the transfer, and zeros on a transfer nobody vouches for. A vouched frame transmits its 32 bytes after the `m` recipient keys. The statement binds `envelope_digest = Poseidon(digest(envelope_ct), digest(keys_ct), hash_bytes(voucher_ct))`, with zero in the last place on a frame that is not vouched.
 
 ## Envelope plaintext
 
@@ -141,7 +144,7 @@ Key `k` is slot `k`'s `V_k`, the sender's own viewing `u` on change, and zero on
 
 ## Opening a transfer
 
-1. The auditor computes `X25519(auditor_sk, tx_viewing_u)`, the salted [stream secret](envelope.md#shared-secret) and the stream. It recovers `tx_viewing_sk`, `R` and any entry records from the envelope, and `V_i` from each key region.
+1. The auditor computes `X25519(auditor_sk, tx_viewing_u)`, the salted [stream secret](envelope.md#shared-secret) and the stream. It recovers `tx_viewing_sk`, `R` and any entry records from the envelope, `V_i` from each key region, and on a vouched frame the voucher's key from the voucher region.
 2. It derives `CRDS_i` from `tx_viewing_sk` and `V_i`, and decrypts slot `i`'s record from the slot's body. An exit's record comes from the auditor message.
 3. It rebuilds slot `i`'s commitment from the record, the payload's data hashes when present and the frame's tree id. The ring id enters on kind `1`, and zero on kind `2`. It accepts the slot only when that commitment equals the published hash at `i`. A kind `0` slot rebuilds as SPP's dummy hash under `TXOB(n0, TXOS(n0, CRBS(tx_viewing_sk, salt)), i)`. A record moved to another slot rebuilds nothing.
 4. It links the nullifier of each spent note, see [spent notes](#spent-notes).
@@ -150,9 +153,10 @@ Key `k` is slot `k`'s `V_k`, the sender's own viewing `u` on change, and zero on
 
 | Bit value | Name | Set when |
 |---|---|---|
+| 1 | `vouched` | the frame publishes the voucher region |
 | 2 | `entry` | the frame selects a key with entry capacity |
 
-The layout value is `entry << 1`. The circuit decomposes it, binds `entry` to the key and refuses every other bit. The frame's `HAS_DATA` flag sets no layout bit, and a data hash needs none.
+The layout value is `vouched | entry << 1`. The circuit decomposes it, binds `entry` to the key and refuses every bit past the two. `vouched` switches the voucher's record read and its region in the stream. The frame's `HAS_DATA` flag sets no layout bit, and a data hash needs none.
 
 ## Merges
 

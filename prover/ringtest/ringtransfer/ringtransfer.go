@@ -2,6 +2,7 @@
 package ringtransfer
 
 import (
+	"crypto/ed25519"
 	"math/big"
 	"slices"
 	"testing"
@@ -54,6 +55,10 @@ type World struct {
 	AllDummies bool
 	// CoOwners spend one more input each, public signers beside the rail's owner.
 	CoOwners []*big.Int
+	// Voucher vouches for the transfer, nil leaves it unvouched.
+	Voucher ed25519.PrivateKey
+	// Unlisted leaves every sender and owner off the allow list, a voucher alone admits them.
+	Unlisted bool
 	// PublicFunded spends no input.
 	PublicFunded  bool
 	FrozenCoOwner bool
@@ -118,6 +123,13 @@ func (w World) table() policy.Table {
 		lists, salted = append(lists, ringregistry.PrivateBlockBit), ringregistry.PrivateBlockBit
 	}
 	return ringpolicy.Table{Lists: lists, Rules: rules, Salted: salted}.Wires()
+}
+
+func (w World) ownerLists() uint64 {
+	if w.Unlisted {
+		return 0
+	}
+	return ringregistry.AllowBit
 }
 
 // Assembled is what both families' Build share.
@@ -187,6 +199,7 @@ func (w World) newAudit(t testing.TB, shape audit.StreamShape) ringaudit.Audit {
 		exits = []int{shape.Outputs - 2}
 	}
 	a := ringaudit.NewAudit(t, shape, exits...)
+	a.Voucher = w.Voucher
 	if w.AllDummies {
 		a = a.AllDummies(t)
 	}
@@ -274,13 +287,16 @@ func (w World) registries(t testing.TB, a ringaudit.Audit, senders []frontend.Va
 		bits := new(big.Int).SetUint64(lists)
 		own.Apply(t, ringregistry.Entry{Member: ringregistry.PublicKey(t, identity), Mask: bits, Value: bits, MintPolicy: zero, WithdrawalThreshold: zero})
 	}
+	if a.Vouched() {
+		member(a.VoucherIdentity(t), ringregistry.AllowBit)
+	}
 	sender := Sender(t)
 	for _, cell := range senders {
 		identity := ringtest.AsBigInt(cell)
 		if identity.Sign() == 0 {
 			continue
 		}
-		lists := uint64(ringregistry.AllowBit)
+		lists := w.ownerLists()
 		frozen := w.Policy.Frozen && identity.Cmp(sender) == 0
 		frozen = frozen || (w.FrozenCoOwner && len(w.CoOwners) > 0 && identity.Cmp(w.CoOwners[0]) == 0)
 		if frozen {
@@ -290,11 +306,11 @@ func (w World) registries(t testing.TB, a ringaudit.Audit, senders []frontend.Va
 	}
 	for _, utxo := range a.Utxos() {
 		if utxo.IsUtxo() {
-			member(utxo.OwnerPkHash, ringregistry.AllowBit)
+			member(utxo.OwnerPkHash, w.ownerLists())
 		}
 	}
 	for _, leg := range w.Withdrawals {
-		member(leg.Owner, ringregistry.AllowBit)
+		member(leg.Owner, w.ownerLists())
 	}
 	p := w.Policy
 	// Bit 192 writes the mint policy, cap at 2^64 and the co-sign bound below it.
@@ -361,7 +377,7 @@ func (w World) reopen(t testing.TB, c *transfer.Sections, a Assembled) {
 	for _, leg := range c.Withdrawals {
 		payments = append(payments, leg.Owner)
 	}
-	ringpolicy.FillTracking(t, &c.Tracking, a.Tracking, c.Rows, outputOwners, &c.Policy, payments)
+	ringpolicy.FillTracking(t, &c.Tracking, a.Tracking, c.Rows, outputOwners, &c.Policy, payments, a.Audit.VoucherIdentity(t))
 }
 
 func (w World) fillPolicy(t testing.TB, p *policy.Policy, a Assembled, delegate bool, senders []frontend.Variable, utxos []ringaudit.Utxo, inputs []shared.UtxoWires) {
@@ -398,7 +414,7 @@ func (w World) fillPolicy(t testing.TB, p *policy.Policy, a Assembled, delegate 
 	for o, utxo := range utxos {
 		wires[o] = utxo.Wires()
 	}
-	ringpolicy.FillPools(t, p, wires, inputs, senders, a.Own, a.Curator, a.Tracking)
+	ringpolicy.FillPools(t, p, wires, inputs, senders, a.Audit.VoucherIdentity(t), a.Own, a.Curator, a.Tracking)
 }
 
 // withdrawalHash mirrors policy openWithdrawals over the live legs.

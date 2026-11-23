@@ -30,7 +30,7 @@ func Enroll(t testing.TB, tree *ringregistry.Tracking, owner, nullifierPk *big.I
 }
 
 // FillTracking opens each live member once and fills the pool cyclically.
-func FillTracking(t testing.TB, target *policy.Tracking, tree *ringregistry.Tracking, rows, outputs []frontend.Variable, p *policy.Policy, payments []frontend.Variable) {
+func FillTracking(t testing.TB, target *policy.Tracking, tree *ringregistry.Tracking, rows, outputs []frontend.Variable, p *policy.Policy, payments []frontend.Variable, voucher frontend.Variable) {
 	t.Helper()
 	var (
 		records     []circuitregistry.TrackingRecord
@@ -77,6 +77,10 @@ func FillTracking(t testing.TB, target *policy.Tracking, tree *ringregistry.Trac
 			if ringtest.AsBigInt(p.Salted).Sign() != 0 {
 				p.OwnerEntries[o].Tracking = entry(payments[o])
 			}
+		}
+		p.VoucherEntry.Tracking = 0
+		if ringtest.AsBigInt(p.Salted).Sign() != 0 {
+			p.VoucherEntry.Tracking = entry(voucher)
 		}
 	}
 	// The sentinel fills a pool nothing live opened.

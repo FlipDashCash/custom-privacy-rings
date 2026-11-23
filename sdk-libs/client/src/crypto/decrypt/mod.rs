@@ -119,6 +119,7 @@ impl<'a> TransactionAudit<'a> {
             return Err(AuditError::TxViewingKeyMismatch);
         }
         let keys = opened.recipient_keys(message.recipient_keys)?;
+        let voucher = opened.voucher(message.recipient_keys)?;
         let transfer = Transfer::new(ring, first_nullifier, tx_key, &salt)?;
         let mut audited = AuditedTransaction {
             tx_signature: tx.tx_signature,
@@ -129,6 +130,7 @@ impl<'a> TransactionAudit<'a> {
             payload_errors: Vec::new(),
             nullifiers: tx.nullifiers.clone(),
             entries: entry_inputs(&opened.evidence)?,
+            voucher,
         };
         let mut exit = 0;
         for ((index, output), recipient) in (0u32..).zip(&tx.output_slots).zip(&keys) {

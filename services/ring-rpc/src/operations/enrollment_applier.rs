@@ -19,16 +19,16 @@ use custom_ring_interface::{
     compute_unit_limit,
     storage_instruction::{EnrollmentChange, ENROLLMENT_BATCH},
     tracking::{TrackingEntry, TrackingRegistry, TRACKING_ROOT_HISTORY},
-    InstructionTag, RegisterKeyCheck, RingAccount, RingPolicy,
+    InstructionTag, RegisterKeyCheck,
 };
 use custom_ring_sdk::{CustomRing, EnrollBatch, ProvenEnrollBatch};
 use log::warn;
 use solana_address::Address;
-use solana_keypair::Keypair;
-use solana_signer::Signer;
-use spr_client::{compile_message, sign_transaction, ComputeBudgetConfig};
+use solana_transaction::versioned::VersionedTransaction;
+use spr_client::{compile_message, ComputeBudgetConfig};
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
+use zolana_operator_custody::{signed_transaction, OperatorSigner, SigningIdentity};
 use zolana_ring_client::rpc::{SubmitEnrollmentRequest, SubmitEnrollmentResponse};
 
 use crate::{
@@ -38,7 +38,7 @@ use crate::{
     error::{redacted, RingRpcError},
     keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
     landing::{signature_fees, Attempt, ChainOutcome, Landing},
-    storage_chain::StorageChain,
+    storage_chain::{ring_policy, StorageChain},
 };
 
 /// Writes one ring holds ahead of its batches, a full ring refuses the next until a batch lands.
@@ -73,7 +73,7 @@ pub enum EnrollmentRefusal {
 pub struct EnrollmentApplier {
     vault_programs: HashSet<Address>,
     chain: Arc<dyn StorageChain>,
-    payer: Keypair,
+    payer: SigningIdentity,
     /// Served without a registration and never dropped.
     named: Vec<Address>,
     registered: Mutex<HashSet<Address>>,
@@ -86,7 +86,7 @@ pub struct EnrollmentApplier {
 #[must_use]
 pub struct EnrollmentApplierParts {
     pub chain: Arc<dyn StorageChain>,
-    pub payer: Keypair,
+    pub payer: SigningIdentity,
     pub rings: Vec<Address>,
     pub budget_lamports: u64,
     pub ring_budget_lamports: u64,
@@ -137,6 +137,11 @@ struct InFlight {
     writes: Vec<HeldWrite>,
 }
 
+struct SignedBatch {
+    transaction: VersionedTransaction,
+    attempt: Attempt,
+}
+
 /// One ring's roles and tracking registry as its policy pins them.
 struct RingTracking {
     policy: Address,
@@ -147,7 +152,7 @@ struct RingTracking {
 
 struct RingPass<'a> {
     chain: &'a dyn StorageChain,
-    payer: &'a Keypair,
+    payer: &'a dyn OperatorSigner,
     budget: &'a EnrollmentBudget,
     ring: CustomRing,
     /// A registered ring ends its pass once its policy names another writer.
@@ -160,7 +165,7 @@ impl EnrollmentApplierParts {
     pub async fn applier(self) -> Result<EnrollmentApplier, RingRpcError> {
         let registered = match &self.store {
             Some(store) => {
-                EnrollmentRingBook::new(store.connection(), self.payer.pubkey())
+                EnrollmentRingBook::new(store.connection(), self.payer.address())
                     .rings()
                     .await?
             }
@@ -234,7 +239,7 @@ impl SpentFees {
 
 impl EnrollmentApplier {
     pub fn payer(&self) -> Address {
-        self.payer.pubkey()
+        self.payer.address()
     }
 
     /// A zero budget or ring budget refuses every write.
@@ -250,7 +255,7 @@ impl EnrollmentApplier {
         if tracking.policy != signer {
             return Err(Unauthorized::NotPolicyAuthority.into());
         }
-        if tracking.writer != self.payer.pubkey() {
+        if tracking.writer != self.payer.address() {
             return Err(EnrollmentRefusal::RingMissing.into());
         }
         if self.named.contains(&ring) {
@@ -292,7 +297,7 @@ impl EnrollmentApplier {
         let tracking = ring_tracking(self.chain.as_ref(), ring)
             .await?
             .ok_or(EnrollmentRefusal::RingMissing)?;
-        if !named && tracking.writer != self.payer.pubkey() {
+        if !named && tracking.writer != self.payer.address() {
             self.unregister(ring).await;
             return Err(EnrollmentRefusal::RingMissing.into());
         }
@@ -375,7 +380,7 @@ impl EnrollmentApplier {
     fn book(&self) -> Option<EnrollmentRingBook<'_>> {
         self.store
             .as_ref()
-            .map(|store| EnrollmentRingBook::new(store.connection(), self.payer.pubkey()))
+            .map(|store| EnrollmentRingBook::new(store.connection(), self.payer.address()))
     }
 
     /// Drops a registered ring and its held writes, a failed delete drops it again after a restart.
@@ -407,7 +412,7 @@ impl EnrollmentApplier {
         };
         let pass = RingPass {
             chain: self.chain.as_ref(),
-            payer: &self.payer,
+            payer: self.payer.as_ref(),
             budget: &self.budget,
             ring: CustomRing::new(ring),
             registered: !self.named.contains(&ring),
@@ -456,7 +461,7 @@ impl RingPass<'_> {
         let Some(tracking) = ring_tracking(self.chain, self.ring.program_id()).await? else {
             return Ok(WriterRole::Held);
         };
-        if self.registered && tracking.writer != self.payer.pubkey() {
+        if self.registered && tracking.writer != self.payer.address() {
             return Ok(WriterRole::Moved);
         }
         // 2. The program refuses a batch that would evict a root inside its grace, waiting spends no proof.
@@ -474,7 +479,7 @@ impl RingPass<'_> {
             .chain
             .prove_enrollments(EnrollBatch {
                 ring: self.ring,
-                writer: self.payer.pubkey(),
+                writer: self.payer.address(),
                 tracking_registry: tracking.registry,
                 writes: &requests,
             })
@@ -500,6 +505,16 @@ impl RingPass<'_> {
         proven: ProvenEnrollBatch,
         writes: Vec<HeldWrite>,
     ) -> Result<(), RingRpcError> {
+        let SignedBatch {
+            transaction,
+            attempt,
+        } = match self.signed_batch(&proven).await {
+            Ok(signed) => signed,
+            Err(error) => {
+                self.restore(writes);
+                return Err(error);
+            }
+        };
         if !self.budget.charge(
             self.ring.program_id(),
             EnrollmentBudget::batch_fee(writes.len()),
@@ -507,23 +522,27 @@ impl RingPass<'_> {
             self.requeue(writes);
             return Err(EnrollmentRefusal::Budget.into());
         }
+        // Held ahead of the send, a failed send can still land and the next pass reads its outcome.
+        self.state.in_flight = Some(InFlight { attempt, writes });
+        self.chain.send(&transaction).await
+    }
+
+    async fn signed_batch(&self, proven: &ProvenEnrollBatch) -> Result<SignedBatch, RingRpcError> {
         let latest = self.chain.latest_blockhash().await?;
         let message = compile_message(
-            &self.payer.pubkey(),
+            &self.payer.address(),
             &proven.instructions,
             latest.blockhash,
             ComputeBudgetConfig::new(compute_unit_limit(InstructionTag::EnrollBatch)),
         )?;
-        let transaction = sign_transaction(message, &[self.payer])?;
-        self.chain.send(&transaction).await?;
-        self.state.in_flight = Some(InFlight {
+        let transaction = signed_transaction(&message, &[self.payer]).await?;
+        Ok(SignedBatch {
             attempt: Attempt {
                 signature: transaction.signatures[0],
                 last_valid_block_height: latest.last_valid_block_height,
             },
-            writes,
-        });
-        Ok(())
+            transaction,
+        })
     }
 
     /// The oldest writes that apply in order from the current leaves, a stale one drops as one refusal fails the batch.
@@ -558,6 +577,13 @@ impl RingPass<'_> {
         Ok(batch)
     }
 
+    /// Back to the front in their order, no attempt is counted for a batch that was never sent.
+    fn restore(&mut self, writes: Vec<HeldWrite>) {
+        for held in writes.into_iter().rev() {
+            self.state.queued.push_front(held);
+        }
+    }
+
     /// Back to the front in their order, a write past its attempts drops so it never holds the ring.
     fn requeue(&mut self, writes: Vec<HeldWrite>) {
         for mut held in writes.into_iter().rev() {
@@ -573,11 +599,7 @@ async fn ring_tracking(
     chain: &dyn StorageChain,
     ring: Address,
 ) -> Result<Option<RingTracking>, RingRpcError> {
-    let Some(policy) = chain
-        .account(CustomRing::new(ring).policy_pda())
-        .await?
-        .and_then(|account| RingPolicy::decode(&account.owner, &ring, &account.data))
-    else {
+    let Some(policy) = ring_policy(chain, ring).await? else {
         return Ok(None);
     };
     let account = chain

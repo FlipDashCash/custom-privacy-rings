@@ -87,6 +87,8 @@ mod relays;
 mod replay;
 #[path = "storage/replay_nonces.rs"]
 mod replay_nonces;
+#[path = "operations/role_pins.rs"]
+mod role_pins;
 #[path = "rpc/server.rs"]
 mod server;
 #[path = "operations/spend_coverage.rs"]
@@ -118,13 +120,12 @@ pub use authorize::{ReadCheck, ReadClaim, Unauthorized, AUTH_SKEW};
 pub use client_identity::{ApiKeyDigest, ApiKeyDigestError, ClientIdentityPolicy};
 pub use client_rate::{BucketRate, ClientLimitArgs, ClientLimits, ClientRates, RateLimit};
 pub use config::{
-    read_root_secret, write_grant_rows_secret, write_keypair, write_root_secret, Cli, Command,
-    GrantRowsSecret, KeyKind, KeygenArgs, ReaderGrantStore, RootSecret, RootSecretError, ServeArgs,
-    ServeKeyError, ServeKeys,
+    Cli, Command, CustodyConfigError, GrantRowsSecret, ReaderGrantStore, RootSecret,
+    RootSecretError, ServeArgs, ServeKeys,
 };
 pub use cosign::{
     ApproveClass, AssetFlow, CoSignDecision, CoSignError, CoSignFlows, CoSignPolicy, CoSignRefusal,
-    CoSignRequest, CoSignSettlement, CoSignerApproval, OwnerFlow, RefusingCoSigner,
+    CoSignRequest, CoSignSettlement, CoSignerApproval, OwnerFlow, RefusingCoSigner, Ticket,
 };
 pub use cosign_limits::{
     AssetLimitSource, FrameRead, LimitedCoSigner, LimitedCoSignerInit, TransferRead, WindowRule,
@@ -161,7 +162,10 @@ pub use relay_prover::{
 pub use relay_reservations::RelayBudget;
 pub use relay_services::{RelayServices, RelayServicesInit};
 pub use relay_submit::CollectedSignature;
-pub use server::{relay_module, rpc_module, run_server, BindPolicy, ServerError, ServerOptions};
+pub use role_pins::{RolePinError, RolePins};
+pub use server::{
+    relay_module, rpc_module, run_server, Announce, BindPolicy, ServerError, ServerOptions,
+};
 pub use storage_chain::{live_ring_client, LiveStorageChain, StorageChain};
 #[cfg(feature = "test-fixtures")]
 pub use tracking::fixture as tracking_fixture;

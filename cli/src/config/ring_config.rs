@@ -11,12 +11,13 @@ use custom_ring_interface::{RingMode, RingRole};
 use custom_ring_sdk::CoSignScope;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use solana_address::{error::ParseAddressError, Address};
-use solana_keypair::Keypair;
 use spr_client::{prover::tee::TeePolicy, AsyncProverClient};
 use spr_transaction::SOL_MINT;
 use toml_edit::{DocumentMut, Item};
 
+pub use crate::operator_manifest::OperatorManifest;
 use crate::{
+    context::expanded,
     file,
     macros::{named_enum, serde_via_str},
     policy::{render, PolicySpec},
@@ -31,25 +32,9 @@ pub struct RingConfig {
     /// `--target` overrides it for one command.
     pub target: Target,
     pub program_id: Base58Address,
-    /// Fallback for both authority keypairs.
-    pub authority_keypair: PathBuf,
+    /// Operator commands read it, a member's ring.toml names none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub upgrade_authority_keypair: Option<PathBuf>,
-    /// The policy role key.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy_authority_keypair: Option<PathBuf>,
-    /// `keys/admin.json` by default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub admin_keypair: Option<PathBuf>,
-    /// `keys/pauser.json` by default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pauser_keypair: Option<PathBuf>,
-    /// `keys/cosign-admin.json` by default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cosign_admin_keypair: Option<PathBuf>,
-    /// `keys/enrollment-writer.json` by default, the key ring rpc's enrollment writer signs batches with.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub enrollment_writer_keypair: Option<PathBuf>,
+    pub operator_manifest: Option<PathBuf>,
     /// Fixed once `init` creates the config.
     #[serde(default, skip_serializing_if = "is_default")]
     pub mode: ModeName,
@@ -179,16 +164,6 @@ impl RoleName {
             Self::EnrollmentWriter => RingRole::EnrollmentWriter,
         }
     }
-
-    pub const fn keypair_field(self) -> &'static str {
-        match self {
-            Self::Admin => "admin_keypair",
-            Self::Policy => "policy_authority_keypair",
-            Self::Pauser => "pauser_keypair",
-            Self::CosignAdmin => "cosign_admin_keypair",
-            Self::EnrollmentWriter => "enrollment_writer_keypair",
-        }
-    }
 }
 
 impl CoSignClass {
@@ -296,7 +271,7 @@ impl Urls {
             None => self
                 .prover_tee_policy
                 .as_deref()
-                .map(|path| read_tee_policy(&expand_tilde(&crate::resolve(root, path))?))
+                .map(|path| read_tee_policy(&expanded(root, path)?))
                 .transpose()?,
         };
         let prover = AsyncProverClient::new(self.prover.clone());
@@ -322,41 +297,33 @@ impl Urls {
 
     /// A loopback, unspecified or `localhost` host.
     pub fn is_local(url: &str) -> bool {
-        let Some(url) = reqwest::Url::parse(url).ok() else {
-            return false;
-        };
-        let host = url.host_str().unwrap_or_default();
-        host == "localhost"
-            || host
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
+        Self::local_address(url).is_some_and(|ip| ip.is_loopback() || ip.is_unspecified())
     }
 
-    /// Only a ring RPC on this machine takes its auditor key from `keys/`.
+    pub fn is_loopback(url: &str) -> bool {
+        Self::local_address(url).is_some_and(|ip| ip.is_loopback())
+    }
+
+    fn local_address(url: &str) -> Option<std::net::IpAddr> {
+        let url = reqwest::Url::parse(url).ok()?;
+        match url.host_str()? {
+            "localhost" => Some(std::net::Ipv4Addr::LOCALHOST.into()),
+            host => host.trim_matches(['[', ']']).parse().ok(),
+        }
+    }
+
     pub fn ring_rpc_is_local(&self) -> bool {
         Self::is_local(&self.ring_rpc)
     }
 }
 
 impl RingConfig {
-    /// The policy role reads `policy_authority_keypair`.
-    pub fn role_keypair_path(&self, root: &Path, role: RingRole) -> Result<PathBuf> {
-        let (configured, default) = match role {
-            RingRole::Policy => return expand_tilde(self.policy_authority_keypair()),
-            RingRole::Admin => (&self.admin_keypair, crate::ADMIN_KEYPAIR_FILE),
-            RingRole::Pauser => (&self.pauser_keypair, crate::PAUSER_KEYPAIR_FILE),
-            RingRole::CosignAdmin => (&self.cosign_admin_keypair, crate::COSIGN_ADMIN_KEYPAIR_FILE),
-            RingRole::EnrollmentWriter => (
-                &self.enrollment_writer_keypair,
-                crate::ENROLLMENT_WRITER_KEYPAIR_FILE,
-            ),
-        };
-        match configured {
-            Some(path) => expand_tilde(path),
-            None => Ok(crate::context::resolve(root, Path::new(default))),
-        }
+    pub fn operator_manifest_path(&self, root: &Path) -> Result<PathBuf> {
+        let path = self
+            .operator_manifest
+            .as_deref()
+            .context("ring.toml names no operator_manifest, an operator command needs one")?;
+        expanded(root, path)
     }
 
     /// `.env` next to ring.toml fills `${NAME}` placeholders, the environment wins.
@@ -407,43 +374,6 @@ impl RingConfig {
             document["target"] = toml_edit::value(target.as_str());
             Ok(())
         })
-    }
-
-    pub fn policy_authority(&self) -> Result<Keypair> {
-        file::read_keypair(&expand_tilde(self.policy_authority_keypair())?)
-    }
-
-    pub fn upgrade_authority(&self) -> Result<Keypair> {
-        file::read_keypair(&expand_tilde(self.upgrade_authority_keypair())?)
-    }
-
-    pub fn policy_authority_keypair(&self) -> &Path {
-        self.policy_authority_keypair
-            .as_deref()
-            .unwrap_or(&self.authority_keypair)
-    }
-
-    pub fn upgrade_authority_keypair(&self) -> &Path {
-        self.upgrade_authority_keypair
-            .as_deref()
-            .unwrap_or(&self.authority_keypair)
-    }
-
-    pub(crate) fn resolve_keypair_paths(&mut self, resolve: impl Fn(&Path) -> PathBuf) {
-        self.authority_keypair = resolve(&self.authority_keypair);
-        for path in [
-            &mut self.policy_authority_keypair,
-            &mut self.upgrade_authority_keypair,
-            &mut self.admin_keypair,
-            &mut self.pauser_keypair,
-            &mut self.cosign_admin_keypair,
-            &mut self.enrollment_writer_keypair,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            *path = resolve(path);
-        }
     }
 }
 
@@ -497,6 +427,11 @@ pub(crate) fn parse_ring_toml<T: DeserializeOwned>(path: &Path) -> Result<T> {
     toml::from_str(&text).with_context(|| format!("cannot parse {}", path.display()))
 }
 
+pub(crate) fn parse_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let text = file::read(path)?;
+    serde_json::from_str(&text).with_context(|| format!("cannot parse {}", path.display()))
+}
+
 /// Never overrides a variable already set.
 fn load_dotenv(path: &Path) -> Result<()> {
     if !path.exists() {
@@ -545,7 +480,7 @@ mod tests {
 name = "demo-ring"
 target = "localnet"
 program_id = "9vyTbYGyh3cwxkAQpjjFQGXmdJP6p9B6YcQ5pNuXPNbh"
-authority_keypair = "~/.config/solana/id.json"
+operator_manifest = "operator.json"
 
 [localnet]
 rpc = "http://127.0.0.1:8899"
@@ -690,22 +625,28 @@ ring_rpc = "http://127.0.0.1:8785"
     }
 
     #[test]
-    fn authority_paths_split_or_share_one_key() {
-        let split = EXAMPLE.replacen(
-            "\n[localnet]",
-            "\npolicy_authority_keypair = \"policy.json\"\nupgrade_authority_keypair = \"upgrade.json\"\n\n[localnet]",
-            1,
-        );
-        let config: RingConfig = toml::from_str(&split).expect("parse split authorities");
-        assert_eq!(config.policy_authority_keypair(), Path::new("policy.json"));
+    fn a_ring_without_an_operator_manifest_parses_and_refuses_operator_commands() {
+        let member = EXAMPLE.replacen("operator_manifest = \"operator.json\"\n", "", 1);
+        let config: RingConfig = toml::from_str(&member).expect("parse");
+        assert_eq!(config.operator_manifest, None);
+        assert!(!config
+            .render()
+            .expect("render")
+            .contains("operator_manifest"));
+        let refused = config
+            .operator_manifest_path(Path::new("ring"))
+            .expect_err("no manifest");
         assert_eq!(
-            config.upgrade_authority_keypair(),
-            Path::new("upgrade.json")
+            refused.to_string(),
+            "ring.toml names no operator_manifest, an operator command needs one"
         );
-
-        let shared: RingConfig = toml::from_str(EXAMPLE).expect("parse one authority");
-        assert_eq!(shared.policy_authority_keypair(), shared.authority_keypair);
-        assert_eq!(shared.upgrade_authority_keypair(), shared.authority_keypair);
+        let operator: RingConfig = toml::from_str(EXAMPLE).expect("parse");
+        assert_eq!(
+            operator
+                .operator_manifest_path(Path::new("ring"))
+                .expect("named"),
+            Path::new("ring/operator.json")
+        );
     }
 
     #[test]

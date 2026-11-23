@@ -618,7 +618,7 @@ mod tests {
         let relay = RelayParts {
             store: Store::open("sqlite::memory:", 1).await.expect("store"),
             prover: prover.clone(),
-            fee_payer: fee_payer(),
+            fee_payer: Arc::new(fee_payer()),
             chain: Arc::new(ScriptedChain::default()),
         };
         (Fixture::serving(Some(delegate), Some(relay)).await, prover)
@@ -844,7 +844,7 @@ mod tests {
         let relay = RelayParts {
             store: store.clone(),
             prover: prover.clone(),
-            fee_payer: fee_payer(),
+            fee_payer: Arc::new(fee_payer()),
             chain: chain.clone(),
         };
         let fixture = Fixture::serving(Some(delegate.pubkey()), Some(relay)).await;

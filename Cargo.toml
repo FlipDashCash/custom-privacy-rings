@@ -12,6 +12,7 @@ members = [
     "sdk-libs/client",
     "sdk-libs/indexer",
     "sdk-libs/keys",
+    "sdk-libs/operator-custody",
     "sdk-libs/sdk",
     "sdk-libs/secret-file",
     "sdk-libs/transaction",
@@ -35,6 +36,7 @@ tools-version = "v1.54"
 custom-ring-interface = { path = "program-libs/interface", version = "0.1.0" }
 zolana-ring-policy = { path = "program-libs/policy", version = "0.1.0" }
 zolana-ring-member-registry = { path = "program-libs/member-registry", version = "0.1.0" }
+zolana-operator-custody = { path = "sdk-libs/operator-custody" }
 zolana-secret-file = { path = "sdk-libs/secret-file", version = "0.1.0" }
 zolana-cli-common = { path = "cli/common" }
 zolana-ring-indexer = { path = "sdk-libs/indexer", version = "0.1.0" }
@@ -214,6 +216,7 @@ serde_json = "1.0"
 serde_bytes = "0.11.19"
 serde_norway = "0.9.42"
 serde_path_to_error = "0.1"
+serde_with = "3"
 serial_test = "3.2.0"
 sha2 = "0.10"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "sqlite", "rust_decimal"] }
@@ -259,8 +262,10 @@ ctr = { version = "0.9", default-features = false }
 hkdf = "0.12"
 percent-encoding = "2.3"
 zeroize = "1"
+subtle = "2.6"
 # HSM custody backends exercised by the keypair test suite.
-aws-sdk-kms = "1"
+aws-config = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-smithy-mocks = "0.3"
 criterion = "0.5"
 proptest = "1"
