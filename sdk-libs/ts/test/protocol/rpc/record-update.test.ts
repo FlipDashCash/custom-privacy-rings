@@ -56,6 +56,16 @@ describe("submitRecordUpdate", () => {
       .sign(wallet);
     expect(decoder.decode(recordUpdateMessage(signed, signed.signer))).toBe(vector.message);
     expect(JSON.stringify(encodeSubmitRecordUpdateRequest(signed))).toBe(vector.wire);
+    // The unsigned hint keeps the update id.
+    const hinted = { ...signed, unregisteredOwners: [filled(9)] };
+    expect(encodeSubmitRecordUpdateRequest(hinted)).toEqual({
+      ...encodeSubmitRecordUpdateRequest(signed),
+      unregisteredOwners: [filled(9)],
+    });
+    expect(verifyRecordUpdate(hinted)).toEqual(verifyRecordUpdate(signed));
+    expect(() =>
+      encodeSubmitRecordUpdateRequest({ ...signed, unregisteredOwners: ["0" as Address] }),
+    ).toThrow();
     expect(verifyRecordUpdate(signed)).toEqual(
       indexerScalars.hashBytes(vector.updateId as Parameters<typeof indexerScalars.hashBytes>[0]),
     );

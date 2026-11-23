@@ -27,7 +27,7 @@ pub struct GetListSaltResponse {
     /// Absent while the owner has no tracking row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list_salt: Option<Hash>,
-    /// Set while the owner has no tracking row, a proof reads it only under a policy committing its tag.
+    /// Set while the owner has no tracking row, refused on a ring committing no tag of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ring_salt: Option<Hash>,
 }

@@ -84,6 +84,8 @@ export const RingRpcRefusal = Object.freeze({
   invalidLimits: -32276,
   limitsWithoutRecord: -32277,
   addressNotAuthorized: -32278,
+  ringSaltNotCommitted: -32279,
+  unregisteredOwnerUnmatched: -32280,
   unrecordedAsset: -32296,
 } as const);
 

@@ -2191,7 +2191,7 @@ export class RingRpc {
     );
   }
 
-  /** The owner's salt, or with no tracking row the ring salt, `undefined` only from a service serving neither. */
+  /** The owner's salt, or with no tracking row the ring salt the policy commits. */
   async getListSalt(
     request: GetListSaltRequest,
     context?: RequestContext,
