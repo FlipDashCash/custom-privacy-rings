@@ -1,9 +1,9 @@
 //! Unregistered runtime account reader for the Custom Jupiter V1 output roles.
 //!
-//! The processor must first authenticate the current instruction, exact original
-//! and immutable guard. This module can only read the canonical output accounts
-//! in that scope. It does not measure venue attribution, approve a deposit, or
-//! verify a proof. Only a host integration test imports it at this revision.
+//! Only the host integration test and no-entrypoint target review import
+//! this file. It can read and compare canonical output account balances; it
+//! cannot establish an authorized original or guard, attribute venue output,
+//! approve a deposit, or verify a proof.
 
 #![forbid(unsafe_code)]
 
@@ -41,9 +41,8 @@ pub(super) struct OutputBalances {
 }
 
 impl<'a> LegacySplOutputViews<'a> {
-    /// Consume the current runtime views for the V1 output roles, not data
-    /// supplied by a quote or a claimed balance. The caller must authenticate
-    /// these as the corresponding roles of the independently approved original.
+    /// Validate the actual V1 account handles, not balances supplied by a
+    /// quote. These checks are not approval of the original or guard.
     pub(super) fn load(
         depositor: &'a AccountView,
         output_mint: &'a AccountView,
@@ -126,6 +125,52 @@ impl<'a> LegacySplOutputViews<'a> {
             staging_atomic: read_amount(self.staging, self.mint, self.depositor, true)?,
             vault_atomic: read_amount(self.vault, self.mint, &VAULT_AUTHORITY, false)?,
         })
+    }
+}
+
+/// Review-only comparison of two reads of the same validated accounts. No
+/// account-data borrow survives either read. The expected value is numeric
+/// conservation, not an amount attributed to Jupiter or a settlement receipt.
+pub(super) struct LegacySplOutputReview<'a> {
+    views: LegacySplOutputViews<'a>,
+    expected_vault_after: u64,
+}
+
+impl<'a> LegacySplOutputReview<'a> {
+    pub(super) fn observe(
+        depositor: &'a AccountView,
+        output_mint: &'a AccountView,
+        staging: &'a AccountView,
+        vault: &'a AccountView,
+        token_program: &AccountView,
+        matched_floor: u64,
+    ) -> Result<Self, ProgramError> {
+        let (views, observed) =
+            LegacySplOutputViews::load(depositor, output_mint, staging, vault, token_program)?;
+        if matched_floor == 0 || observed.staging_atomic < matched_floor {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        // Conserve all currently visible staging units, not the lower bound.
+        let expected_vault_after = observed
+            .vault_atomic
+            .checked_add(observed.staging_atomic)
+            .ok_or(ProgramError::ArithmeticOverflow)?;
+        Ok(Self {
+            views,
+            expected_vault_after,
+        })
+    }
+
+    /// A future authorized caller would reread immediately after its stock
+    /// deposit, before closing staging. Empty staging plus the exact vault
+    /// delta is necessary, not proof of an authenticated empty pre-swap
+    /// baseline, execution, receipt or note.
+    pub(super) fn compare_reread(&self) -> Result<(), ProgramError> {
+        let after = self.views.balances()?;
+        if after.staging_atomic != 0 || after.vault_atomic != self.expected_vault_after {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        Ok(())
     }
 }
 

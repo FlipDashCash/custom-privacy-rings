@@ -238,7 +238,8 @@ fn checks_one_stock_operation_then_consumes_its_own_binding_in_the_v1_context() 
     // Same production-source matcher used by the target-only review bridge.
     // These archived structures are not a runtime observation or an approved plan.
     let compared = ComparedRoles::new(&roles, &roles).expect("exact ordered role comparison");
-    assert!(compare_measured_prefix(projection(), compared).is_ok());
+    let matched = compare_measured_prefix(projection(), compared).expect("same archived prefix");
+    assert_eq!(matched.minimum_output, 990);
     let mut different = roles;
     different.swap(Role::Tree as usize, Role::OutputVault as usize);
     assert!(matches!(

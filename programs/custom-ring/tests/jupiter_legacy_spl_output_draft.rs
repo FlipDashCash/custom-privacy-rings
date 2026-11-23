@@ -1,9 +1,10 @@
 #[path = "../src/instructions/settlement/jupiter_legacy_spl_output_draft.rs"]
 mod draft;
 
-use draft::{LegacySplOutputViews, OutputBalances};
+use draft::{LegacySplOutputReview, LegacySplOutputViews, OutputBalances};
 use pinocchio::{
     account::{RuntimeAccount, NOT_BORROWED},
+    error::ProgramError,
     AccountView, Address,
 };
 use spr_interface::{
@@ -67,8 +68,14 @@ fn classic_token(mint: &Address, owner: &Address, amount: u64) -> [u8; SPL_TOKEN
     data
 }
 
+fn set_local_amount(view: &mut AccountView, amount: u64) {
+    let mut data = view.try_borrow_mut().expect("no outstanding data borrow");
+    data[SPL_TOKEN_ACCOUNT_AMOUNT_OFFSET..SPL_TOKEN_ACCOUNT_AMOUNT_END]
+        .copy_from_slice(&amount.to_le_bytes());
+}
+
 #[test]
-fn reads_canonical_staging_and_backing_without_a_balance_argument() {
+fn binds_canonical_output_and_compares_same_handles_without_balance_arguments() {
     let depositor = Address::new_from_array([17; 32]);
     let mint = Address::new_from_array([29; 32]);
     let token = Address::new_from_array(SPL_TOKEN_PROGRAM_ID);
@@ -122,4 +129,44 @@ fn reads_canonical_staging_and_backing_without_a_balance_argument() {
     assert_eq!(output.vault_bump(), bump);
     assert_eq!(observed, expected);
     assert_eq!(output.balances().expect("read retained views"), expected);
+
+    let observe = |floor| {
+        LegacySplOutputReview::observe(&depositor, &mint, &staging, &vault, &token_program, floor)
+    };
+    for floor in [0, expected.staging_atomic + 1] {
+        assert!(matches!(
+            observe(floor),
+            Err(ProgramError::InvalidAccountData)
+        ));
+    }
+    let review = observe(expected.staging_atomic).expect("inclusive floor");
+    let lower_floor = observe(expected.staging_atomic - 1).expect("conserve favorable output");
+    let wrong = Err(ProgramError::InvalidAccountData);
+    assert_eq!(review.compare_reread(), wrong);
+
+    // Updates only these inert account bytes through the shared borrow flag.
+    // Neither a token CPI nor a transfer, proof or runtime is simulated.
+    let (mut stage_bytes, mut vault_bytes) = (staging.clone(), vault.clone());
+    let full = expected.vault_atomic + expected.staging_atomic;
+    set_local_amount(&mut stage_bytes, 0);
+    assert_eq!(review.compare_reread(), wrong); // empty staging alone is insufficient
+    for balance in [expected.vault_atomic - 1, full - 1, full + 1] {
+        set_local_amount(&mut vault_bytes, balance);
+        assert_eq!(review.compare_reread(), wrong);
+    }
+    set_local_amount(&mut vault_bytes, full);
+    assert_eq!(review.compare_reread(), Ok(()));
+    assert_eq!(lower_floor.compare_reread(), Ok(())); // not capped at the floor
+    set_local_amount(&mut stage_bytes, 1);
+    assert_eq!(review.compare_reread(), wrong); // exact vault credit leaves residual staging
+    set_local_amount(&mut vault_bytes, u64::MAX);
+    assert!(matches!(observe(1), Err(ProgramError::ArithmeticOverflow)));
+
+    set_local_amount(&mut stage_bytes, 0);
+    set_local_amount(&mut vault_bytes, full);
+    stage_bytes.try_borrow_mut().unwrap()[SPL_TOKEN_ACCOUNT_STATE_OFFSET] = 2;
+    assert_eq!(review.compare_reread(), wrong); // reread initialized state, too
+    stage_bytes.try_borrow_mut().unwrap()[SPL_TOKEN_ACCOUNT_STATE_OFFSET] =
+        SPL_TOKEN_ACCOUNT_INITIALIZED;
+    assert_eq!(review.compare_reread(), Ok(()));
 }

@@ -4,7 +4,9 @@
 //! separate review match checks the actual prefix against retained comparands.
 //! The exact descriptor tracking revision must also be served by the policy's
 //! pinned registry at that same slot and match the frame. No deployment
-//! profile is selected, proof verified, output measured or CPI made here.
+//! profile is selected or proof verified here. Read-only output checks bind
+//! canonical SPL views to this same observation; they do not attribute credit
+//! to Jupiter or perform a deposit.
 #![allow(dead_code)] // No processor calls this review input.
 
 #[path = "../../../../../program-libs/interface/src/instructions/jupiter_measured_deposit_draft.rs"]
@@ -12,6 +14,9 @@ mod wire;
 #[cfg(target_os = "solana")]
 #[path = "../settlement/jupiter_measured_v1_graph_draft.rs"]
 mod graph;
+#[cfg(target_os = "solana")]
+#[path = "../settlement/jupiter_legacy_spl_output_draft.rs"]
+mod output;
 
 use pinocchio::{
     account::Ref,
@@ -128,7 +133,7 @@ impl<'a> ObservedV1<'a> {
             accounts: &metas[i],
             data: rows[i].get_instruction_data(),
         });
-        let withdrawal = graph::compare_measured_prefix(
+        let matched = graph::compare_measured_prefix(
             PrefixProjection {
                 program,
                 policy_address: policy_view.address(),
@@ -141,11 +146,20 @@ impl<'a> ObservedV1<'a> {
         )
         .map_err(|_| ProgramError::InvalidInstructionData)?;
         let tracking = self.read_selected_tracking(&policy)?;
+        let output = output::LegacySplOutputReview::observe(
+            &views[Role::Depositor as usize],
+            &views[Role::OutputMint as usize],
+            &views[Role::OutputStaging as usize],
+            &views[Role::OutputVault as usize],
+            &views[Role::LegacyTokenProgram as usize],
+            matched.minimum_output,
+        )?;
         Ok(RuntimePrefixMatch {
             _observed: self,
-            _withdrawal: withdrawal,
+            _withdrawal: matched.withdrawal,
             _tracking: tracking,
             _ring_generation: policy.generation(),
+            output,
         })
     }
 
@@ -249,14 +263,24 @@ impl<'a> FrameTracking<'a> {
     }
 }
 
-/// Opaque review-stage value tied to the same real observation. A served
-/// root and a prefix comparison are not a descriptor, proof or receipt.
+/// Opaque review-stage value tied to the same real observation. Neither a
+/// served root nor these structural and account reads authorize settlement.
 #[cfg(target_os = "solana")]
 struct RuntimePrefixMatch<'read, 'invocation> {
     _observed: &'read ObservedV1<'invocation>,
     _withdrawal: graph::WithdrawalBinding,
     _tracking: ServedTracking,
     _ring_generation: u32,
+    output: output::LegacySplOutputReview<'read>,
+}
+
+#[cfg(target_os = "solana")]
+impl RuntimePrefixMatch<'_, '_> {
+    /// Accept no replacement account slice or claimed amount. This review
+    /// comparison is dormant until an independently authorized deposit exists.
+    fn compare_same_output_views(&self) -> Result<(), ProgramError> {
+        self.output.compare_reread()
+    }
 }
 
 #[cfg(target_os = "solana")]

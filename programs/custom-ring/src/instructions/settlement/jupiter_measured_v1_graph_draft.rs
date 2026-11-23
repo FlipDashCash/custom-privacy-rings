@@ -65,6 +65,13 @@ pub(super) struct WithdrawalBinding {
     ring_config: Address,
 }
 
+/// Result of comparing the actual prefix, not an immutable guard selection.
+/// The floor comes from the same observed guard row as the matched withdrawal.
+pub(super) struct MatchedMeasuredPrefix {
+    pub(super) withdrawal: WithdrawalBinding,
+    pub(super) minimum_output: u64,
+}
+
 impl WithdrawalBinding {
     const fn first_nullifier(&self) -> &[u8; 32] {
         &self.first_nullifier
@@ -302,7 +309,7 @@ fn check_projection(
     first: u16,
     review: &ExpectedLegacySplPrefix<'_>,
     [withdrawal, fee, pre, router, post]: [PreviousInstruction<'_>; 5],
-) -> Result<WithdrawalBinding, LegacySplPrefixError> {
+) -> Result<MatchedMeasuredPrefix, LegacySplPrefixError> {
     use LegacySplPrefixError::{GuardLayout, Review, RouterLayout, Runtime};
 
     let net = review
@@ -371,7 +378,7 @@ fn check_projection(
     // These are only the stock frame's independently checkable invariants.
     // Token owner/rent/state and any shared reserves belong to the actual guard.
     let read_u64 = |offset: usize| {
-        u64::from_le_bytes(core::array::from_fn(|n| review.pre_guard_payload[offset + n]))
+        u64::from_le_bytes(core::array::from_fn(|n| pre.data[offset + n]))
     };
     let (maximum_input, minimum_output, exact_credit) = (read_u64(20), read_u64(28), read_u64(36));
     if maximum_input < net
@@ -419,8 +426,8 @@ fn check_projection(
     {
         return Err(RouterLayout);
     }
-    // Keep the original stock value; the structural public entry drops it.
-    check_predecessor(
+    // Keep the original stock binding and the floor from the checked pre-guard.
+    let withdrawal = check_predecessor(
         program,
         policy_address,
         policy,
@@ -433,7 +440,11 @@ fn check_projection(
             amount: review.gross_input,
         }],
     )
-    .map_err(Runtime)
+    .map_err(Runtime)?;
+    Ok(MatchedMeasuredPrefix {
+        withdrawal,
+        minimum_output,
+    })
 }
 
 fn same_guard_accounts(actual: &[Meta], expected: &[ExpectedGuardAccount]) -> bool {
@@ -538,14 +549,14 @@ impl<'a> ComparedRoles<'a> {
 pub(super) fn compare_measured_prefix(
     projection: PrefixProjection<'_>,
     compared: ComparedRoles<'_>,
-) -> Result<WithdrawalBinding, PrepareError> {
+) -> Result<MatchedMeasuredPrefix, PrepareError> {
     check_measured_prefix(projection, compared.0)
 }
 
 fn check_measured_prefix(
     projection: PrefixProjection<'_>,
     roles: &[Address; ROLES.len()],
-) -> Result<WithdrawalBinding, PrepareError> {
+) -> Result<MatchedMeasuredPrefix, PrepareError> {
     let PrefixProjection { program, policy_address, policy, first, review, instructions } =
         projection;
     // The measured V1 path uses the stock guard's minimum-output mode only.
@@ -572,14 +583,14 @@ fn check_measured_prefix(
             return Err(PrepareError::RoleScope);
         }
     }
-    let binding = check_projection(program, policy_address, policy, first, review, instructions)
+    let matched = check_projection(program, policy_address, policy, first, review, instructions)
         .map_err(|_| PrepareError::Prefix)?;
-    if &roles[Role::RingConfig as usize] != binding.ring_config()
-        || binding.predecessor_index() != first
+    if &roles[Role::RingConfig as usize] != matched.withdrawal.ring_config()
+        || matched.withdrawal.predecessor_index() != first
     {
         return Err(PrepareError::RoleScope);
     }
-    Ok(binding)
+    Ok(matched)
 }
 
 /// Use exactly one checked projection, then prepare only deterministic fields.
@@ -656,7 +667,7 @@ fn with_matched_context<R>(
     // They are borrowed; no reparse or reconstruction of a guard is needed.
     let (pre, post, metas) =
         (instructions[2].data, instructions[4].data, instructions[2].accounts);
-    let binding = check_measured_prefix(projection, scope.roles)?;
+    let binding = check_measured_prefix(projection, scope.roles)?.withdrawal;
 
     let original = OriginalWithdrawal {
         first_nullifier: *binding.first_nullifier(),
