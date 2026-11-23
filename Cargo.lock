@@ -5366,9 +5366,11 @@ dependencies = [
  "solana-account-decoder-client-types",
  "solana-address 2.7.0",
  "solana-clock 3.2.1",
+ "solana-keypair",
  "solana-rpc-client",
  "solana-rpc-client-api",
  "solana-signature",
+ "solana-signer",
  "solana-transaction",
  "solana-transaction-status-client-types",
  "spr-client",
@@ -5386,6 +5388,7 @@ dependencies = [
  "zolana-ring-member-registry",
  "zolana-ring-policy",
  "zolana-ring-rpc",
+ "zolana-secret-file",
 ]
 
 [[package]]
@@ -8693,9 +8696,17 @@ dependencies = [
  "http-body-util",
  "hyper",
  "jsonrpsee",
+ "log",
+ "reqwest",
  "serde",
  "serde_json",
+ "solana-pubkey 4.3.0",
+ "solana-signature",
+ "spr-indexer-api",
+ "thiserror 2.0.20",
+ "tokio",
  "tower",
+ "url",
 ]
 
 [[package]]

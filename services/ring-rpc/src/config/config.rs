@@ -12,6 +12,7 @@ use p256::elliptic_curve::subtle::ConstantTimeEq;
 use solana_address::Address;
 use solana_hash::Hash;
 use spr_keypair::X25519Keypair;
+use spr_rpc_http::forward::UpstreamUrl;
 use thiserror::Error;
 use zeroize::Zeroizing;
 use zolana_operator_custody::{
@@ -102,6 +103,12 @@ pub struct ServeArgs {
     pub request_timeout_secs: NonZeroU64,
     #[arg(long, env = "RING_RPC_UPSTREAM_TIMEOUT_SECS", default_value = "10")]
     pub upstream_timeout_secs: NonZeroU64,
+    /// Photon's private registry, set to have Photon forward the served methods here.
+    #[arg(long, env = "RING_RPC_PHOTON_REGISTRY_URL", requires = "public_url")]
+    pub photon_registry_url: Option<UpstreamUrl>,
+    /// The service URL Photon connects to.
+    #[arg(long, env = "RING_RPC_PUBLIC_URL", requires = "photon_registry_url")]
+    pub public_url: Option<UpstreamUrl>,
     /// Lamports reserved and spent over the store's life on enrollments and token accounts, zero refuses every charge.
     #[arg(long, env = "RING_RPC_RELAY_BUDGET_LAMPORTS", default_value_t = 0)]
     pub relay_budget_lamports: u64,

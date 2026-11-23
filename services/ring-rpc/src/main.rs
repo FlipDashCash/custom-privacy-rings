@@ -5,7 +5,7 @@ use clap::Parser;
 use log::{info, warn};
 use zolana_ring_client::rpc::KeyMode;
 use zolana_ring_rpc::{
-    live_ring_client, run_server, ChainSource, Cli, CoSignerApproval, Command,
+    live_ring_client, run_server, Announce, ChainSource, Cli, CoSignerApproval, Command,
     EnrollmentApplierParts, Hub, KeySource, LiveStorageChain, OriginPolicy, RelayBudget,
     RelayServicesInit, RolePins, ServeArgs, ServeKeys, ServerOptions, ServiceIdentity, Store,
     TransactionSource, Upstreams, WalletSnapshotLimits, MANAGED_MERGE_INTERVAL,
@@ -71,6 +71,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         max_connections: args.max_connections.get(),
         request_timeout: args.request_timeout(),
         client_limits: args.client_limits.client_limits(),
+        announce: args
+            .photon_registry_url
+            .clone()
+            .zip(args.public_url.clone())
+            .map(|(registry, url)| Announce { registry, url }),
     };
     let store = match &args.store_url {
         Some(url) => {

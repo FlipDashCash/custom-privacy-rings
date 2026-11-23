@@ -236,6 +236,7 @@ impl RingRpcSpec<'_> {
                     max_connections: 16,
                     request_timeout: Duration::from_secs(30),
                     client_limits: ClientLimits::default(),
+                    announce: None,
                 },
             ))
             .map_err(|e| anyhow!("ring rpc server {e:?}"))?;
