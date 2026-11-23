@@ -2,8 +2,9 @@
 //!
 //! Only the on-target reader can observe execution depth and Clock. The
 //! separate review match checks the actual prefix against retained comparands.
-//! Neither step authenticates a deployment profile or roots, verifies a
-//! descriptor, observes output balances, or invokes another program.
+//! The exact descriptor tracking revision must also be served by the policy's
+//! pinned registry at that same slot and match the frame. No deployment
+//! profile is selected, proof verified, output measured or CPI made here.
 #![allow(dead_code)] // No processor calls this review input.
 
 #[path = "../../../../../program-libs/interface/src/instructions/jupiter_measured_deposit_draft.rs"]
@@ -22,8 +23,13 @@ use pinocchio::{
 use pinocchio::sysvars::{clock::Clock, Sysvar};
 #[cfg(target_os = "solana")]
 use super::{instruction_runtime::Pda, loader::load_policy};
+use super::loader::{RegistrySlots, RingRegistries};
+use custom_ring_interface::{
+    storage::Revision, LiveRoots, RingMode, RingPolicy, RootRead, TransferRoots,
+};
 #[cfg(target_os = "solana")]
-use custom_ring_interface::{RingPolicy, RING_POLICY_PDA_SEED};
+use custom_ring_interface::RING_POLICY_PDA_SEED;
+use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use wire::{Access, Role, DRAFT_TAG, DRAFT_VERSION, FRAME_LEN, ROLES};
 
 const ROLE_COUNT: usize = ROLES.len();
@@ -93,6 +99,9 @@ impl<'a> ObservedV1<'a> {
         let compared = ComparedRoles::new(&actual_roles, retained.ordered_roles)
             .map_err(|_| ProgramError::InvalidInstructionData)?;
         let policy_view = &views[Role::RingPolicy as usize];
+        if policy_view.executable() {
+            return Err(ProgramError::InvalidAccountData);
+        }
         let program = &self.window.program;
         Pda {
             program_id: program,
@@ -131,10 +140,35 @@ impl<'a> ObservedV1<'a> {
             compared,
         )
         .map_err(|_| ProgramError::InvalidInstructionData)?;
+        let tracking = self.read_selected_tracking(&policy)?;
         Ok(RuntimePrefixMatch {
             _observed: self,
             _withdrawal: withdrawal,
+            _tracking: tracking,
+            _ring_generation: policy.generation(),
         })
+    }
+
+    /// The observed frame names a revision; it cannot supply the accepted
+    /// root. The sole account given to the canonical loader is this very
+    /// invocation's tracking role, not a retained operation comparand.
+    #[inline(never)]
+    fn read_selected_tracking(&self, policy: &RingPolicy) -> Result<ServedTracking, ProgramError> {
+        let view = &self.roles()[Role::TrackingRegistry as usize];
+        let registries = load_pinned_tracking(policy, view)?;
+        let live = registries.roots(self.slot());
+        // Use the same public identity checks as the owned descriptor
+        // projection. Matching stored fields selects no executable or VK.
+        let ring_id = spr_hasher::primitives::hash_bytes(self.window.program.as_array())
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+        if live.tracking.ring_id != ring_id
+            || live.tracking.auditor_pubkey != policy.auditor_pubkey
+        {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        let frame = wire::DraftFrame::decode(self.envelope())
+            .map_err(|_| ProgramError::InvalidInstructionData)?;
+        FrameTracking::from_frame(&frame).compare(&live)
     }
 }
 
@@ -146,12 +180,83 @@ struct RetainedOperation<'a> {
     original: &'a graph::ExpectedLegacySplPrefix<'a>,
 }
 
-/// Opaque review-stage value tied to the same real observation. There is no
-/// promotion to a descriptor, receipt, signer, or settlement API.
+/// Load the one registry the matched no-policy V1 rail reads. There is no
+/// alternate registry list and no fallback to a key or root from the frame.
+fn load_pinned_tracking<'a>(
+    policy: &RingPolicy,
+    view: &'a AccountView,
+) -> Result<RingRegistries<'a>, ProgramError> {
+    let read = RootRead::transfer(policy, false);
+    if view.executable()
+        || view.is_signer()
+        || view.is_writable()
+        || policy.mode()? != RingMode::Anonymous
+        || read != RootRead::None
+    {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    let mut only = Some(view);
+    let registries = RegistrySlots { ring: policy, read }
+        .load(|| only.take().ok_or(ProgramError::NotEnoughAccountKeys))?;
+    if registries.len != 1 {
+        return Err(ProgramError::InvalidAccountData);
+    }
+    Ok(registries)
+}
+
+/// The only comparison inputs from the frozen envelope. In particular, the
+/// root bytes here are never the root we return.
+struct FrameTracking<'a> {
+    expiry_slot: u64,
+    revision: Revision,
+    claimed_root: &'a [u8; 32],
+}
+
+struct ServedTracking {
+    revision: Revision,
+    roots: TransferRoots,
+}
+
+impl<'a> FrameTracking<'a> {
+    fn from_frame(frame: &wire::DraftFrame<'a>) -> Self {
+        Self {
+            expiry_slot: frame.expiry_slot,
+            revision: frame.tracking_revision.into(),
+            claimed_root: frame.tracking_root,
+        }
+    }
+
+    fn compare(self, live: &LiveRoots<'_>) -> Result<ServedTracking, ProgramError> {
+        // Inclusive nonzero descriptor deadline. The stock registry has a
+        // separate, exclusive retirement deadline and enforces its own floor.
+        if self.expiry_slot == 0 || live.slot > self.expiry_slot {
+            return Err(ProgramError::InvalidInstructionData);
+        }
+        let served = live.tracking(self.revision)?;
+        if !is_canonical_bn254_scalar_be(&served) {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        if &served != self.claimed_root {
+            return Err(ProgramError::InvalidInstructionData);
+        }
+        Ok(ServedTracking {
+            revision: self.revision,
+            roots: TransferRoots {
+                tracking_root: served,
+                ..TransferRoots::default()
+            },
+        })
+    }
+}
+
+/// Opaque review-stage value tied to the same real observation. A served
+/// root and a prefix comparison are not a descriptor, proof or receipt.
 #[cfg(target_os = "solana")]
 struct RuntimePrefixMatch<'read, 'invocation> {
     _observed: &'read ObservedV1<'invocation>,
     _withdrawal: graph::WithdrawalBinding,
+    _tracking: ServedTracking,
+    _ring_generation: u32,
 }
 
 #[cfg(target_os = "solana")]
@@ -436,6 +541,179 @@ mod tests {
         assert_eq!(
             crate::process_instruction(&ring, &mut [], &inert_frame()),
             Err(custom_ring_interface::CustomRingError::InvalidInstructionData.into())
+        );
+    }
+}
+
+#[cfg(all(test, not(target_os = "solana")))]
+mod selected_tracking_tests {
+    use super::*;
+    use custom_ring_interface::{
+        storage::Root, tracking::TrackingRegistry, CustomRingError, STORAGE_PROGRAM_ID,
+    };
+    use pinocchio::account::{RuntimeAccount, NOT_BORROWED};
+
+    // Public root-history arithmetic and ordinary in-memory account layout.
+    // No runtime, Clock, profile, proof, witness or transaction is supplied.
+    const NOW: [u8; 32] = [1; 32];
+    const OLD: [u8; 32] = [2; 32];
+    fn history() -> Box<TrackingRegistry> {
+        let mut registry: Box<TrackingRegistry> = bytemuck::zeroed_box();
+        registry.discriminator = TrackingRegistry::DISCRIMINATOR;
+        registry.next_index = 1u64.to_le_bytes();
+        registry.roots[0] = Root {
+            hash: NOW,
+            revision: 8u64.into(),
+            expires_at: [0; 8],
+        };
+        registry.roots[1] = Root {
+            hash: OLD,
+            revision: 7u64.into(),
+            expires_at: 100u64.to_le_bytes(),
+        };
+        registry
+    }
+
+    fn select(
+        registry: &TrackingRegistry,
+        slot: u64,
+        floor: u64,
+        expiry_slot: u64,
+        revision: u64,
+        claimed_root: &[u8; 32],
+    ) -> Result<ServedTracking, ProgramError> {
+        FrameTracking {
+            expiry_slot,
+            revision: revision.into(),
+            claimed_root,
+        }
+        .compare(&LiveRoots {
+            own: None,
+            curator: None,
+            tracking: registry,
+            tracking_floor: floor.into(),
+            slot,
+        })
+    }
+
+    #[repr(C)]
+    struct RegistryBytes {
+        header: RuntimeAccount,
+        data: TrackingRegistry,
+    }
+
+    // Exercise the exact stock address/owner/discriminator loader used on
+    // target, not ObservedV1, which has no host constructor or fake syscall.
+    fn read_local_registry(
+        pin: Address,
+        address: Address,
+        owner: Address,
+        discriminator: u8,
+    ) -> Result<[u8; 32], ProgramError> {
+        let mut policy: Box<RingPolicy> = bytemuck::zeroed_box();
+        policy.mode = RingMode::Anonymous as u8;
+        policy.tracking = pin;
+        let mut image = Box::new(RegistryBytes {
+            header: RuntimeAccount {
+                borrow_state: NOT_BORROWED,
+                is_signer: 0,
+                is_writable: 0,
+                executable: 0,
+                padding: [0; 4],
+                address,
+                owner,
+                lamports: 0,
+                data_len: TrackingRegistry::SIZE as u64,
+            },
+            data: *history(),
+        });
+        image.data.discriminator = discriminator;
+        assert_eq!(
+            core::mem::offset_of!(RegistryBytes, data),
+            core::mem::size_of::<RuntimeAccount>()
+        );
+        // SAFETY: header and the exact-sized initialized POD are adjacent;
+        // their box is retained and not mutated or moved throughout this read.
+        let ptr = core::ptr::from_mut(image.as_mut()).cast();
+        let view = unsafe { AccountView::new_unchecked(ptr) };
+        let registries = load_pinned_tracking(&policy, &view)?;
+        Ok(registries.roots(99).tracking(7u64.into())?)
+    }
+
+    #[test]
+    fn jupiter_v1_selected_tracking_uses_stock_pinned_account_loader() {
+        // Opaque account labels only, no deployment identity is selected.
+        let a = Address::new_from_array([0x21; 32]);
+        let b = Address::new_from_array([0x22; 32]);
+        let valid = TrackingRegistry::DISCRIMINATOR;
+        assert_eq!(read_local_registry(a, a, STORAGE_PROGRAM_ID, valid), Ok(OLD));
+        assert_eq!(
+            read_local_registry(a, b, STORAGE_PROGRAM_ID, valid),
+            Err(CustomRingError::UnboundRegistry.into())
+        );
+        for (owner, tag) in [(Address::default(), valid), (STORAGE_PROGRAM_ID, 0)] {
+            assert_eq!(
+                read_local_registry(a, a, owner, tag),
+                Err(CustomRingError::InvalidTrackingRegistry.into())
+            );
+        }
+    }
+
+    #[test]
+    fn jupiter_v1_selected_tracking_binds_exact_revision_and_hash() {
+        let history = history();
+        let selected = select(&history, 99, 0, 99, 7, &OLD).expect("still served");
+        assert_eq!(selected.revision.value(), 7);
+        assert_eq!(selected.roots.tracking_root, OLD);
+        assert_eq!(
+            (
+                selected.roots.policy_hash,
+                selected.roots.own_root,
+                selected.roots.curator_root,
+            ),
+            ([0; 32], [0; 32], [0; 32])
+        );
+        assert_eq!(
+            select(&history, 99, 0, 99, 7, &NOW).err(),
+            Some(ProgramError::InvalidInstructionData)
+        );
+        assert_eq!(
+            select(&history, 99, 0, 99, 6, &OLD).err(),
+            Some(CustomRingError::RootNotServed.into())
+        );
+    }
+
+    #[test]
+    fn jupiter_v1_selected_tracking_keeps_two_distinct_expiries() {
+        let history = history();
+        assert!(select(&history, 100, 0, 100, 8, &NOW).is_ok());
+        assert_eq!(
+            select(&history, 100, 0, 100, 7, &OLD).err(),
+            Some(CustomRingError::RootNotServed.into())
+        );
+        assert_eq!(
+            select(&history, 101, 0, 100, 8, &NOW).err(),
+            Some(ProgramError::InvalidInstructionData)
+        );
+        assert_eq!(
+            select(&history, 0, 0, 0, 8, &NOW).err(),
+            Some(ProgramError::InvalidInstructionData)
+        );
+        assert!(select(&history, u64::MAX, 0, u64::MAX, 8, &NOW).is_ok());
+    }
+
+    #[test]
+    fn jupiter_v1_selected_tracking_preserves_stock_floor_and_field_encoding() {
+        let mut history = history();
+        assert_eq!(
+            select(&history, 99, 8, 200, 7, &OLD).err(),
+            Some(CustomRingError::TrackingRootBelowFloor.into())
+        );
+        // This is an invalid public field encoding, not a proof or key.
+        history.roots[0].hash = [0xff; 32];
+        assert_eq!(
+            select(&history, 100, 8, 200, 8, &[0xff; 32]).err(),
+            Some(ProgramError::InvalidAccountData)
         );
     }
 }
