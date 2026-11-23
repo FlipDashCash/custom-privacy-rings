@@ -41,3 +41,12 @@ slow-timeout = { period = "60s", terminate-after = 45 }
 [[profile.ci.overrides]]
 filter = "test(shapes::sweep_)"
 slow-timeout = { period = "60s", terminate-after = 45 }
+
+# One test proves and settles every catalog key of its column, the merge widths included.
+[[profile.default.overrides]]
+filter = "test(shapes::sanity_)"
+slow-timeout = { period = "60s", terminate-after = 45 }
+
+[[profile.ci.overrides]]
+filter = "test(shapes::sanity_)"
+slow-timeout = { period = "60s", terminate-after = 45 }
