@@ -417,6 +417,19 @@ fn an_empty_table_hashes_the_empty_map() {
 }
 
 #[test]
+fn a_ring_list_tag_enters_the_table_hash_and_a_zero_tag_keeps_it() {
+    let map = sources(&[(ListId::PrivateBlock, [0u8; 32])]);
+    let baseline = EMPTY.hash(&map).unwrap();
+    assert_eq!(
+        baseline,
+        EMPTY.hash(&map.with_ring_list_tag([0u8; 32])).unwrap()
+    );
+    let mut tag = [0u8; 32];
+    tag[31] = 7;
+    assert_ne!(baseline, EMPTY.hash(&map.with_ring_list_tag(tag)).unwrap());
+}
+
+#[test]
 fn the_source_map_is_positional_and_rejects_duplicates() {
     assert_eq!(
         SourceMap::new(&[(ListId::Allow, [4u8; 32]), (ListId::Allow, [5u8; 32]),]),
