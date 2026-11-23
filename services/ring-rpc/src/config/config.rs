@@ -10,6 +10,7 @@ use p256::elliptic_curve::subtle::ConstantTimeEq;
 use rand::RngCore;
 use solana_address::Address;
 use solana_keypair::Keypair;
+use spr_rpc_http::forward::UpstreamUrl;
 use thiserror::Error;
 use zeroize::Zeroizing;
 use zolana_ring_client::rpc::{auditor_keypair, KeyFileError};
@@ -115,6 +116,12 @@ pub struct ServeArgs {
     pub request_timeout_secs: NonZeroU64,
     #[arg(long, env = "RING_RPC_UPSTREAM_TIMEOUT_SECS", default_value = "10")]
     pub upstream_timeout_secs: NonZeroU64,
+    /// Photon's private registry, set to have Photon forward the served methods here.
+    #[arg(long, env = "RING_RPC_PHOTON_REGISTRY_URL", requires = "public_url")]
+    pub photon_registry_url: Option<UpstreamUrl>,
+    /// The service URL Photon connects to.
+    #[arg(long, env = "RING_RPC_PUBLIC_URL", requires = "photon_registry_url")]
+    pub public_url: Option<UpstreamUrl>,
     #[arg(long, env = "RING_RPC_ALLOW_SHARED_KEY_FILE")]
     pub allow_shared_key_file: bool,
     /// Lowercase hex Ed25519 seed, set to relay transfers and pay their fees.

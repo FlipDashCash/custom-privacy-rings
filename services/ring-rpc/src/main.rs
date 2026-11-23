@@ -10,9 +10,9 @@ use zolana_ring_client::{
 };
 use zolana_ring_rpc::{
     live_ring_client, run_server, write_grant_rows_secret, write_keypair, write_root_secret,
-    ChainSource, Cli, CoSignerApproval, Command, EnrollmentApplierParts, Hub, KeyKind, KeySource,
-    KeygenArgs, LiveStorageChain, OriginPolicy, RelayBudget, RelayServicesInit, ServeArgs,
-    ServeKeys, ServerOptions, ServiceIdentity, Store, TransactionSource, Upstreams,
+    Announce, ChainSource, Cli, CoSignerApproval, Command, EnrollmentApplierParts, Hub, KeyKind,
+    KeySource, KeygenArgs, LiveStorageChain, OriginPolicy, RelayBudget, RelayServicesInit,
+    ServeArgs, ServeKeys, ServerOptions, ServiceIdentity, Store, TransactionSource, Upstreams,
     WalletSnapshotLimits, MANAGED_MERGE_INTERVAL, RECORD_FLUSH_INTERVAL, STORE_CONNECTIONS,
 };
 
@@ -95,6 +95,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         max_connections: args.max_connections.get(),
         request_timeout: args.request_timeout(),
         client_limits: args.client_limits.client_limits(),
+        announce: args
+            .photon_registry_url
+            .clone()
+            .zip(args.public_url.clone())
+            .map(|(registry, url)| Announce { registry, url }),
     };
     let store = match &args.store_url {
         Some(url) => {
