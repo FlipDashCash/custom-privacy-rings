@@ -20,8 +20,9 @@ use custom_ring_interface::{
     RING_POLICY, RING_POLICY_PDA_SEED,
 };
 use draft::{
-    prepare_context, prepare_descriptor, DescriptorScope, ExpectedGuardAccount,
-    ExpectedLegacySplPrefix, Meta, PrefixProjection, PreviousInstruction,
+    compare_measured_prefix, prepare_context, prepare_descriptor, ComparedRoles,
+    DescriptorScope, ExpectedGuardAccount, ExpectedLegacySplPrefix, Meta, PrefixProjection,
+    PrepareError, PreviousInstruction,
 };
 use serde_json::Value;
 use solana_address::Address;
@@ -233,6 +234,24 @@ fn checks_one_stock_operation_then_consumes_its_own_binding_in_the_v1_context() 
             },
         ],
     };
+
+    // Same production-source matcher used by the target-only review bridge.
+    // These archived structures are not a runtime observation or an approved plan.
+    let compared = ComparedRoles::new(&roles, &roles).expect("exact ordered role comparison");
+    assert!(compare_measured_prefix(projection(), compared).is_ok());
+    let mut different = roles;
+    different.swap(Role::Tree as usize, Role::OutputVault as usize);
+    assert!(matches!(
+        ComparedRoles::new(&roles, &different),
+        Err(PrepareError::RoleScope)
+    ));
+    different = roles;
+    different[Role::InputMint as usize] = keys[5];
+    let compared = ComparedRoles::new(&different, &different).expect("equal but unrelated roles");
+    assert!(matches!(
+        compare_measured_prefix(projection(), compared),
+        Err(PrepareError::RoleScope)
+    ));
 
     let raw_frame = hex::decode(
         include_str!("../../../program-libs/interface/tests/fixtures/jupiter_measured_deposit_draft_v1.hex")

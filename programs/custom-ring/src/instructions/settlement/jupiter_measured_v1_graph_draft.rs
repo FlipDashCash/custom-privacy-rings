@@ -1,16 +1,19 @@
-//! Unlinked single-graph source handoff for Custom measured Jupiter V1.
+//! Single-graph source handoff for Custom measured Jupiter V1.
 //!
-//! Host integration test only. Projection checks do not establish runtime
-//! order, successful proofs, authorization, or trusted executable images.
+//! The prefix matcher is also used by the no-entrypoint runtime review.
+//! The context and statement progression below remain host-test-only.
+//! A prefix match is not a successful proof, policy or artifact approval.
 //! This module never constructs a transaction, invokes a program or exposes
 //! the stock binding. Provenance of the exact lifted helpers is documented.
 #![forbid(unsafe_code)]
 
 use custom_ring_interface::{
-    cosign::CoSignOperation, tracking::TrackingRegistry, CoSignScope, InstructionTag, RingMode,
-    RingPolicy, RingRail, RingTransactData, MAX_SPP_CPI_ACCOUNTS, RING_TRANSACT_ACCOUNT_PREFIX_LEN,
+    cosign::CoSignOperation, CoSignScope, InstructionTag, RingMode, RingPolicy, RingRail,
+    RingTransactData, MAX_SPP_CPI_ACCOUNTS, RING_TRANSACT_ACCOUNT_PREFIX_LEN,
     RING_TRANSACT_RING_CONFIG_INDEX,
 };
+#[cfg(not(target_os = "solana"))]
+use custom_ring_interface::{tracking::TrackingRegistry, TransferRoots};
 use pinocchio::Address;
 use spr_hasher::{Hasher, Sha256};
 use spr_interface::{
@@ -18,13 +21,16 @@ use spr_interface::{
     RING_AUTH_PDA_SEED, SHIELDED_POOL_PROGRAM_ID, SPL_TOKEN_PROGRAM_ID,
 };
 
-use crate::context::{
+#[cfg(not(target_os = "solana"))]
+use super::context::{
     ContextFields, ContextInput, GuardAccount, MatchedGuards, OriginalWithdrawal, ProfilePins,
     SPL_OUTPUT_MAX,
 };
-use crate::descriptor_statement::{DescriptorProjection, DescriptorRecord, PreparedDescriptor};
-use crate::wire::{DraftFrame, Role, ROLES};
-use crate::TransferRoots;
+#[cfg(not(target_os = "solana"))]
+use super::descriptor_statement::{DescriptorProjection, DescriptorRecord, PreparedDescriptor};
+#[cfg(not(target_os = "solana"))]
+use super::wire::DraftFrame;
+use super::wire::{Role, ROLES};
 
 const RING_PREFIX: usize = 2; // policy and pinned tracking, for the checked profile.
 const MAX_DATA: usize = 4096; // Bounded for pinned v1 transactions; transport is qualified separately.
@@ -52,7 +58,7 @@ struct ExpectedWithdrawal {
 
 /// Private output of the pinned projection, not runtime or proof authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct WithdrawalBinding {
+pub(super) struct WithdrawalBinding {
     first_nullifier: [u8; 32],
     private_tx_hash: [u8; 32],
     predecessor_index: u16,
@@ -95,6 +101,14 @@ const MAX_GUARD_METAS: usize = 63;
 const MAX_ROUTER_METAS: usize = 96;
 const MAX_ROUTER_DATA: usize = 2048;
 const FEE_SIZE: usize = 10; // Legacy SPL TransferChecked: tag, LE64 amount, decimals.
+#[cfg(target_os = "solana")]
+pub(super) const WINDOW_BOUNDS: [(usize, usize); 5] = [
+    (RING_PREFIX + MAX_SPP_CPI_ACCOUNTS, MAX_DATA),
+    (4, FEE_SIZE),
+    (MAX_GUARD_METAS, GUARD_SIZE),
+    (MAX_ROUTER_METAS, MAX_ROUTER_DATA),
+    (MAX_GUARD_METAS, GUARD_SIZE),
+];
 const FIRST_GUARD_PHASE: usize = 8;
 const ROUTER_DOMAIN: &[u8] = b"pyrol:dynamic-jupiter:router:v1\0";
 const ROUTE_TAGS: [[u8; 8]; 4] = [
@@ -487,6 +501,7 @@ pub(super) struct PrefixProjection<'a> {
     pub(super) instructions: [PreviousInstruction<'a>; 5],
 }
 
+#[cfg(not(target_os = "solana"))]
 pub(super) struct DescriptorScope<'a> {
     pub(super) profile: &'a ProfilePins,
     pub(super) roles: &'a [Address; ROLES.len()],
@@ -498,12 +513,78 @@ pub(super) struct DescriptorScope<'a> {
 pub(super) enum PrepareError {
     Prefix,
     RoleScope,
+    #[cfg(not(target_os = "solana"))]
     Descriptor,
+    #[cfg(not(target_os = "solana"))]
     Statement,
+}
+
+/// Exact equality to independently retained ordered operation comparands.
+/// This deliberately cannot stand in for an executable/profile approval.
+pub(super) struct ComparedRoles<'a>(&'a [Address; ROLES.len()]);
+
+impl<'a> ComparedRoles<'a> {
+    pub(super) fn new(
+        observed: &'a [Address; ROLES.len()],
+        retained: &[Address; ROLES.len()],
+    ) -> Result<Self, PrepareError> {
+        if observed != retained {
+            return Err(PrepareError::RoleScope);
+        }
+        Ok(Self(observed))
+    }
+}
+
+pub(super) fn compare_measured_prefix(
+    projection: PrefixProjection<'_>,
+    compared: ComparedRoles<'_>,
+) -> Result<WithdrawalBinding, PrepareError> {
+    check_measured_prefix(projection, compared.0)
+}
+
+fn check_measured_prefix(
+    projection: PrefixProjection<'_>,
+    roles: &[Address; ROLES.len()],
+) -> Result<WithdrawalBinding, PrepareError> {
+    let PrefixProjection { program, policy_address, policy, first, review, instructions } =
+        projection;
+    // The measured V1 path uses the stock guard's minimum-output mode only.
+    if instructions[2].data.get(9) != Some(&0) {
+        return Err(PrepareError::Prefix);
+    }
+    for (role, expected) in [
+        (Role::Instructions, &SYSVAR),
+        (Role::Depositor, &review.authority),
+        (Role::InputSource, &review.source),
+        (Role::OutputStaging, &review.staging),
+        (Role::InputMint, &review.input_mint),
+        (Role::OutputMint, &review.output_mint),
+        (Role::RingPolicy, policy_address),
+        (Role::TrackingRegistry, &policy.tracking),
+        (Role::FeePayer, &review.payer),
+        (Role::FeeReceiver, &review.treasury_token_account),
+        (Role::ValueGuardProgram, &review.guard_program),
+        (Role::JupiterProgram, &ROUTER),
+        (Role::LegacyTokenProgram, &TOKEN),
+        (Role::ShieldedPoolProgram, &Address::new_from_array(SHIELDED_POOL_PROGRAM_ID)),
+    ] {
+        if &roles[role as usize] != expected {
+            return Err(PrepareError::RoleScope);
+        }
+    }
+    let binding = check_projection(program, policy_address, policy, first, review, instructions)
+        .map_err(|_| PrepareError::Prefix)?;
+    if &roles[Role::RingConfig as usize] != binding.ring_config()
+        || binding.predecessor_index() != first
+    {
+        return Err(PrepareError::RoleScope);
+    }
+    Ok(binding)
 }
 
 /// Use exactly one checked projection, then prepare only deterministic fields.
 /// The immutable profile and roots still require a future authenticated caller.
+#[cfg(not(target_os = "solana"))]
 pub(super) fn prepare_context(
     projection: PrefixProjection<'_>,
     scope: &DescriptorScope<'_>,
@@ -520,6 +601,7 @@ pub(super) fn prepare_context(
 /// The supplied registry and accepted root must already be authenticated by
 /// the future runtime. This does not choose or call a verifier, accept a proof,
 /// certify deployment, measure credit, or authorize an operation.
+#[cfg(not(target_os = "solana"))]
 pub(super) fn prepare_descriptor(
     projection: PrefixProjection<'_>,
     scope: &DescriptorScope<'_>,
@@ -563,38 +645,18 @@ pub(super) fn prepare_descriptor(
     })
 }
 
+#[cfg(not(target_os = "solana"))]
 fn with_matched_context<R>(
     projection: PrefixProjection<'_>,
     scope: &DescriptorScope<'_>,
     consume: impl for<'a> FnOnce(ContextInput<'a>, &'a RingPolicy) -> Result<R, PrepareError>,
 ) -> Result<R, PrepareError> {
-    let PrefixProjection { program, policy_address, policy, first, review, instructions } =
-        projection;
+    let PrefixProjection { program, policy, review, ref instructions, .. } = projection;
     // Retain the exact actual bytes/metas from this same matched projection.
     // They are borrowed; no reparse or reconstruction of a guard is needed.
     let (pre, post, metas) =
         (instructions[2].data, instructions[4].data, instructions[2].accounts);
-    let binding = check_projection(program, policy_address, policy, first, review, instructions)
-        .map_err(|_| PrepareError::Prefix)?;
-
-    for (role, expected) in [
-        (Role::RingPolicy, policy_address),
-        (Role::TrackingRegistry, &policy.tracking),
-        (Role::RingConfig, binding.ring_config()),
-        (Role::FeePayer, &review.payer),
-        (Role::FeeReceiver, &review.treasury_token_account),
-        (Role::ValueGuardProgram, &review.guard_program),
-        (Role::JupiterProgram, &ROUTER),
-        (Role::LegacyTokenProgram, &TOKEN),
-        (Role::ShieldedPoolProgram, &Address::new_from_array(SHIELDED_POOL_PROGRAM_ID)),
-    ] {
-        if &scope.roles[role as usize] != expected {
-            return Err(PrepareError::RoleScope);
-        }
-    }
-    if binding.predecessor_index() != first {
-        return Err(PrepareError::RoleScope);
-    }
+    let binding = check_measured_prefix(projection, scope.roles)?;
 
     let original = OriginalWithdrawal {
         first_nullifier: *binding.first_nullifier(),

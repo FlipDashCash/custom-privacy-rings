@@ -1,12 +1,16 @@
 //! Private no-entrypoint review input for the unregistered measured Jupiter V1.
 //!
-//! Only the on-target reader can observe execution depth and Clock. This does
-//! not match the five instruction contents, authenticate programs or roots,
-//! verify a descriptor, observe output balances, or invoke another program.
+//! Only the on-target reader can observe execution depth and Clock. The
+//! separate review match checks the actual prefix against retained comparands.
+//! Neither step authenticates a deployment profile or roots, verifies a
+//! descriptor, observes output balances, or invokes another program.
 #![allow(dead_code)] // No processor calls this review input.
 
 #[path = "../../../../../program-libs/interface/src/instructions/jupiter_measured_deposit_draft.rs"]
 mod wire;
+#[cfg(target_os = "solana")]
+#[path = "../settlement/jupiter_measured_v1_graph_draft.rs"]
+mod graph;
 
 use pinocchio::{
     account::Ref,
@@ -16,6 +20,10 @@ use pinocchio::{
 };
 #[cfg(target_os = "solana")]
 use pinocchio::sysvars::{clock::Clock, Sysvar};
+#[cfg(target_os = "solana")]
+use super::{instruction_runtime::Pda, loader::load_policy};
+#[cfg(target_os = "solana")]
+use custom_ring_interface::{RingPolicy, RING_POLICY_PDA_SEED};
 use wire::{Access, Role, DRAFT_TAG, DRAFT_VERSION, FRAME_LEN, ROLES};
 
 const ROLE_COUNT: usize = ROLES.len();
@@ -71,10 +79,98 @@ impl<'a> ObservedV1<'a> {
     ) -> Result<(u16, [IntrospectedInstruction<'_>; PRIOR as usize]), ProgramError> {
         self.window.prior_five()
     }
+
+    /// Compare against a separately retained operation. Comparands are not
+    /// approval, executable pins, or a substitute for authenticating the plan.
+    fn compare_retained_prefix<'read>(
+        &'read self,
+        retained: &RetainedOperation<'_>,
+    ) -> Result<RuntimePrefixMatch<'read, 'a>, ProgramError> {
+        use graph::{ComparedRoles, PrefixProjection, PreviousInstruction};
+
+        let views = self.roles();
+        let actual_roles = views.each_ref().map(|view| *view.address());
+        let compared = ComparedRoles::new(&actual_roles, retained.ordered_roles)
+            .map_err(|_| ProgramError::InvalidInstructionData)?;
+        let policy_view = &views[Role::RingPolicy as usize];
+        let program = &self.window.program;
+        Pda {
+            program_id: program,
+            seeds: &[RING_POLICY_PDA_SEED],
+        }
+        .bump::<RingPolicy>(policy_view.address())?;
+        let policy = load_policy(program, policy_view)?;
+
+        let (first, rows) = self.prior_five()?;
+        for (row, (max_metas, max_data)) in rows.iter().zip(graph::WINDOW_BOUNDS) {
+            if row.num_account_metas() > max_metas || row.get_instruction_data().len() > max_data {
+                return Err(ProgramError::InvalidInstructionData);
+            }
+        }
+        let metas = [
+            project_metas(&rows[0])?,
+            project_metas(&rows[1])?,
+            project_metas(&rows[2])?,
+            project_metas(&rows[3])?,
+            project_metas(&rows[4])?,
+        ];
+        let instructions = core::array::from_fn(|i| PreviousInstruction {
+            program_id: *rows[i].get_program_id(),
+            accounts: &metas[i],
+            data: rows[i].get_instruction_data(),
+        });
+        let withdrawal = graph::compare_measured_prefix(
+            PrefixProjection {
+                program,
+                policy_address: policy_view.address(),
+                policy: &policy,
+                first,
+                review: retained.original,
+                instructions,
+            },
+            compared,
+        )
+        .map_err(|_| ProgramError::InvalidInstructionData)?;
+        Ok(RuntimePrefixMatch {
+            _observed: self,
+            _withdrawal: withdrawal,
+        })
+    }
+}
+
+/// Plain per-operation comparison data, deliberately distinct from immutable
+/// deployment/profile pins. Nothing here is deserialized from tag 68.
+#[cfg(target_os = "solana")]
+struct RetainedOperation<'a> {
+    ordered_roles: &'a [Address; ROLE_COUNT],
+    original: &'a graph::ExpectedLegacySplPrefix<'a>,
+}
+
+/// Opaque review-stage value tied to the same real observation. There is no
+/// promotion to a descriptor, receipt, signer, or settlement API.
+#[cfg(target_os = "solana")]
+struct RuntimePrefixMatch<'read, 'invocation> {
+    _observed: &'read ObservedV1<'invocation>,
+    _withdrawal: graph::WithdrawalBinding,
+}
+
+#[cfg(target_os = "solana")]
+fn project_metas(row: &IntrospectedInstruction<'_>) -> Result<Vec<graph::Meta>, ProgramError> {
+    (0..row.num_account_metas())
+        .map(|index| {
+            let meta = row.get_instruction_account_at(index)?;
+            Ok(graph::Meta {
+                key: meta.key,
+                writable: meta.is_writable(),
+                signer: meta.is_signer(),
+            })
+        })
+        .collect()
 }
 
 struct BoundWindow<'a> {
     instructions: Instructions<Ref<'a, [u8]>>,
+    program: Address,
     accounts: &'a [AccountView; ROLE_COUNT],
     envelope: &'a [u8],
     first: u16,
@@ -137,6 +233,7 @@ impl<'a> BoundWindow<'a> {
         let first = index.checked_sub(PRIOR).ok_or(InvalidInstructionData)?;
         Ok(Self {
             instructions,
+            program: *program,
             accounts,
             envelope: data,
             first,
@@ -288,6 +385,7 @@ mod tests {
         let mut fixtures = fixtures(&bytes, &ring, current, count);
         let views = fixtures.each_mut().map(Fixture::view);
         let read = BoundWindow::load(&ring, &views, &bytes).expect("same V1 invocation view");
+        assert_eq!(read.program, ring);
         assert!(core::ptr::eq(read.accounts, &views));
         assert_eq!(read.envelope, bytes.as_slice());
         let (first, prior) = read.prior_five().unwrap();
