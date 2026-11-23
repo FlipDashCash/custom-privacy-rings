@@ -39,7 +39,7 @@ A ring reads two kinds of tree, each in a Storage program account with its own r
 - A public and a private block are two rules. One rule over both would admit a publicly blocked owner with no private entry.
 - The wallet derives its salt per ring from its viewing key, so an auditor that holds the nullifier secret cannot derive another ring's salt.
 - Private lists serve one ring. A source of a salted list must pin the ring's tracking registry, so a curator that serves several rings keeps one registry per ring.
-- A list writer reads an enrolled owner's salt through `getListSalt`, which checks the salt against the row's tag and never returns the nullifier secret. For an owner with no row it returns the ring salt, which Ring RPC derives per ring and cluster from its auditor secret.
+- A list writer reads an enrolled owner's salt through `getListSalt`, which checks the salt against the row's tag and never returns the nullifier secret. For an owner with no row it returns the ring salt, which Ring RPC derives per ring and cluster from its auditor secret, and refuses a ring whose policy commits no tag of that salt.
 - A private write proves the owner's applied row, or the owner's absence from the tracking root under a nonzero salt. The SDK refuses a write for an absent owner before the proof unless its salt opens `ring_list_tag`. A write that names an asset whose mint hashes to its member needs no row.
 
 ## Tracking
