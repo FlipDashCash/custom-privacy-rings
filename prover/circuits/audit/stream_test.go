@@ -2,7 +2,6 @@ package audit_test
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"encoding/hex"
 	"math/big"
 	"slices"
@@ -139,9 +138,9 @@ func TestDataHashesNeedNoLayoutBit(t *testing.T) {
 	s.Outputs[0].Utxo.DataHash = big.NewInt(0xda7a)
 	s.Outputs[0].Utxo.RingDataHash = big.NewInt(0x5ca1e)
 	c.RequireSolved(t, s.Circuit(t))
-	t.Run("bit 0", func(t *testing.T) {
+	t.Run("bit 2", func(t *testing.T) {
 		circuit := s.Circuit(t)
-		circuit.Layout = 1
+		circuit.Layout = 1 << 2
 		c.Refuse(t, circuit)
 	})
 }
@@ -157,7 +156,6 @@ func TestLayoutIsTheKeys(t *testing.T) {
 	t.Run("entry on a key with no entry capacity", func(t *testing.T) { refuse(t, plainShape, audit.LayoutEntry) })
 	t.Run("no entry on an entry key", func(t *testing.T) { refuse(t, entryShape, 0) })
 	t.Run("a bit past the flags", func(t *testing.T) { refuse(t, plainShape, 1<<2) })
-	t.Run("the vouched bit on a frame nobody vouches for", func(t *testing.T) { refuse(t, entryShape, audit.LayoutEntry|audit.LayoutVouched) })
 }
 
 // The auditor opens the voucher's key from its own blocks, and a frame nobody vouches for seals zeros there.
@@ -170,7 +168,7 @@ func TestStreamSealsTheVoucherKey(t *testing.T) {
 		vouched := ringaudit.NewSection(t, shape)
 		vouched.Voucher = ringaudit.VoucherKey
 		c.RequireSolved(t, vouched.Circuit(t))
-		if !bytes.Equal(region(vouched), ringaudit.VoucherKey.Public().(ed25519.PublicKey)) {
+		if !bytes.Equal(region(vouched), vouched.SignerKey()) {
 			t.Fatal("the stream seals another key")
 		}
 		if !bytes.Equal(region(ringaudit.NewSection(t, shape)), make([]byte, audit.KeyLen)) {
@@ -323,7 +321,7 @@ func TestStreamVector(t *testing.T) {
 			v.Blindings = append(v.Blindings, ringtest.FieldHex(s.Blinding(t, i)))
 		}
 		if s.Vouched() {
-			v.Voucher = hex.EncodeToString(s.Voucher.Public().(ed25519.PublicKey))
+			v.Voucher = hex.EncodeToString(s.SignerKey())
 		}
 		cases[k] = v
 	}

@@ -9,8 +9,8 @@
 //
 // Read after zolana/prover/server/circuits/spp_transaction/shared/transaction.go, the statement
 // the ring extends. Read before, in the order Define calls them, shared/utxo.go, audit/audit.go,
-// transfer/input.go, policy/record_pool.go, policy/tracking.go, transfer/owners.go,
-// policy/policy.go. Then prover/ring/ring.go, outside Define.
+// policy/voucher.go, transfer/input.go, policy/record_pool.go, policy/tracking.go,
+// transfer/owners.go, policy/policy.go. Then prover/ring/ring.go, outside Define.
 //
 // Both proofs reopen private_tx_hash over the note, output and address chains and the transaction blinding.
 // The ring derives that blinding from the sealed key and the statement's first nullifier, and SPP derives
@@ -34,13 +34,14 @@
 //   - Input asset subjects are in policy/subjects.go and policy/rules.go.
 //   - Owner rows and the zero key rule are in transfer/owners.go.
 //   - Approval totals are in policy/screen.go.
+//   - The voucher's signature and the allow bits it lends are in policy/voucher.go.
 //
 // Properties, the statement proves the following on the rail its bits select.
 //  1. Every real output and spent note opens to the commitment SPP publishes or spends, through
 //     private_tx_hash, the same wires serve every section below.
 //  2. Each published slot's record seals its opening to the slot's recipient key, and the auditor stream
-//     seals every recipient key, each default-ring note's entry record and the note count under the
-//     auditor key. A ring note opens through the record that created it.
+//     seals every recipient key, each default-ring note's entry record, the note count and a vouched
+//     transfer's voucher key under the auditor key. A ring note opens through the record that created it.
 //  3. Every input note belongs to the bound ring, or to the default ring on an entry key. Its owner
 //     is in the published signer run, the hidden owner or the in-proof sender, the delegate rail excepted.
 //  4. A hidden owner owns the first note, stays out of the run and differs from every co-signer.

@@ -28,15 +28,17 @@ func TestVoucherAdmitsUnlistedOwners(t *testing.T) {
 		unvouched := b.Audit
 		unvouched.Voucher = nil
 		b.Circuit.Voucher = unvouched.VoucherWires(t, ringtest.AsBigInt(b.Circuit.PrivateTxHash), ringtest.AsBigInt(b.Circuit.WithdrawalHash))
-		refused(t, b.Circuit)
+		refused(t, b.Circuit, "policy.subjectPool.read")
 	})
 }
 
 // A signature that fails the curve equation leaves the gadget's hinted limbs out of range, the refusal surfaces where the range table closes.
+// Every nonnative gadget closes there, each case below changes the voucher wires alone of a build the test first solves.
 const rangeTable = "nonnative.(*rangeTable).build"
 
 // A vouch is a signature over one transfer's hashes by the key the proof names.
 func TestVouchBindsTheTransfer(t *testing.T) {
+	requireSolved(t, vouchedWorld().Build(t).Circuit)
 	hashes := func(b ringtransfer.Built) (privateTxHash, withdrawalHash *big.Int) {
 		return ringtest.AsBigInt(b.Circuit.PrivateTxHash), ringtest.AsBigInt(b.Circuit.WithdrawalHash)
 	}

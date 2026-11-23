@@ -200,6 +200,11 @@ var refusals = []struct {
 		w.Own[ringpolicy.Alice] = ringpolicy.Record{Lists: ringregistry.BlockBit}
 	}, in: "policy.assertPaymentRules", wide: true},
 	{name: "vouched owner off a list no vouch covers", honest: vouchedApproved, world: func(w *ringpolicy.World) { delete(w.Own, ringpolicy.Alice) }, in: "policy.assertPaymentRules"},
+	{name: "vouched sender off a list no vouch covers", honest: vouchedApprovedSender, world: func(w *ringpolicy.World) { delete(w.Own, ringpolicy.Sender) }, in: "policy.assertSenderRules"},
+	{name: "asset off a required list beside a listed voucher", honest: vouchedAssets, world: func(w *ringpolicy.World) { delete(w.Own, ringpolicy.AssetB) }, in: "policy.assertPaymentRules"},
+	{name: "vouched transfer on the delegate rail", honest: delegate2, world: func(w *ringpolicy.World) {
+		w.Voucher, w.Own[ringpolicy.Carol] = ringpolicy.Carol, ringpolicy.Record{Lists: ringregistry.AllowBit}
+	}, in: "policy.(*Policy).resolveSubjects"},
 	{name: "curator root outside the statement", honest: ringpolicy.Confidential, witness: func(_ testing.TB, b ringpolicy.Witness) { b.Policy().CuratorRoot = 5 }, in: "ringpolicy.(*SectionCircuit).Define"},
 }
 
@@ -235,6 +240,20 @@ func vouchedApproved() ringpolicy.World {
 		w.Own[owner] = ringpolicy.Record{Lists: ringregistry.ApprovalBit}
 	}
 	w.Own[ringpolicy.Carol] = ringpolicy.Record{Lists: ringregistry.AllowBit | ringregistry.ApprovalBit}
+	return w
+}
+
+// vouchedApprovedSender also requires the approval list of the sender.
+func vouchedApprovedSender() ringpolicy.World {
+	w := vouchedApproved()
+	w.Table.Rules = append(w.Table.Rules, ringpolicy.Require(policy.SubjectSender, ringregistry.ApprovalBit))
+	return w
+}
+
+// vouchedAssets lists every owner and asset beside a listed voucher, an asset reads no voucher bit.
+func vouchedAssets() ringpolicy.World {
+	w := ringpolicy.Four()
+	w.Voucher, w.Own[ringpolicy.Carol] = ringpolicy.Carol, ringpolicy.Record{Lists: ringregistry.AllowBit}
 	return w
 }
 

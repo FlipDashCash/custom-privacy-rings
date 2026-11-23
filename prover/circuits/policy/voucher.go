@@ -64,6 +64,7 @@ func (v subjectView) assertVouches(api frontend.API, active frontend.Variable) {
 }
 
 // cover merges the voucher's allow bits into a subject's view, a block or frozen bit stays the subject's own.
+// A set bit adds admission only under a present mask, under an absent or alternative mask it removes admission, so a vouch loosens no deny rule.
 func (v subjectView) cover(api frontend.API, voucher subjectView) subjectView {
 	for _, list := range vouchedLists {
 		v.onList[list] = api.Or(v.onList[list], voucher.onList[list])

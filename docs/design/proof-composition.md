@@ -130,7 +130,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - A signer on a private allow list needs its list salt in the witness.
 - The voucher's records take rows of the record pools and the tracking pool the owners share. A transfer that fills every row leaves none for it.
 - A proof nobody vouches for carries a throwaway key and its signature. That key reads no record and enters no ciphertext.
-- The tests are `TestVoucherAdmitsUnlistedOwners` and `TestVouchBindsTheTransfer`, `TestStreamSealsTheVoucherKey` in `prover/circuits/audit`, and the voucher cases of `TestPolicySections` in `prover/circuits/policy`.
+- The tests are `TestVoucherAdmitsUnlistedOwners` and `TestVouchBindsTheTransfer`, `TestStreamSealsTheVoucherKey` in `prover/circuits/audit`, the voucher cases of `TestPolicySections` and `TestVoucherCoversThePrivateAllowList` in `prover/circuits/policy`, and the voucher index cases of `TestPolicyRequestsRejectMalformedPayloads` in `prover/ring`.
 
 ### The settled outputs are the audited outputs
 

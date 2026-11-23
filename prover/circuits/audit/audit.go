@@ -38,8 +38,8 @@
 //     as a dummy.
 //  7. Every transmitted ciphertext byte is bound, the envelope and keys through their counted digests and
 //     each record's published prefix through the record chain, the full record on an exit.
-//  8. On a vouched transfer the stream seals the key whose signature policy/voucher.go verified, and
-//     zeros otherwise.
+//  8. The stream seals Voucher while Vouched is set and zeros otherwise. The caller binds Vouched to the
+//     layout's bit 0 and Voucher to the key policy/voucher.go verified, no constraint here holds either.
 //
 // It proves nothing about the key a sender supplies for a recipient, as SPP proved nothing about a
 // body. A record sealed to another key credits nobody, since a reader accepts a note only when the
@@ -197,7 +197,7 @@ func (w AuditWires) SealStream(api frontend.API, rc frontend.Rangechecker, e Env
 	for _, key := range opened.keys {
 		plaintext = append(plaintext, key[:]...)
 	}
-	// 3. The voucher's key takes the blocks past the last slot, zeros off a vouched transfer. The bytes are the wires the signature check read, the auditor opens the key that signed and no other.
+	// 3. The voucher's key takes the blocks past the last slot, zeros off a vouched transfer. The caller passes the wires its signature check read, the auditor then opens the key that signed and no other.
 	plaintext = append(plaintext, masked(api, w.Vouched, w.Voucher[:])...)
 	// A plaintext off its ranges moves every key off the counters the readers use.
 	if len(plaintext) != ranges.CapacityBlocks()*streamBlockLen {

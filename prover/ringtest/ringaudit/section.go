@@ -42,7 +42,7 @@ func NewSectionCircuit(shape audit.StreamShape) *SectionCircuit {
 
 func (c *SectionCircuit) Define(api frontend.API) error {
 	rc := rangecheck.New(api)
-	api.AssertIsEqual(c.Vouched, c.Shape.AssertLayout(api, c.Layout))
+	c.Vouched = c.Shape.AssertLayout(api, c.Layout)
 	envelope := c.OpenEnvelope(api, rc)
 	opened := c.Shape.OpenSlots(api, rc, c.Outputs, c.OutputCount)
 	section := transfer.OpenInputs(api, c.Inputs, c.InputCount)
@@ -159,7 +159,7 @@ func (a Audit) Seal(t testing.TB, p Plaintexts) Stream {
 	}
 	var voucher [audit.KeyLen]byte
 	if a.Vouched() {
-		copy(voucher[:], a.voucherKey())
+		copy(voucher[:], a.SignerKey())
 	}
 	plaintext = append(plaintext, voucher[:]...)
 	stream := Stream{Ranges: ranges, Salt: a.Salt, Ciphertext: a.Keys.TransferCiphertext(t, plaintext, a.Salt), Records: make([][]byte, len(p.Records))}

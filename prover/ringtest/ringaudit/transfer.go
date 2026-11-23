@@ -7,7 +7,6 @@ import (
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/audit"
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
-	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringprotocol"
 	"github.com/helius-labs/zolana/prover/server/prover-test/spp/protocol"
@@ -89,7 +88,8 @@ func (tr Transfer) signer() ed25519.PrivateKey {
 	return throwawayKey
 }
 
-func (tr Transfer) voucherKey() ed25519.PublicKey {
+// SignerKey is the key the proof verifies, the voucher's on a vouched transfer.
+func (tr Transfer) SignerKey() ed25519.PublicKey {
 	return tr.signer().Public().(ed25519.PublicKey)
 }
 
@@ -99,16 +99,16 @@ func (tr Transfer) VoucherIdentity(t testing.TB) *big.Int {
 	if !tr.Vouched() {
 		return new(big.Int)
 	}
-	return ringtest.HashBytes(t, append([]byte{0x53}, tr.voucherKey()...))
+	return ringtest.MustSolanaPkField(t, [32]byte(tr.SignerKey()))
 }
 
 // VoucherWires signs shared.VouchDigest of the transfer's hashes.
 func (tr Transfer) VoucherWires(t testing.TB, privateTxHash, withdrawalHash *big.Int) policy.VoucherWires {
 	t.Helper()
 	var message [32]byte
-	ringtest.MustPoseidonHash(t, big.NewInt(shared.VouchDomain), privateTxHash, withdrawalHash).FillBytes(message[:])
+	ringprotocol.VouchDigest(t, privateTxHash, withdrawalHash).FillBytes(message[:])
 	var w policy.VoucherWires
-	ringtest.SetBytes(w.PublicKey[:], tr.voucherKey())
+	ringtest.SetBytes(w.PublicKey[:], tr.SignerKey())
 	ringtest.SetBytes(w.Signature[:], ed25519.Sign(tr.signer(), message[:]))
 	return w
 }
@@ -120,7 +120,7 @@ func (tr Transfer) Wires(layout int64) audit.AuditWires {
 	ringtest.SetBytes(w.AuditorPk[:], tr.Keys.auditorPk[:])
 	ringtest.SetBytes(w.Salt[:], tr.Salt[:])
 	w.Vouched = layout & audit.LayoutVouched
-	ringtest.SetBytes(w.Voucher[:], tr.voucherKey())
+	ringtest.SetBytes(w.Voucher[:], tr.SignerKey())
 	return w
 }
 
