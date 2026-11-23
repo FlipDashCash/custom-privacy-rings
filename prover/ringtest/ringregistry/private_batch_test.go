@@ -70,3 +70,27 @@ func TestPrivateWriteOpensTheOwnersTrackingRow(t *testing.T) {
 func TestPrivateKeyRefusesAPublicMask(t *testing.T) {
 	ringtest.RequireRefused(t, solvePrivate(ringregistry.PrivateBatch(t, 2, ringregistry.AllowBit)), "registry.(*PrivateApplyRecordsCircuit).Define")
 }
+
+// A write for an owner the tracking root proves absent takes any nonzero salt, the ring's in practice.
+func TestPrivateWriteForAnAbsentOwner(t *testing.T) {
+	absent := func(salt int64) *registry.PrivateApplyRecordsCircuit {
+		return ringregistry.PrivateBatchFor(t, 2, ringregistry.PrivateBlockBit, ringregistry.NewAbsentOwnerWrite(t, big.NewInt(salt)))
+	}
+	if err := solvePrivate(absent(0x5a17)); err != nil {
+		t.Fatal(err)
+	}
+	const owner = "registry.PrivateOwner.Assert"
+	t.Run("a zero salt names the public record", func(t *testing.T) {
+		ringtest.RequireRefused(t, solvePrivate(absent(0)), owner)
+	})
+	t.Run("an absent owner called present", func(t *testing.T) {
+		c := absent(0x5a17)
+		c.Owners[0].Present = 1
+		ringtest.RequireRefused(t, solvePrivate(c), owner)
+	})
+	t.Run("an enrolled owner called absent", func(t *testing.T) {
+		c := ringregistry.PrivateBatch(t, 2, ringregistry.PrivateBlockBit)
+		c.Owners[0].Present = 0
+		ringtest.RequireRefused(t, solvePrivate(c), owner)
+	})
+}

@@ -14,7 +14,7 @@
 // 1. The gates follow from statement values alone, no prover bit clears a section. Screened is a nonzero policy_hash off the authority rail. Outflow is a nonzero own root.
 // 2. Each read goes through a pool under the bound root of its source, own or curator per list, present or proven absent.
 // 3. An owner reads each public list at its zero salt key, an enrolled owner each private list at the one key its tracking row fixes.
-// 4. An owner proven absent under the tracking root reads off every private list.
+// 4. An owner proven absent under the tracking root reads each private list at the one key the ring's committed salt fixes, and off every private list on a ring with a zero RingListTag.
 // 5. A padded row, a dummy, an unused payment and an unused public slot close their gates and read zeros.
 // 6. A live input's asset reads its lists under Screened alone and decodes no mint policy.
 // 7. A mint policy reads from the own record alone, an asset with no record reads no limit.
@@ -93,19 +93,26 @@ func (p *Policy) resolveSubjects(api frontend.API, table tableView, g Gates, spe
 	// registry/register_key.go refuses a zero salt, so an enrolled salt never names the public key.
 	// A private list holds an owner at ListKey(owner, salt). A free salt would pick an empty key, and a blocked owner would prove itself off its list. The row's ListTag commits to the one salt enrollment fixed, registry/register_key.go seals that salt to the auditor, a list writer needs it to name the key, and a rotation keeps the tag.
 	//
-	// The tracking floor closes the skip for an owner a private write names. An owner absent under the tracking root has no salt to read under, so it reads off every private list, an allow list refuses it and a block list admits it. An old root could prove a blocked owner unenrolled, and no constraint here can see the root's age.
+	// The tracking floor closes the skip for an owner a private write names. An owner absent under the tracking root reads at the ring's salted key, or off every private list on a ring with a zero RingListTag. An old root could prove a blocked owner unenrolled and move its read off its own key, and no constraint here can see the root's age.
 	// A private write proves the owner's row under the tracking root it names, registry/apply_records.go, and the program raises the source's floor to that root's revision. The program refuses a tracking root below a salted source's floor in LiveRoots::tracking, program-libs/interface/src/accounts/state.rs, and refuses a salted source pinned to another tracking registry in RingPolicy::check_source_pair. Every root at or above the floor holds the row, a row stays under every later root.
 	anySalted := api.Or(table.sources.saltedOwn, table.sources.saltedCurated)
 	ownerCurated := api.Mul(curated, table.sources.publicForeign)
+	ringSalt := ringgadget.IsNonZero(api, p.RingListTag)
 	resolveOwner := func(entry OwnerEntry, active, member frontend.Variable) subjectView {
 		view, _ := resolve(entry.PoolEntry, active, ownerCurated, shared.ListKey(api, member, 0))
-		// A proven absent tracking row is the one skip, a present row forces its salt and so its key.
-		row := spend.Tracking.Row(api, api.Mul(active, anySalted), member, entry.Tracking)
+		// An enrolled row forces its salt and so its key, an owner with none reads at the ring's salt, a zero RingListTag is the one skip.
+		reads := api.Mul(active, anySalted)
+		row := spend.Tracking.Row(api, reads, member, entry.Tracking)
 		enrolled := ringgadget.IsNonZero(api, row.NullifierPk)
-		abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: enrolled, A: shared.ListTag(api, entry.ListSalt), B: row.ListTag})
+		tag := shared.ListTag(api, entry.ListSalt)
+		abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: enrolled, A: tag, B: row.ListTag})
+		// A free salt on an absent owner would pick an empty key and pass a private block.
+		ringSalted := api.Mul(reads, api.Sub(1, enrolled), ringSalt)
+		abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: ringSalted, A: tag, B: p.RingListTag})
+		keyed := api.Add(enrolled, ringSalted)
 		key := shared.ListKey(api, member, entry.ListSalt)
-		salted := pooledRecordAt(own.resolve(api, recordQuery{active: api.Mul(enrolled, table.sources.saltedOwn), member: key, index: entry.OwnSalted})).onList
-		curatedSalted := curator.resolve(api, recordQuery{active: api.Mul(enrolled, table.sources.saltedCurated), member: key, index: entry.CuratorSalted[0]})
+		salted := pooledRecordAt(own.resolve(api, recordQuery{active: api.Mul(keyed, table.sources.saltedOwn), member: key, index: entry.OwnSalted})).onList
+		curatedSalted := curator.resolve(api, recordQuery{active: api.Mul(keyed, table.sources.saltedCurated), member: key, index: entry.CuratorSalted[0]})
 		salted = table.sources.lists(api, salted, [NSources]frontend.Variable(curatedSalted))
 		view.onList = table.sources.owner(api, view.onList, salted)
 		return view

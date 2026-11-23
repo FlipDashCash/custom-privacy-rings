@@ -43,7 +43,7 @@ import (
 // 4. A present member keeps its leaf, its member and its link, a record a write empties stays in the list and reads as empty.
 // 5. An absent member is proven absent under the running root and inserted after its low record at exactly the next index below Capacity, and a write that would leave its record empty inserts nothing.
 // 6. Every write keeps the links one sorted run from the sentinel to q-1 with every member at a link's end.
-// 7. Under a private key every selected write carries a private mask and opens its owner's enrolled tracking row under the bound tracking root, and the row's tag fixes the write's salted key.
+// 7. Under a private key every selected write carries a private mask and opens its owner's tracking row or its proven absence under the bound tracking root. An enrolled row's tag fixes the write's salted key, an absent owner's write takes a nonzero salt.
 // 8. The statement binds both roots, both next indexes, both chain ends, the count and the restrictive bit, a private key also the private write bitmap and the tracking root.
 // 9. The restrictive bit is set exactly when an active write clears a grant bit, sets a deny bit, masks a private list, lowers the guard threshold, tightens a cap, cosign or withdrawal bound, or changes an asset limit.
 //
@@ -117,9 +117,9 @@ type PrivateApplyRecordsCircuit struct {
 }
 
 type PrivateOwner struct {
+	Owner    frontend.Variable
 	ListSalt frontend.Variable
-	Record   TrackingRecord
-	Path     TrackingPath
+	TrackingOpening
 }
 
 type registryState struct {
@@ -340,24 +340,28 @@ func (c *PrivateApplyRecordsCircuit) privateBits(api frontend.API) []frontend.Va
 	return api.ToBinary(c.PrivateWrites, c.NumWrites)
 }
 
-// Assert opens the owner's row under root while active is set, an unset active forces a zero owner and salt.
+// Assert opens the owner's row or its absence under root while active is set, an unset active forces a zero owner and salt.
 //
 // A private entry sits at ListKey(owner, salt), a public owner record at ListKey(owner, 0). An enrolled
-// tag opens to a nonzero salt, so no private write lands on the public record. The row's tag fixes the
-// salt, so the write names the one key every salted read of the owner computes. The program raises
-// tracking_floor to the revision of root, every root from it on holds the row, and no later read proves
-// the owner absent to skip the entry.
+// tag opens to a nonzero salt and an absent owner's salt is nonzero, so no private write lands on the
+// public record. An enrolled row's tag fixes the salt, so the write names the one key every salted read
+// of the owner computes. The program raises tracking_floor to the revision of root, every root from it
+// on holds an opened row, and no later read proves that owner absent to skip the entry.
+// An absent owner's salt is free, policy/subjects.go reads such an owner only at the ring's committed salt.
 func (o PrivateOwner) Assert(api frontend.API, active, key, root frontend.Variable) {
 	api.AssertIsBoolean(active)
-	// 1. The write's key is the owner's salted key, and the row's tag opens to the same salt.
-	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: active, A: shared.ListKey(api, o.Record.Member, o.ListSalt), B: key})
-	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: active, A: shared.ListTag(api, o.ListSalt), B: o.Record.ListTag})
-	// 2. The opened leaf is an enrolled row, the sentinel holds the zero key and the empty leaf has no preimage.
-	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: active, V: api.IsZero(o.Record.NullifierPk)})
-	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: active, A: o.Path.Root(api, o.Record.Hash(api)), B: root})
-	// 3. An unselected slot carries no private owner or salt.
+	// 1. The opened leaf is the owner's row, or the link proving the owner absent under root.
+	row := o.Resolve(api, active, root, o.Owner)
+	absent := api.Sub(active, row.Present)
+	// 2. The write's key is the owner's salted key, and an enrolled row's tag opens to the same salt.
+	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: active, A: shared.ListKey(api, o.Owner, o.ListSalt), B: key})
+	abstractor.CallVoid(api, gadget.AssertEqualWhen{Cond: row.Present, A: shared.ListTag(api, o.ListSalt), B: o.Record.ListTag})
+	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: absent, V: api.IsZero(o.ListSalt)})
+	// 3. A present leaf is an enrolled row, the sentinel holds the zero key and the empty leaf has no preimage.
+	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: row.Present, V: api.IsZero(o.Record.NullifierPk)})
+	// 4. An unselected slot carries no private owner or salt.
 	inactive := api.Sub(1, active)
-	for _, value := range []frontend.Variable{o.ListSalt, o.Record.Member} {
+	for _, value := range []frontend.Variable{o.ListSalt, o.Owner} {
 		abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: inactive, V: value})
 	}
 }

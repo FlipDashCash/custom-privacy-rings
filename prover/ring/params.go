@@ -121,6 +121,8 @@ type PolicyTable struct {
 	Salted    uint16  `json:"salted"`
 	PolicyLen uint8   `json:"policyLen"`
 	Rules     []Field `json:"rules"`
+	// Nil or zero on a ring with no ring salt.
+	RingListTag *Field `json:"ringListTag,omitempty"`
 }
 
 type Withdrawal struct {
@@ -270,10 +272,12 @@ type PrivateApplyRecordsParams struct {
 }
 
 type PrivateOwnerParams struct {
-	ListSalt Field                `json:"listSalt"`
-	Record   TrackingRecordParams `json:"record"`
-	Index    uint64               `json:"index"`
-	Path     []Field              `json:"path"`
+	ListSalt Field `json:"listSalt"`
+	// The owner Record brackets, set on a write under the ring salt.
+	Absent *Field               `json:"absent,omitempty"`
+	Record TrackingRecordParams `json:"record"`
+	Index  uint64               `json:"index"`
+	Path   []Field              `json:"path"`
 }
 
 type ApplyEnrollmentsParams struct {

@@ -48,10 +48,16 @@ func FillPools(t testing.TB, policyWitness *policy.Policy, outputs, inputs []sha
 	owner := func(member frontend.Variable, active bool) policy.OwnerEntry {
 		identity := ringtest.AsBigInt(member)
 		ownerEntry := policy.OwnerEntry{PoolEntry: entry(ringregistry.PublicKey(t, identity), active), Tracking: 0, ListSalt: 0, OwnSalted: 0, CuratorSalted: [1]frontend.Variable{0}}
-		if !active || !(saltedOwn || saltedCurated) || !tracking.Opening(identity).Present {
+		if !active || !(saltedOwn || saltedCurated) {
 			return ownerEntry
 		}
 		salt := ListSaltOf(t, identity)
+		if !tracking.Opening(identity).Present {
+			if ringtest.AsBigInt(policyWitness.RingListTag).Sign() == 0 {
+				return ownerEntry
+			}
+			salt = RingSalt
+		}
 		key := ringregistry.ListKey(t, identity, salt)
 		ownerEntry.ListSalt = salt
 		ownerEntry.OwnSalted = own.add(key, saltedOwn)

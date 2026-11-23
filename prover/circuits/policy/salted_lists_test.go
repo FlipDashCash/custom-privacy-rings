@@ -223,6 +223,59 @@ func TestPresentRowCannotSkipTheSaltedRead(t *testing.T) {
 	})
 }
 
+// An owner with no tracking row reads the private lists at the ring's salted key, a zero tag reads none.
+func TestAbsentOwnerReadsAtTheRingSalt(t *testing.T) {
+	world := func(t *testing.T) ringpolicy.World {
+		t.Helper()
+		w := saltedWorld(ringpolicy.Forbid(policy.SubjectOutputOwner, privateBlock))
+		w.Table.RingListTag = ringregistry.ListTag(t, ringpolicy.RingSalt)
+		w.RingSalted = map[int64]uint64{}
+		return w
+	}
+	listed := func(t *testing.T) ringpolicy.World {
+		t.Helper()
+		w := world(t)
+		w.RingSalted[ringpolicy.Alice] = privateBlock
+		return w
+	}
+	t.Run("an unlisted owner is admitted", func(t *testing.T) {
+		requireSolved(t, world(t).Build(t))
+	})
+	t.Run("a listed owner is refused", func(t *testing.T) {
+		ringtest.RequireRefused(t, solveSalted(listed(t).Build(t)), "policy.assertPaymentRules")
+	})
+	t.Run("a ring salted grant admits", func(t *testing.T) {
+		w := saltedWorld(ringpolicy.Rule{Subject: policy.SubjectOutputOwner, Mode: policy.ModePresent, Mask: privateAllow})
+		w.Table.RingListTag = ringregistry.ListTag(t, ringpolicy.RingSalt)
+		w.RingSalted = map[int64]uint64{ringpolicy.Alice: privateAllow, ringpolicy.Sender: privateAllow}
+		requireSolved(t, w.Build(t))
+	})
+	for _, salt := range []int64{0, 0x1234} {
+		t.Run("another salt fails the ring tag", func(t *testing.T) {
+			b := listed(t).Build(t)
+			b.Circuit.OwnerEntries[0].ListSalt = big.NewInt(salt)
+			ringtest.RequireRefused(t, solveSalted(b), "policy.(*Policy).resolveSubjects")
+		})
+	}
+	t.Run("an enrolled owner cannot read at the ring salt", func(t *testing.T) {
+		w := world(t)
+		w.Enrolled = []int64{ringpolicy.Alice}
+		w.Salted[ringpolicy.Alice] = privateBlock
+		b := w.Build(t)
+		ringtest.RequireRefused(t, solveSalted(b), "policy.assertPaymentRules")
+		b.Circuit.OwnerEntries[0].ListSalt = ringpolicy.RingSalt
+		ringtest.RequireRefused(t, solveSalted(b), "policy.(*Policy).resolveSubjects")
+	})
+	t.Run("a zero tag reads no ring salted entry", func(t *testing.T) {
+		w := listed(t)
+		w.Table.RingListTag = nil
+		b := w.Build(t)
+		requireSolved(t, b)
+		b.Circuit.OwnerEntries[0].ListSalt = ringpolicy.RingSalt
+		requireSolved(t, b)
+	})
+}
+
 // A distinct owner reads an own public, a curator public and a salted record.
 func TestDistinctOwnersReadAllThreeRecords(t *testing.T) {
 	for _, curatedSalted := range []bool{false, true} {
