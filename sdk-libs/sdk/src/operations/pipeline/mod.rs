@@ -377,7 +377,7 @@ impl<R: Rail> RingTransfer<R> {
         self
     }
 
-    /// A salted list refuses an unregistered owner on a ring with a ring salt and none given.
+    /// A salted list on a ring that commits a ring list tag refuses a proof with no ring salt.
     #[must_use = "use the updated transfer"]
     pub fn with_ring_salt(mut self, ring_salt: [u8; 32]) -> Self {
         self.ring_salt = Some(ring_salt);

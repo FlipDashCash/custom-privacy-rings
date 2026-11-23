@@ -279,13 +279,13 @@ impl PrivateStorageWrite<'_> {
             }
             .read(rpc)
             .await?;
-            // 3. An enrolled row fixes the salt by its list tag, an owner with no row writes under the ring salt.
+            // 3. The salt opens the owner's list tag or the ring's, the circuit checks neither.
             let tag = domain::list_tag(&owner.write.list_salt)?;
             let (record, path, absent) = match opening {
                 TrackingOpening::Present { record, path }
                     if record.nullifier_pk != ZERO_NULLIFIER_PUBKEY =>
                 {
-                    if tag != record.list_tag {
+                    if tag != record.list_tag && tag != policy.ring_list_tag {
                         return Err(RingError::ListSaltMismatch {
                             member: owner.member,
                         });

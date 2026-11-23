@@ -198,6 +198,8 @@ pub(crate) struct OwnerEntry {
     pub list_salt: [u8; 32],
     pub own_salted: u32,
     pub curator_salted: [u32; 1],
+    pub own_ring: u32,
+    pub curator_ring: [u32; 1],
 }
 
 #[derive(Serialize)]
@@ -482,6 +484,8 @@ pub(crate) struct PolicyParams<'a> {
     pub sender_entries: Vec<OwnerEntry>,
     /// Zero off a screened vouched frame.
     pub voucher_entry: OwnerEntry,
+    #[serde(skip_serializing_if = "Option::is_none", with = "fe::option")]
+    pub ring_salt: Option<[u8; 32]>,
     pub owner_entries: Vec<OwnerEntry>,
     pub asset_entries: Vec<PoolEntry>,
     pub public_asset_entries: Vec<u32>,

@@ -129,6 +129,9 @@ export interface PolicyOwnerEntry extends PolicySubjectEntry {
   readonly listSalt: Bytes32;
   readonly ownSalted: number;
   readonly curatorSalted: number;
+  /** The owner's records under the ring salt, 0 on a ring with none. */
+  readonly ownRing: number;
+  readonly curatorRing: number;
 }
 
 /** Go `PolicyParams`, one owner and one asset entry per output and withdrawal slot, both pools at the key's widths. */
@@ -150,6 +153,8 @@ export interface PolicyProofInputs extends PolicyTableProofInputs {
   readonly senderEntries: readonly PolicyOwnerEntry[];
   /** The zero entry off a vouched frame and off a screened ring. */
   readonly voucherEntry: PolicyOwnerEntry;
+  /** Opens `ringListTag`, absent on a ring that reads no list under a ring salt. */
+  readonly ringSalt?: Bytes32;
   readonly ownerEntries: readonly PolicyOwnerEntry[];
   readonly assetEntries: readonly PolicySubjectEntry[];
   readonly publicAssetEntries: readonly number[];
@@ -689,6 +694,7 @@ function policyJson(policy: PolicyProofInputs, shape: PolicySectionShape): Json 
       ownerEntryJson(entry, capacity, `senderEntries[${i}]`),
     ),
     voucherEntry: ownerEntryJson(policy.voucherEntry, capacity, "voucherEntry"),
+    ...(policy.ringSalt === undefined ? {} : { ringSalt: field(policy.ringSalt, "ringSalt") }),
     ownerEntries: sized(policy.ownerEntries, slots, "ownerEntries").map((entry, i) =>
       ownerEntryJson(entry, capacity, `ownerEntries[${i}]`),
     ),
@@ -756,6 +762,8 @@ function ownerEntryJson(entry: PolicyOwnerEntry, capacity: PolicyPoolCapacity, n
     listSalt: field(entry.listSalt, `${name}.listSalt`),
     ownSalted: integer(entry.ownSalted, `${name}.ownSalted`, 0, capacity.own - 1),
     curatorSalted: [integer(entry.curatorSalted, `${name}.curatorSalted`, 0, capacity.curator - 1)],
+    ownRing: integer(entry.ownRing, `${name}.ownRing`, 0, capacity.own - 1),
+    curatorRing: [integer(entry.curatorRing, `${name}.curatorRing`, 0, capacity.curator - 1)],
   };
 }
 

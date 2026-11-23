@@ -181,10 +181,8 @@ pub enum RingError {
     DepositUnkeyed,
     #[error("a salted list reads enrolled owner {member:?} and no list salt is known")]
     ListSaltUnknown { member: [u8; 32] },
-    #[error(
-        "a salted list reads unregistered owner {member:?} and no salt opens the ring's list tag"
-    )]
-    RingSaltUnknown { member: [u8; 32] },
+    #[error("a salted list reads under the ring salt and no salt opens the ring list tag")]
+    RingSaltUnknown,
     #[error("no known list salt of owner {member:?} opens its tracking leaf's list tag")]
     ListSaltMismatch { member: [u8; 32] },
     #[error(

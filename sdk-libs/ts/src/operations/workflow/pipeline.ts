@@ -311,7 +311,7 @@ export type StagedTransferInput = Readonly<{
   listSalts?: readonly RingListSalt[];
   /** A listed wallet vouching for every sender and payment owner, its salt in `listSalts` once enrolled. */
   voucher?: VouchSigner;
-  /** An unregistered owner on a ring with a ring salt reads the private lists under it. */
+  /** Every owner reads the private lists under it on a ring that commits its tag. */
   ringSalt?: Bytes32;
   transaction?: RingTransactionFrame;
   approve?: (coSigners: readonly Address[], proofInputs: SppProofInputs) => Promise<void>;

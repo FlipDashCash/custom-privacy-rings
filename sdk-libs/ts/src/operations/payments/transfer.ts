@@ -127,7 +127,7 @@ export interface RingSpendParams {
   readonly cosigners?: readonly SignerAccount[];
   /** The sender's and any other enrolled owner's salt a salted list reads, a paid `RingAddress` adds its own. */
   readonly listSalts?: readonly RingListSalt[];
-  /** An unregistered owner reads the private lists under it on a direct proof. */
+  /** A direct proof reads the private lists under it on a ring that commits its tag. */
   readonly ringSalt?: Bytes32;
   readonly priorityFeeLamports?: bigint;
 }

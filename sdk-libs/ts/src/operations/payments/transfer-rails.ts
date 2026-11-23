@@ -151,7 +151,7 @@ export interface CustomRingTransferInput {
   readonly coSigners?: readonly Address[];
   /** Every enrolled owner a salted list reads, the sender and the recipients alike. */
   readonly listSalts?: readonly RingListSalt[];
-  /** An unregistered owner reads the private lists under it on a direct proof. */
+  /** A direct proof reads the private lists under it on a ring that commits its tag. */
   readonly ringSalt?: Bytes32;
   /** SPP's optional fields the frame carries through, the proof's own digests are set per attempt. */
   readonly extensions?: Omit<FrameExtensions, "approvalTotals" | "cache">;

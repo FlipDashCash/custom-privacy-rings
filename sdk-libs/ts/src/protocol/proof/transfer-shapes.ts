@@ -12,7 +12,7 @@ export interface TransferShape {
   readonly owners: number;
   /** One evidence slot per input, the key also spends default-ring notes. */
   readonly entry: boolean;
-  /** A salted and a public record per owner fit. */
+  /** A public record and the records under the owner's salt and the ring salt fit. */
   readonly wide: boolean;
   /** The most tracking rows one inline transaction on the key opens. */
   readonly tracking: number;
@@ -48,20 +48,20 @@ const NARROW_SHAPES: readonly TransferShape[] = Object.freeze([
   shape(2, 24, 4, 4, NARROW, [6, 12]),
   shape(4, 24, 4, 4, NARROW, [8, 16]),
   shape(8, 16, 4, 4, NARROW, [12, 24]),
-  shape(16, 4, 4, 2, NARROW, [21, 56]),
+  shape(16, 4, 4, 2, NARROW, [21, 74]),
 ]);
 /** The wide flag takes the first row holding the frame, the last only past 24 inputs. */
 const WIDE_SHAPES: readonly TransferShape[] = Object.freeze([
-  shape(8, 24, 32, 13, WIDE, [42, 88]),
-  shape(2, 40, 4, 9, WIDE, [12, 18]),
+  shape(8, 24, 32, 13, WIDE, [42, 115]),
+  shape(2, 40, 4, 9, WIDE, [12, 19]),
 ]);
 /** A frame takes the first row holding its width. */
 const ENTRY_SHAPES: readonly TransferShape[] = Object.freeze([
-  shape(4, 8, 4, 8, ENTRY, [16, 36]),
-  shape(8, 2, 4, 2, ENTRY, [14, 36]),
-  shape(8, 5, 4, 4, ENTRY, [16, 40]),
+  shape(4, 8, 4, 8, ENTRY, [16, 52]),
+  shape(8, 2, 4, 2, ENTRY, [14, 50]),
+  shape(8, 5, 4, 4, ENTRY, [16, 56]),
 ]);
-const WIDE_ENTRY_SHAPE = shape(8, 8, 32, 8, ENTRY, [41, 83]);
+const WIDE_ENTRY_SHAPE = shape(8, 8, 32, 8, ENTRY, [41, 110]);
 
 export const TRANSFER_SHAPES: readonly TransferShape[] = Object.freeze([
   ...NARROW_SHAPES,
@@ -101,7 +101,7 @@ export interface TransferKeyCircuit {
   readonly withdrawals: number;
   readonly owners: number;
   readonly entry: boolean;
-  /** A salted and a public record per owner fit. */
+  /** A public record and the records under the owner's salt and the ring salt fit. */
   readonly wide: boolean;
 }
 

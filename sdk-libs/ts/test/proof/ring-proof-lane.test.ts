@@ -29,7 +29,7 @@ import { checkHiddenOwnerSpends } from "../../src/operations/payments/anonymous.
 import { EMPTY_ENTRY_RECORD, InputClass } from "../../src/protocol/codec/audit-stream.js";
 import type { AuditStreamLayout } from "../../src/protocol/codec/ring-disclosure-layout.js";
 import { checkInputKeys, checkOutputKeys } from "../../src/proof/policy-proof.js";
-import { ownerSalt } from "../../src/proof/policy-proof.js";
+import { committedRingSalt, enrolledSalt } from "../../src/proof/policy-proof.js";
 import { anonymousPartyIdentities } from "../../src/protocol/membership/parties.js";
 import { ANONYMOUS_PARTIES } from "../../src/protocol/transaction/transact.js";
 import { ringCoSignerAccount } from "../helpers/ring-accounts.js";
@@ -120,7 +120,7 @@ describe("selectTransferKey", () => {
       wide: true,
     });
     expect(widest.wideOwners).toBe(true);
-    expect(transferPoolCapacity(widest.circuit)).toEqual({ own: 61, curator: 61, tracking: 12 });
+    expect(transferPoolCapacity(widest.circuit)).toEqual({ own: 62, curator: 62, tracking: 12 });
     expect(select(40, 4, 9).circuit).toEqual(widest.circuit);
     expect(refusal(() => select(25, 5)).code).toBe("RING_CATALOG_KEY_MISSING");
     expect(refusal(() => select(25, 0, 10)).code).toBe("RING_TOO_MANY_OWNERS");
@@ -147,7 +147,7 @@ describe("selectTransferKey", () => {
     expect(entered(5, 8, 4, 4)).toMatchObject({ class: 5, outputs: 8, entry: true });
     const wide = entered(6, 8, 0, 1);
     expect(wide).toMatchObject({ class: 8, outputs: 8, withdrawals: 32, owners: 8, entry: true });
-    expect(transferPoolCapacity(wide)).toEqual({ own: 94, curator: 94, tracking: 41 });
+    expect(transferPoolCapacity(wide)).toEqual({ own: 121, curator: 121, tracking: 41 });
     expect(entered(1, 2, 5, 1)).toEqual(wide);
     expect(entered(8, 4, 32, 8)).toEqual(wide);
     expect(refusal(() => entered(9, 2, 0, 1)).code).toBe("RING_CATALOG_KEY_MISSING");
@@ -203,43 +203,36 @@ describe("selectTransferKey", () => {
   });
 });
 
-describe("ownerSalt", () => {
+describe("enrolledSalt", () => {
   const owner = new Uint8Array(32).fill(1) as Bytes32;
   const salt = new Uint8Array(32).fill(2) as Bytes32;
-  const ringSalt = new Uint8Array(32).fill(3) as Bytes32;
   const salts = new Map([[bytesKey(owner), salt]]);
-  const noRing = { tag: new Uint8Array(32) as Bytes32 };
-  const ring = { tag: listTagOf(ringSalt), salt: ringSalt };
 
   it("takes no salt with no row and the row's salt under its tag", () => {
-    expect(ownerSalt(owner, undefined, new Map(), noRing)).toBeUndefined();
-    expect(ownerSalt(owner, { ...row0(), listTag: listTagOf(salt) }, salts, noRing)).toEqual(salt);
+    expect(enrolledSalt(owner, undefined, new Map())).toBeUndefined();
+    expect(enrolledSalt(owner, { ...row0(), listTag: listTagOf(salt) }, salts)).toEqual(salt);
   });
 
   it("refuses a row with no salt and a salt off the row's tag", () => {
-    expect(refusal(() => ownerSalt(owner, row0(), new Map(), noRing)).code).toBe(
+    expect(refusal(() => enrolledSalt(owner, row0(), new Map())).code).toBe(
       "RING_LIST_SALT_MISSING",
     );
-    expect(refusal(() => ownerSalt(owner, row0(), salts, noRing)).code).toBe(
-      "RING_ADDRESS_MISMATCH",
-    );
+    expect(refusal(() => enrolledSalt(owner, row0(), salts)).code).toBe("RING_ADDRESS_MISMATCH");
+  });
+});
+
+describe("committedRingSalt", () => {
+  const ringSalt = new Uint8Array(32).fill(3) as Bytes32;
+  const tag = listTagOf(ringSalt);
+
+  it("takes the salt of the committed tag and none under a zero tag", () => {
+    expect(committedRingSalt(tag, ringSalt)).toEqual(ringSalt);
+    expect(committedRingSalt(new Uint8Array(32) as Bytes32, ringSalt)).toBeUndefined();
   });
 
-  it("takes the ring salt with no row under the tag the policy commits", () => {
-    expect(ownerSalt(owner, undefined, salts, ring)).toEqual(ringSalt);
-    expect(ownerSalt(owner, { ...row0(), listTag: listTagOf(salt) }, salts, ring)).toEqual(salt);
-  });
-
-  it("refuses a ring tag with no ring salt, a salt off it and a row read at the ring salt", () => {
-    for (const held of [undefined, salt])
-      expect(
-        refusal(() => ownerSalt(owner, undefined, salts, { tag: ring.tag, salt: held })).code,
-      ).toBe("RING_LIST_SALT_MISSING");
-    const atRingSalt = new Map([[bytesKey(owner), ringSalt]]);
-    expect(
-      refusal(() => ownerSalt(owner, { ...row0(), listTag: listTagOf(salt) }, atRingSalt, ring))
-        .code,
-    ).toBe("RING_ADDRESS_MISMATCH");
+  it("refuses a committed tag with no salt and with a salt off it", () => {
+    for (const held of [undefined, new Uint8Array(32).fill(2) as Bytes32])
+      expect(refusal(() => committedRingSalt(tag, held)).code).toBe("RING_LIST_SALT_MISSING");
   });
 });
 
@@ -687,7 +680,15 @@ describe("prover/ring/params.go", () => {
     ) as unknown as TransferProofRequest["inputs"][number];
     const repeat = <T>(length: number, value: T): readonly T[] => Array<T>(length).fill(value);
     const entry = { own: 0, curator: 0 };
-    const ownerEntry = { ...entry, tracking: 0, listSalt: zero, ownSalted: 0, curatorSalted: 0 };
+    const ownerEntry = {
+      ...entry,
+      tracking: 0,
+      listSalt: zero,
+      ownSalted: 0,
+      curatorSalted: 0,
+      ownRing: 0,
+      curatorRing: 0,
+    };
     const pool = unopenedRecordPool(capacity.tracking);
     const request: TransferProofRequest = {
       kind: "transfer",

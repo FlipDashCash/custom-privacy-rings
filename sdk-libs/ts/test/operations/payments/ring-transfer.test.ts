@@ -785,6 +785,8 @@ describe("policy ring", () => {
       listSalt: new Uint8Array(32),
       ownSalted: 0,
       curatorSalted: 0,
+      ownRing: 0,
+      curatorRing: 0,
     });
     const digest = vouchDigest({
       privateTxHash: request.privateTxHash,
