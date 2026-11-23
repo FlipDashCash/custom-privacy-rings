@@ -8,6 +8,15 @@ mod enroll_batch;
 mod initialize;
 #[path = "runtime/instruction_runtime.rs"]
 mod instruction_runtime;
+#[cfg(all(
+    not(feature = "bpf-entrypoint"),
+    any(
+        all(test, not(target_os = "solana")),
+        all(target_os = "solana", feature = "test-sbf")
+    )
+))]
+#[path = "runtime/jupiter_measured_v1_runtime_review.rs"]
+mod jupiter_measured_v1_runtime_review;
 #[path = "accounts/loader.rs"]
 mod loader;
 #[path = "settlement/merge.rs"]

@@ -7,8 +7,8 @@
 #![forbid(unsafe_code)]
 
 use custom_ring_interface::{
-    cosign::CoSignOperation, CoSignScope, InstructionTag, RingMode, RingPolicy, RingRail,
-    RingTransactData, MAX_SPP_CPI_ACCOUNTS, RING_TRANSACT_ACCOUNT_PREFIX_LEN,
+    cosign::CoSignOperation, tracking::TrackingRegistry, CoSignScope, InstructionTag, RingMode,
+    RingPolicy, RingRail, RingTransactData, MAX_SPP_CPI_ACCOUNTS, RING_TRANSACT_ACCOUNT_PREFIX_LEN,
     RING_TRANSACT_RING_CONFIG_INDEX,
 };
 use pinocchio::Address;
@@ -20,7 +20,9 @@ use spr_interface::{
 
 use crate::context::{
     ContextFields, ContextInput, GuardAccount, MatchedGuards, OriginalWithdrawal, ProfilePins,
+    SPL_OUTPUT_MAX,
 };
+use crate::descriptor_statement::{DescriptorProjection, DescriptorRecord, PreparedDescriptor};
 use crate::wire::{DraftFrame, Role, ROLES};
 use crate::TransferRoots;
 
@@ -497,6 +499,7 @@ pub(super) enum PrepareError {
     Prefix,
     RoleScope,
     Descriptor,
+    Statement,
 }
 
 /// Use exactly one checked projection, then prepare only deterministic fields.
@@ -506,6 +509,65 @@ pub(super) fn prepare_context(
     scope: &DescriptorScope<'_>,
     frame: &DraftFrame<'_>,
 ) -> Result<ContextFields, PrepareError> {
+    with_matched_context(projection, scope, |input, _| {
+        input
+            .prepare(frame, scope.accepted_roots)
+            .map_err(|_| PrepareError::Descriptor)
+    })
+}
+
+/// Reconstruct the one prospective verifier input in the same checked path.
+/// The supplied registry and accepted root must already be authenticated by
+/// the future runtime. This does not choose or call a verifier, accept a proof,
+/// certify deployment, measure credit, or authorize an operation.
+pub(super) fn prepare_descriptor(
+    projection: PrefixProjection<'_>,
+    scope: &DescriptorScope<'_>,
+    frame: &DraftFrame<'_>,
+    tracking: &TrackingRegistry,
+) -> Result<PreparedDescriptor, PrepareError> {
+    with_matched_context(projection, scope, |input, policy| {
+        let context = input
+            .prepare(frame, scope.accepted_roots)
+            .map_err(|_| PrepareError::Descriptor)?;
+        let roles = input.roles;
+        let projected = DescriptorProjection {
+            ring_program: *input.ring_program,
+            tracking_account: roles[Role::TrackingRegistry as usize],
+            tracking_revision: context.tracking_revision,
+            tracking_root: scope.accepted_roots.tracking_root,
+            first_nullifier: input.original.first_nullifier,
+            source_authority: roles[Role::Depositor as usize],
+            payer: roles[Role::FeePayer as usize],
+            tree_id: *input.tree_id,
+            output_mint: roles[Role::OutputMint as usize],
+            min_amount: context.minimum_output,
+            max_amount: SPL_OUTPUT_MAX,
+            expiry_slot: frame.expiry_slot,
+        };
+        let record = DescriptorRecord {
+            owner_utxo_hash: *frame.owner_utxo_hash,
+            tx_viewing_pubkey: *frame.tx_viewing_pubkey,
+            salt: *frame.salt,
+            recipient_tag: *frame.recipient_tag,
+            recipient_zero_ciphertext: *frame.recipient_zero_ciphertext,
+            auditor_ciphertext: *frame.auditor_ciphertext,
+        };
+        // This callback has no external input or override. Both the statement
+        // projection and its frozen transcript came from this exact match.
+        projected
+            .prepare(policy, tracking, &record, |_| {
+                Ok::<_, core::convert::Infallible>(context.operation_context)
+            })
+            .map_err(|_| PrepareError::Statement)
+    })
+}
+
+fn with_matched_context<R>(
+    projection: PrefixProjection<'_>,
+    scope: &DescriptorScope<'_>,
+    consume: impl for<'a> FnOnce(ContextInput<'a>, &'a RingPolicy) -> Result<R, PrepareError>,
+) -> Result<R, PrepareError> {
     let PrefixProjection { program, policy_address, policy, first, review, instructions } =
         projection;
     // Retain the exact actual bytes/metas from this same matched projection.
@@ -548,19 +610,20 @@ pub(super) fn prepare_context(
             is_signer: meta.signer,
         })
         .collect();
-    ContextInput {
-        profile: scope.profile,
-        ring_program: program,
-        roles: scope.roles,
-        guards: MatchedGuards {
-            pre: pre.try_into().map_err(|_| PrepareError::Prefix)?,
-            post: post.try_into().map_err(|_| PrepareError::Prefix)?,
-            accounts: &accounts,
+    consume(
+        ContextInput {
+            profile: scope.profile,
+            ring_program: program,
+            roles: scope.roles,
+            guards: MatchedGuards {
+                pre: pre.try_into().map_err(|_| PrepareError::Prefix)?,
+                post: post.try_into().map_err(|_| PrepareError::Prefix)?,
+                accounts: &accounts,
+            },
+            original: &original,
+            tree_id: scope.tree_id,
+            ring_generation: policy.generation(),
         },
-        original: &original,
-        tree_id: scope.tree_id,
-        ring_generation: policy.generation(),
-    }
-    .prepare(frame, scope.accepted_roots)
-    .map_err(|_| PrepareError::Descriptor)
+        policy,
+    )
 }

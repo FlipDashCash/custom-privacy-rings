@@ -5,6 +5,8 @@
 mod draft;
 #[path = "../../../program-libs/interface/src/proof/jupiter_measured_descriptor_context_draft.rs"]
 mod context;
+#[path = "../../../program-libs/interface/src/proof/jupiter_measured_descriptor_statement_draft.rs"]
+mod descriptor_statement;
 #[path = "../../../program-libs/interface/src/instructions/jupiter_measured_deposit_draft.rs"]
 mod wire;
 #[allow(dead_code, unused_imports)]
@@ -14,15 +16,19 @@ mod stock_frames;
 use bytemuck::Zeroable;
 use context::{ProfilePins, SPL_OUTPUT_MAX};
 use custom_ring_interface::{
-    storage, InstructionTag, RingMode, RingPolicy, TransferRoots, RING_POLICY, RING_POLICY_PDA_SEED,
+    storage, tracking::TrackingRegistry, InstructionTag, RingMode, RingPolicy, TransferRoots,
+    RING_POLICY, RING_POLICY_PDA_SEED,
 };
 use draft::{
-    prepare_context, DescriptorScope, ExpectedGuardAccount, ExpectedLegacySplPrefix, Meta,
-    PrefixProjection, PreviousInstruction,
+    prepare_context, prepare_descriptor, DescriptorScope, ExpectedGuardAccount,
+    ExpectedLegacySplPrefix, Meta, PrefixProjection, PreviousInstruction,
 };
 use serde_json::Value;
 use solana_address::Address;
-use spr_hasher::primitives::hash_bytes;
+use spr_hasher::{
+    hash_chain::create_hash_chain_4_from_slice,
+    primitives::{hash_bytes, pack_be, right_align, solana_owner_identity},
+};
 use spr_interface::{
     instruction::InterfaceTransfer, pda, SHIELDED_POOL_PROGRAM_ID, SPL_TOKEN_PROGRAM_ID,
 };
@@ -133,6 +139,9 @@ fn checks_one_stock_operation_then_consumes_its_own_binding_in_the_v1_context() 
     policy.mode = RingMode::Anonymous as u8;
     policy.tracking = roles[Role::TrackingRegistry as usize];
     policy.generation = 7u32.to_le_bytes();
+    // The already-public inert auditor word from historical #5's typed test.
+    // This is only a tagged fixture, not an installed key or authority.
+    policy.auditor_pubkey = [4; 33];
 
     let review = ExpectedLegacySplPrefix {
         guard_program,
@@ -190,7 +199,7 @@ fn checks_one_stock_operation_then_consumes_its_own_binding_in_the_v1_context() 
     fee_bytes[1..9].copy_from_slice(&review.commercial_fee.to_le_bytes());
     fee_bytes[9] = review.mint_decimals;
     let encoded_withdrawal = stock_gross_spl_withdrawal();
-    let projection = PrefixProjection {
+    let projection = || PrefixProjection {
         program: &ring,
         policy_address: &policy_address,
         policy: &policy,
@@ -251,7 +260,7 @@ fn checks_one_stock_operation_then_consumes_its_own_binding_in_the_v1_context() 
         tree_id: &[0x26; 32],
         accepted_roots: &roots,
     };
-    let context = prepare_context(projection, &scope, &frame).expect("owned graph typed handoff");
+    let context = prepare_context(projection(), &scope, &frame).expect("owned graph typed handoff");
 
     // Independent preimage encoding using stock fixture fields 1 and 0,
     // different from the detached transcript test's placeholder digest words.
@@ -262,4 +271,50 @@ fn checks_one_stock_operation_then_consumes_its_own_binding_in_the_v1_context() 
     assert_eq!(context.tracking_revision.0, frame.tracking_revision.to_le_bytes());
     assert_eq!(context.minimum_output, 990);
     assert_eq!(SPL_OUTPUT_MAX, u64::MAX);
+
+    // Pure statement handoff. No live root lookup, bank, proof or verifier.
+    let ring_id = hash_bytes(ring.as_array()).unwrap();
+    let mut tracking = TrackingRegistry::zeroed();
+    tracking.ring_id = ring_id;
+    tracking.auditor_pubkey = [4; 33];
+    let prepared = prepare_descriptor(projection(), &scope, &frame, &tracking)
+        .expect("same stock projection produces the descriptor public signal");
+
+    let scalar = |n: u64| right_align(&n.to_be_bytes());
+    let [aud0, aud1] = pack_be(&[4; 33]);
+    let [tx0, tx1] = pack_be(frame.tx_viewing_pubkey);
+    // Independently lay out the 25 cells in the pinned Go relation's order.
+    // Primitive operations use exactly the owned graph's stock SPR types.
+    let expected = [
+        scalar(0x4352_4444),
+        scalar(1),
+        ring_id,
+        aud0,
+        aud1,
+        [0x11; 32],
+        scalar(7),
+        hash_bytes(&expected_digest).unwrap(),
+        [0; 32],
+        solana_owner_identity(review.authority.as_array()).unwrap(),
+        solana_owner_identity(review.payer.as_array()).unwrap(),
+        [0x26; 32],
+        hash_bytes(keys[5].as_array()).unwrap(),
+        [0x22; 32],
+        [0; 32],
+        scalar(990),
+        scalar(u64::MAX),
+        scalar(frame.expiry_slot),
+        tx0,
+        tx1,
+        right_align(frame.salt),
+        *frame.recipient_tag,
+        hash_bytes(frame.recipient_zero_ciphertext).unwrap(),
+        hash_bytes(frame.auditor_ciphertext).unwrap(),
+        scalar(25),
+    ];
+    assert_eq!(prepared.statement().elements().unwrap(), expected);
+    assert_eq!(
+        *prepared.public_input_hash(),
+        create_hash_chain_4_from_slice(&expected).unwrap(),
+    );
 }

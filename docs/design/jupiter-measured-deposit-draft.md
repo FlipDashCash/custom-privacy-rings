@@ -231,6 +231,41 @@ historical 3.4.0 graph. The new target does not emulate or prove that runtime
 path. Immutable release profiles and matching descriptor artifacts remain
 unprovisioned, and no dispatch is installed.
 
+### Dormant descriptor public-input binding
+
+The same host target can now consume the exact checked withdrawal and matched
+guard context to reconstruct the **one** descriptor public input. The statement
+and projection arithmetic come from the owned
+[historical Rust descriptor source](https://github.com/FlipDashCash/custom-privacy-rings/blob/f841ff6b9fb454c1228f7d5591735a9536d055e0/program-libs/interface/src/proof/dynamic_descriptor.rs)
+(blob `68ddff0e1d1debaa0c2a7fbcf043dd9bedc03832`). The
+[reference Go relation](https://github.com/FlipDashCash/custom-privacy-rings/blob/f841ff6b9fb454c1228f7d5591735a9536d055e0/prover/circuits/dynamicdescriptor/descriptor.go)
+(blob `5126dcc69e1e0780e56cb44d127155a0ae7026dc`) binds the canonical
+nonzero operation context as a field and uses it in the record construction
+and the 25-cell HashChain4. It does not hard-code a venue or that context
+digest. This is source reuse, not a claim of artifact or verifier compatibility.
+The two checked Custom prover trees differ only by the four historical
+descriptor-package files; both pinned Privacy `prover/server` trees are
+`2a367cfd058873a5f9f247216e35febae4321c84`. A relation-only build can
+therefore start with exact `descriptor.go` in the owned graph; no historical
+witness endpoint or key must be carried over to establish its source.
+
+The existing ring-to-tracking and auditor cross-check remains exact. The
+host caller derives its projection from the same immutable original, guard
+views and V1 roles used for the context, not an independent supplied hash.
+Use ordinal zero, the guard's floor and SPL's representational u64 maximum.
+Only the existing recipient fields enter the statement; the 192 proof bytes
+are not read. Neither the actual measured amount nor new signing rights are
+introduced. The positive host case independently assembles all 25 cells
+from the existing inert vectors, then compares the single hash using the
+pinned SPR primitive.
+
+The frozen wire, policy, program and current proof verifier are unchanged.
+A real verifier requires a selected matching Jupiter release relation
+compiled against the approved gadget graph, independently reviewed R1CS and
+matching verifier fingerprints, and a way to bind that selection to the trusted
+profile. The closed historical CPMM artifacts are not that selection.
+This path chooses no key, consumes no proof and remains unregistered.
+
 Before wiring an owned Custom handler, independently select and pin the exact
 guard and executable profile, Jupiter-specific descriptor transcript and
 matching verifier identity. They are **unprovisioned**. Reuse the checked
