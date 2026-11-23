@@ -57,7 +57,7 @@ fn approve(ctx: &Context, wallet: Address) -> Result<()> {
     .check()?;
     let member = owner_record_key(wallet.as_array())?;
     let revision =
-        ctx.apply_authority_update(target, |update| Ok(update.with_write(member, write)?))?;
+        ctx.apply_authority_update(target, &[], |update| Ok(update.with_write(member, write)?))?;
     line(
         "approved",
         format_args!("{wallet} {} at revision {revision}", list_names(lists)),

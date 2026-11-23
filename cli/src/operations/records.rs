@@ -148,7 +148,7 @@ pub(crate) fn write_mint_policies(
     if desired.is_empty() {
         return Ok(());
     }
-    ctx.apply_authority_update(ctx.record_update_target()?, |update| {
+    ctx.apply_authority_update(ctx.record_update_target()?, &[], |update| {
         desired.iter().try_fold(update, |update, (member, policy)| {
             Ok(update.with_mint_policy(Member::from_bytes(*member)?, *policy))
         })
@@ -160,11 +160,13 @@ impl Context {
     pub(crate) fn apply_authority_update(
         &self,
         target: RecordUpdateTarget,
+        unregistered: &[solana_address::Address],
         build: impl FnOnce(AuthorityRecordUpdate) -> Result<AuthorityRecordUpdate>,
     ) -> Result<u64> {
         let authority = self.authority()?;
         let update = build(AuthorityRecordUpdate::new(target, authority.address()))?;
+        let signed = update.sign(&self.request_signer(authority.as_ref()))?;
         self.ring_rpc()
-            .apply_record_update(update.sign(&self.request_signer(authority.as_ref()))?)
+            .apply_record_update(signed.with_unregistered_owners(unregistered))
     }
 }

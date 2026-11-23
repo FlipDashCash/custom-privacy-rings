@@ -946,6 +946,7 @@ impl AllowListWrite<'_> {
                 Ok(Subject {
                     member: owner_record_key(keys.pubkey().as_array())?,
                     label: (*party).to_owned(),
+                    unregistered: None,
                 })
             })
             .collect::<Result<Vec<_>>>()?;

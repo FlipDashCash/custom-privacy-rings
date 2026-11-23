@@ -136,7 +136,7 @@ pub trait ServedRings: Send + Sync {
 
     async fn delegate(&self, ring: Address) -> Result<Option<Address>, RingRpcError>;
 
-    /// `None` proves no unregistered owner on a ring with a ring salt.
+    /// `None` proves no salted read on a ring with a ring salt.
     async fn ring_salt(&self, _ring: Address) -> Result<Option<[u8; 32]>, RingRpcError> {
         Ok(None)
     }

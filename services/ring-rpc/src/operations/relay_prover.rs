@@ -25,7 +25,7 @@ pub struct RelayProofRequest<'a> {
     pub payload: &'a RelayPayload,
     /// Verified over `SppProofInputs::message_hash`, the anonymous and confidential proofs take it.
     pub owner_signature: Option<[u8; 64]>,
-    /// An unregistered owner reads the private lists under it.
+    /// Every owner reads the private lists under it.
     pub ring_salt: Option<[u8; 32]>,
 }
 

@@ -120,6 +120,21 @@ impl AttestedAuditorKey {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriterSalt {
+    Owner([u8; 32]),
+    /// The owner holds no tracking row.
+    Ring([u8; 32]),
+}
+
+impl WriterSalt {
+    pub const fn salt(&self) -> &[u8; 32] {
+        match self {
+            Self::Owner(salt) | Self::Ring(salt) => salt,
+        }
+    }
+}
+
 impl RingRpcClient {
     pub fn new(url: &str) -> Self {
         Self {
@@ -234,7 +249,7 @@ impl RingRpcClient {
         target: ReadTarget,
         owner: Address,
         writer: &dyn Signer,
-    ) -> Result<Option<[u8; 32]>> {
+    ) -> Result<Option<WriterSalt>> {
         let request = ListSaltRequest::new(ListSaltAttestation {
             target,
             writer: writer.pubkey(),
@@ -243,7 +258,8 @@ impl RingRpcClient {
         .at(unix_now()?)
         .sign(writer)?;
         let response: GetListSaltResponse = self.call(GET_LIST_SALT, request)?;
-        Ok(response.list_salt.or(response.ring_salt).map(|salt| salt.0))
+        let owner = response.list_salt.map(|salt| WriterSalt::Owner(salt.0));
+        Ok(owner.or(response.ring_salt.map(|salt| WriterSalt::Ring(salt.0))))
     }
 
     /// The caller compares the answering signer with the ring's co-signer.
