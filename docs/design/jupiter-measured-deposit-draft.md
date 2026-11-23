@@ -89,15 +89,15 @@ view is not an authenticated instruction or an amount attributable to Jupiter.
 ### Descriptor context V1 source
 
 `jupiter_measured_descriptor_context_draft.rs` implements this separate
-deterministic input to a future descriptor relation. Only its host test imports
+deterministic input to a future descriptor relation. Only host tests import
 it. It reuses the tag-68 role order, descriptor selection, stock `Revision`
 and `TransferRoots`, and the pinned SPR hashing primitives. A future selected
 caller must obtain the original's first nullifier **and** private transaction
 hash from the genuine stock withdrawal binder after the checked withdrawal,
 not from a signed message containing this descriptor, instruction assertions,
-wallet history or a quote. The current Jupiter prefix check still returns
-only unit; obtaining that stock result in the new private caller remains
-unimplemented.
+wallet history or a quote. Pyrol's public Jupiter prefix check still returns
+only unit. The host-only co-location below retains that result privately;
+the authenticated runtime caller remains unimplemented.
 
 Byte order is concatenation with no implicit padding. Integers below are
 unsigned little-endian, and every listed word/key/hash is 32 raw bytes:
@@ -153,6 +153,83 @@ No immutable release pins, prover, or verifier are supplied.
 ```sh
 cargo test --offline --locked -p custom-ring-interface --test jupiter_measured_descriptor_context_draft
 ```
+
+### Single owned-graph source handoff
+
+The separate `custom-ring-program` host target co-locates the pinned stock
+anonymous-withdrawal and Jupiter-prefix check with the actual descriptor
+context source. It runs the existing check over the five projected
+instructions once, then passes the stock binding's first nullifier and
+private transaction hash, with the already-matched gross and fee, into
+`ContextInput::original`. The exact matched pre/post guard bytes and metas
+are borrowed from that same projection. The private handoff also matches
+the reviewed policy/registry, stock RingConfig, original payer/fee receiver
+and program roles already named by those checks. Neither the stock binding
+nor a new program API is exported. The output is only deterministic
+context fields, not a proof, receipt, or amount.
+
+The source graph is owned Custom
+`108d011606def666d1552c4a2255994d03db8ae2` / owned Privacy
+`0616075910dca92a33394ef149611cf9d9e963d2`, with the unchanged Cargo.lock
+blob `4f9bc471770f30ab0f7e759fe73c71badf8b1a53` and program manifest
+blob `8c1307ae9c72837465e1c5dea0a31e383fb4d89b`. The stock helper body is
+from Pyrol #10 `d8adfe0d55c64ecc9009ba1ee10f2e384e9cbe12`,
+`integrations/dynamic-ring-settlement/withdrawal-binding/src/lib.rs`
+blob `c87a45de801846b40be9d83e7b4700315d7980ac`; the retained-result
+prefix closure is from the exact private-retention candidate
+blob `857a87d2b245a71f30f60acc4eaf0a870c4d2117` (patch SHA-256
+`48e2606fd818b96c86e21f5ea206509692f95e3e780cf303904a472ce8843572`).
+Only the projection closure is copied, not the historical Cargo graph,
+runtime sysvar reader, public unit API, or an older verifier. The pinned
+withdrawal binder's no-policy/ring/cosign checks are retained verbatim.
+The same stock anonymous parser/first-nullifier and account-locator path is
+used. The old/owned Custom `transact.rs` blobs
+`2442ad4bad6786c93e4fbd1398f54e3ba656207e` and
+`ef1a08f1821f3a51d871663d444e4039a1c83f56` differ in delegate handling
+and statement fields; the examined `parse`, `owner_signers`, and
+`first_nullifier` methods are byte-identical. The owned SPP locator and
+SHA-256 / HB32 sources used are blobs
+`eb5115b5f9de6076ab5305289acff1147ea71c9d`,
+`ac1ce721836e66f6c90b1029e419a67997fcff45`, and
+`9cfdf5bc0e9b7ff348cf763ae093f64918e5f889`. This is not a cross-version
+proof claim.
+
+The existing owned wire/context source blobs
+`cc3a30023cb00400aa3a20e970942633711731a8` and
+`47bc6ca921bf37c4fb2012b59d529462cbc87afd` are imported unchanged.
+The existing shared wire, stock encoder and its common fixture blobs are
+`bb1c97670288318649921682cb2aa3a298ebd02b`,
+`625153a2ee76bd38cd007be608b07d62f5029599` and
+`043aebfb68a3c63001265cebc1677b02057a5bde`, respectively. The checked-in
+unsigned case-0 projection retains only guard/keys/pre/post/router from
+public V44 blob `28d1df72dca962e292a2b00502cfe6010663e9db`. It omits
+the bank and does not select any live identity. Independent context
+preimage SHA-256: `752bba61a4d42985b5d768c62ca362e15fb926a72960af8b65e5f7c048ec7a3d`.
+
+Use the checked-in Rust 1.98.1 selected by the owned Privacy submodule's
+`rust-toolchain.toml` (blob `a480cb57e1dcf83e9ed337055d0e3cfb091b7198`).
+
+```sh
+CARGO_NET_OFFLINE=true cargo test --offline --locked -p custom-ring-program --test jupiter_measured_v1_source_graph
+```
+
+There is no runtime projection in this target. The exact future source
+choice, once reviewed, is
+[Pinocchio 0.11.2's checked Instructions API](https://github.com/anza-xyz/pinocchio/blob/pinocchio@v0.11.2/sdk/src/sysvars/instructions.rs)
+(blob `67c55a68e3321bb4c0648ca177f7b1d87c765397`):
+`Instructions::try_from(&AccountView)`, `load_current_index`, and
+`load_instruction_at`. For the actual `get_stack_height` check, the owned
+lock's [solana-instruction 3.5.1](https://github.com/anza-xyz/solana-sdk/blob/instruction@v3.5.1/instruction/Cargo.toml)
+(blob `c22a7b25c2b7bb06e232700e420737e56598af3b`) provides the explicit
+`syscalls` feature forwarded to
+[v4.0.0's syscall implementation](https://github.com/anza-xyz/solana-sdk/blob/instruction@v4.0.0/instruction/src/syscalls.rs)
+(blob `d7a77a3d033fab4329c39b6ddb484b6782885ff7`). The wrapper is
+currently a program dev dependency; any runtime declaration or feature
+needs separate reviewed wiring.
+Do not use a host stub, caller-provided index, fabricated sysvar, or the
+historical 3.4.0 graph. The new target does not emulate or prove that runtime
+path. Immutable release profiles and matching descriptor artifacts remain
+unprovisioned, and no dispatch is installed.
 
 Before wiring an owned Custom handler, independently select and pin the exact
 guard and executable profile, Jupiter-specific descriptor transcript and
