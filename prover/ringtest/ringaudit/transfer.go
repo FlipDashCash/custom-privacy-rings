@@ -1,10 +1,13 @@
 package ringaudit
 
 import (
+	"crypto/ed25519"
 	"math/big"
 	"testing"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/audit"
+	"github.com/helius-labs/zolana-custom-rings/prover/circuits/policy"
+	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest"
 	"github.com/helius-labs/zolana-custom-rings/prover/ringtest/ringprotocol"
 	"github.com/helius-labs/zolana/prover/server/prover-test/spp/protocol"
@@ -17,6 +20,8 @@ type Transfer struct {
 	FirstNullifier *big.Int
 	RingProgramID  *big.Int
 	Salt           [16]byte
+	// Voucher vouches for the transfer, nil leaves it unvouched and a throwaway key signs.
+	Voucher ed25519.PrivateKey
 	// Seed is CRBS(tx_viewing_sk, salt), SPP's BlindingSeed.
 	Seed    *big.Int
 	SeedOut *big.Int
@@ -65,12 +70,57 @@ func (tr Transfer) Blinding(t testing.TB, i int) *big.Int {
 	return ringprotocol.OutputBlinding(t, tr.FirstNullifier, tr.SeedOut, i)
 }
 
+// VoucherKey is the fixture voucher, throwawayKey signs a transfer nobody vouches for.
+var VoucherKey, throwawayKey = fixtureKey(0xc9), fixtureKey(0xd7)
+
+func fixtureKey(seed byte) ed25519.PrivateKey {
+	bytes := ringtest.Repeat(seed)
+	return ed25519.NewKeyFromSeed(bytes[:])
+}
+
+func (tr Transfer) Vouched() bool {
+	return tr.Voucher != nil
+}
+
+func (tr Transfer) signer() ed25519.PrivateKey {
+	if tr.Vouched() {
+		return tr.Voucher
+	}
+	return throwawayKey
+}
+
+func (tr Transfer) voucherKey() ed25519.PublicKey {
+	return tr.signer().Public().(ed25519.PublicKey)
+}
+
+// VoucherIdentity is the member the voucher's records sit under, zero off a vouched transfer.
+func (tr Transfer) VoucherIdentity(t testing.TB) *big.Int {
+	t.Helper()
+	if !tr.Vouched() {
+		return new(big.Int)
+	}
+	return ringtest.HashBytes(t, append([]byte{0x53}, tr.voucherKey()...))
+}
+
+// VoucherWires signs shared.VouchDigest of the transfer's hashes.
+func (tr Transfer) VoucherWires(t testing.TB, privateTxHash, withdrawalHash *big.Int) policy.VoucherWires {
+	t.Helper()
+	var message [32]byte
+	ringtest.MustPoseidonHash(t, big.NewInt(shared.VouchDomain), privateTxHash, withdrawalHash).FillBytes(message[:])
+	var w policy.VoucherWires
+	ringtest.SetBytes(w.PublicKey[:], tr.voucherKey())
+	ringtest.SetBytes(w.Signature[:], ed25519.Sign(tr.signer(), message[:]))
+	return w
+}
+
 // Wires are the audit wires of the transfer under layout.
 func (tr Transfer) Wires(layout int64) audit.AuditWires {
 	w := audit.AuditWires{FirstNullifier: tr.FirstNullifier, RingProgramID: tr.RingProgramID, Layout: layout}
 	ringtest.SetBytes(w.TxViewingSk[:], tr.Keys.txViewingSk[:])
 	ringtest.SetBytes(w.AuditorPk[:], tr.Keys.auditorPk[:])
 	ringtest.SetBytes(w.Salt[:], tr.Salt[:])
+	w.Vouched = layout & audit.LayoutVouched
+	ringtest.SetBytes(w.Voucher[:], tr.voucherKey())
 	return w
 }
 

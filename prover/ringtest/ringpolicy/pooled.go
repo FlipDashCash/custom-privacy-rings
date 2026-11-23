@@ -30,7 +30,7 @@ func (b Witness) OwnRecord(entry policy.PoolEntry) *circuitregistry.Record {
 }
 
 // FillPools opens each live subject and record once and fills the pools cyclically to capacity.
-func FillPools(t testing.TB, policyWitness *policy.Policy, outputs, inputs []shared.UtxoWires, senders []frontend.Variable, ownTree, curatorTree *ringregistry.Registry, tracking *ringregistry.Tracking) {
+func FillPools(t testing.TB, policyWitness *policy.Policy, outputs, inputs []shared.UtxoWires, senders []frontend.Variable, voucher frontend.Variable, ownTree, curatorTree *ringregistry.Registry, tracking *ringregistry.Tracking) {
 	t.Helper()
 	own, curator := newCollector(ownTree), newCollector(curatorTree)
 	foreign, saltedOwn, saltedCurated := false, false, false
@@ -61,6 +61,7 @@ func FillPools(t testing.TB, policyWitness *policy.Policy, outputs, inputs []sha
 	for j, sender := range senders {
 		policyWitness.SenderEntries[j] = owner(sender, ringtest.AsBigInt(sender).Sign() != 0)
 	}
+	policyWitness.VoucherEntry = owner(voucher, ringtest.AsBigInt(voucher).Sign() != 0)
 	for i, out := range outputs {
 		active := ringtest.AsBigInt(out.Domain).Int64() == transaction.UtxoDomain
 		policyWitness.OwnerEntries[i], policyWitness.AssetEntries[i] = owner(out.OwnerPkHash, active), entry(out.Asset, active)

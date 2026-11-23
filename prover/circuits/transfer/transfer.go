@@ -108,7 +108,9 @@ type Sections struct {
 	Layout          frontend.Variable
 	OutputCount     frontend.Variable
 	Outputs         []audit.OutputWires
-	InputCount      frontend.Variable
+	// Voucher signs the transfer, policy/voucher.go.
+	Voucher    policy.VoucherWires
+	InputCount frontend.Variable
 	// Inputs hold the spent notes in SPP's note order, then dummies.
 	Inputs []shared.UtxoWires
 	// Entries open default-ring inputs to the auditor, none off an entry key.
@@ -184,9 +186,10 @@ func (c *TransferCircuit) Define(api frontend.API) error {
 	c.assertRail(api)
 	rc := rangecheck.New(api)
 	// 2. The output slots open and the sealed key derives the transaction blinding. Every later section reads these wires, so what it proves is about the notes step 6 ties to SPP.
-	w := audit.AuditWires{FirstNullifier: c.FirstNullifier, RingProgramID: c.RingProgramID, TxViewingSk: c.TxViewingSk, AuditorPk: c.AuditorPk, Salt: c.Salt, Layout: c.Layout}
 	stream := c.Shape.Stream()
-	stream.AssertLayout(api, c.Layout)
+	// The voucher signs the notes step 6 binds and the legs the policy binds, one set of key wires feeds the stream and the policy, so the auditor reads the signer the sender rules held.
+	vouch := c.Voucher.Open(api, rc, stream.AssertLayout(api, c.Layout), shared.VouchDigest(api, c.PrivateTxHash, c.WithdrawalHash))
+	w := audit.AuditWires{FirstNullifier: c.FirstNullifier, RingProgramID: c.RingProgramID, TxViewingSk: c.TxViewingSk, AuditorPk: c.AuditorPk, Salt: c.Salt, Layout: c.Layout, Vouched: vouch.Active, Voucher: vouch.Key}
 	envelope := w.OpenEnvelope(api, rc)
 	opened := stream.OpenSlots(api, rc, c.Outputs, c.OutputCount)
 	// 3. The spent notes open in SPP's note order, and only notes incur the ring membership check.
@@ -212,7 +215,7 @@ func (c *TransferCircuit) Define(api frontend.API) error {
 	// 7. The policy screens the bound slots. The rows hold every input note owner by step 5, so no owner's funds escape the sender rules or the attribution.
 	// A ring with an own policy registry reads its root on every rail but the delegate's, no prover bit clears the thresholds.
 	g := policy.Rail{ThresholdsActive: ringgadget.IsNonZero(api, c.OwnRoot), Delegate: c.Delegate}.Gates(api, c.PolicyHash)
-	screening := c.Screen(api, rc, g, policy.Spend{Senders: rows.Members, Inputs: section.Slots, Tracking: tracking}, opened.Slots)
+	screening := c.Screen(api, rc, g, policy.Spend{Senders: rows.Members, Inputs: section.Slots, Tracking: tracking, Vouch: vouch}, opened.Slots)
 	// Zero key recipients must be absent at the accepted tracking root, including on delegate transfers.
 	AssertOutputOwners(api, tracking, opened.Slots, c.OutputEntries)
 	// The mask is equal and never at least. A short mask would drop a demanded co-signer, the program acts on these bits and derives no threshold.

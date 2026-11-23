@@ -42,7 +42,7 @@ func NewSectionCircuit(shape audit.StreamShape) *SectionCircuit {
 
 func (c *SectionCircuit) Define(api frontend.API) error {
 	rc := rangecheck.New(api)
-	c.Shape.AssertLayout(api, c.Layout)
+	api.AssertIsEqual(c.Vouched, c.Shape.AssertLayout(api, c.Layout))
 	envelope := c.OpenEnvelope(api, rc)
 	opened := c.Shape.OpenSlots(api, rc, c.Outputs, c.OutputCount)
 	section := transfer.OpenInputs(api, c.Inputs, c.InputCount)
@@ -157,6 +157,11 @@ func (a Audit) Seal(t testing.TB, p Plaintexts) Stream {
 	for _, key := range p.RecipientKeys {
 		plaintext = append(plaintext, key[:]...)
 	}
+	var voucher [audit.KeyLen]byte
+	if a.Vouched() {
+		copy(voucher[:], a.voucherKey())
+	}
+	plaintext = append(plaintext, voucher[:]...)
 	stream := Stream{Ranges: ranges, Salt: a.Salt, Ciphertext: a.Keys.TransferCiphertext(t, plaintext, a.Salt), Records: make([][]byte, len(p.Records))}
 	for i, record := range p.Records {
 		stream.Records[i] = a.Keys.SealRecord(t, p.SealedTo[i], a.Salt, i, a.FirstNullifier, record)[:a.Outputs[i].PublishedLen()]
@@ -199,8 +204,7 @@ func (a Audit) Claim() Claim {
 func (a Audit) StatementOf(t testing.TB, stream Stream, claim Claim) []*big.Int {
 	t.Helper()
 	outputs := a.StatementOutputs(t, stream)
-	head := a.Keys.AuditHead(t, a.FirstNullifier, a.RingProgramID, a.Salt, stream.Envelope(claim.InputCount), stream.Keys(claim.OutputCount))
-	head.Layout = a.Layout()
+	head := a.headOver(t, stream, claim.InputCount, claim.OutputCount)
 	return append(head.ElementsUnder(t, shared.TransferStatementDomain), big.NewInt(ringtest.Bit(claim.NoSpend)), big.NewInt(int64(claim.OutputCount)),
 		RecordChain(t, outputs), big.NewInt(int64(claim.InputCount)))
 }

@@ -42,6 +42,8 @@ type World struct {
 	Approval uint64
 	Sender   int64
 	CoOwners []int64
+	// Voucher vouches for the transfer, zero leaves it unvouched.
+	Voucher int64
 	// Nil derives one Sender input per asset the balance needs.
 	Inputs       []Slot
 	Table        Table

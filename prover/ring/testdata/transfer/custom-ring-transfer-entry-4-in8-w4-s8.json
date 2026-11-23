@@ -1,6 +1,6 @@
 {
   "circuitType": "custom-ring-transfer-entry-4-in8-w4-s8",
-  "publicInputHash": "0x24b6a6737a6b2ecbc8c9440cb46fa82d747fc318ac1bdf1b86217602746b7c8c",
+  "publicInputHash": "0x2b4ce0598c230ac8dd4df37225b2c62e25b07118355cf5cf341b5416f1fd4e07",
   "firstNullifier": "0x0000000000000000000000000000000000000000000000000000000000001f1f",
   "txViewingSk": "0x001013121514171619181b1a1d1c1f1e010003020504070609080b0a0d0c0f4e",
   "auditorPk": "0x708c2645c705baaf44f2ab947574174f9280df58be6fc2f6f2e8881b78a3115a",
@@ -104,6 +104,10 @@
       "recipientKey": "0x6dc40b36801e327325128ecb858c108d560eae6825de8af96e0f1a551f33d249"
     }
   ],
+  "voucher": {
+    "publicKey": "0xbb787e5901ac38168a8b373715f571edf755c518fac9dc73e339126ce4f52f08",
+    "signature": "0xbef282aba7bcff0afbcac25d011b6887e741319cd3f291284ffbfdf2993f89d526efa17962e2ed138cac0f08c557dc053803fa908bb1314931f3d9e5e968fc00"
+  },
   "inputCount": 2,
   "inputs": [
     {
@@ -8740,6 +8744,18 @@
       ]
     }
   ],
+  "voucherEntry": {
+    "own": 0,
+    "curator": [
+      0
+    ],
+    "tracking": 0,
+    "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "ownSalted": 0,
+    "curatorSalted": [
+      0
+    ]
+  },
   "ownerEntries": [
     {
       "own": 1,

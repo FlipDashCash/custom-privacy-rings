@@ -117,6 +117,20 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The circuit screens each live input's asset under every unconditional asset rule, in `assertInputAssetRules`. A zero-value note therefore cannot carry a delisted asset past the rules.
 - The tests in `prover/circuits/policy` are `TestEveryCoOwnerIsScreened`, `TestReceiptTable`, `TestAssetGuardNetsChange`, `TestZeroValueDelistedInputFailsAnUnconditionalAssetRule` and `TestPolicyWithdrawalBindingAndPadding`.
 
+### A voucher's allow entry admits the transfer it signs
+
+- The circuit verifies one Ed25519 signature over `Poseidon(CRVC, private_tx_hash, withdrawal_hash)` on every proof, in `VoucherWires.Open`. The tag keeps the signed bytes apart from SPP's owner authorization digest, so a vouch authorizes no spend.
+- The program sets the vouched flag from the frame, through bit 0 of the layout element. No prover bit sets it.
+- On a vouched and screened transfer the circuit reads the signer's records as an owner's, and holds the signer to every sender rule in `assertSenderRules`. A signer a sender rule refuses vouches for nobody.
+- The circuit gives each sender and payment owner the signer's bit on `Allow` and `PrivateAllow` beside its own, in `subjectView.cover`. Every other list reads the subject's own record, and an asset reads no voucher bit.
+- The signer answers for the whole transfer. No wire names a covered subject.
+- The circuit seals the verified key bytes on the blocks past the last recipient key, and zeros on a transfer nobody vouches for. The program adds `hash_bytes` of the transmitted region to `envelope_digest` on a vouched frame, and zero otherwise.
+- The auditor reads the key from the stream. No on-chain value names it.
+- A signer on a private allow list needs its list salt in the witness.
+- The voucher's records take rows of the record pools and the tracking pool the owners share. A transfer that fills every row leaves none for it.
+- A proof nobody vouches for carries a throwaway key and its signature. That key reads no record and enters no ciphertext.
+- The tests are `TestVoucherAdmitsUnlistedOwners` and `TestVouchBindsTheTransfer`, `TestStreamSealsTheVoucherKey` in `prover/circuits/audit`, and the voucher cases of `TestPolicySections` in `prover/circuits/policy`.
+
 ### The settled outputs are the audited outputs
 
 - The circuit opens each slot once in `OpenSlots`, then hands one `shared.Output` to the tracking checks, the policy and the stream.

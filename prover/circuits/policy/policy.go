@@ -23,6 +23,8 @@
 //     receipt of its own owner and asset.
 //  6. While Outflow is set the caps hold and Screening carries the approval bits the flows reach.
 //  7. The authority rail clears Screened and Outflow, no rule binds on it. The merge circuit reads no policy.
+//  8. On a vouched transfer the signer's Allow and PrivateAllow bits stand in for those of every sender and
+//     payment owner, and its bit on any other list covers nobody.
 //
 // The properties rely on what the package cannot see. The program validates the table at write time,
 // reads each root live, refuses a tracking root below a salted source's floor, folds the gross and reads
@@ -70,6 +72,8 @@ type Policy struct {
 	CuratorSubjects []PoolSubject
 	SenderEntries   []OwnerEntry
 	OwnerEntries    []OwnerEntry
+	// VoucherEntry indexes the voucher's records in the pools the owners share, no pool grows for it.
+	VoucherEntry OwnerEntry
 	// AssetEntries index each payment's asset subject, then each input slot's.
 	AssetEntries       []PoolEntry
 	PublicAssetEntries []frontend.Variable

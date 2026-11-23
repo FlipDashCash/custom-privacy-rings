@@ -120,7 +120,7 @@ func (w ownersWorld) build(t testing.TB) *ownersCircuit {
 			}
 		}
 	}
-	ringpolicy.FillTracking(t, &c.Tracking, tree, c.Members, outputOwners, nil, nil)
+	ringpolicy.FillTracking(t, &c.Tracking, tree, c.Members, outputOwners, nil, nil, 0)
 	c.Delegate = ringtest.Bit(w.delegate)
 	if w.mutate != nil {
 		w.mutate(c)
