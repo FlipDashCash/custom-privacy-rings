@@ -30,14 +30,17 @@ A ring reads two kinds of tree, each in a Storage program account with its own r
 
 - `PrivateAllow`, `PrivateBlock` and `PrivateFrozen` are always salted. A private entry is an ordinary record under `Poseidon(CRPL, owner, list_salt)`, written through the same apply path.
 - The tracking row contains `list_tag = Poseidon(CRPT, list_salt)`, proven at enrollment and final.
-- While a subject has a tracking row, the circuit forces its salt to open that tag, so it forces the key too. A proven absent row is the one skip.
-- A subject proven absent reads no salted list. A deny rule on a salted list passes, and an allow rule on one fails.
-- To list an unenrolled identity, a curator uses a public list keyed by owner. Later enrollment leaves that entry in force.
+- While a subject has a tracking row, the circuit forces its salt to open that tag, so it forces the key too.
+- The policy hash commits `ring_list_tag`, the tag of the ring salt. A subject proven absent reads each salted list at `ListKey(owner, ring_salt)`, and the circuit forces that salt to open the tag.
+- Under a zero `ring_list_tag` a subject proven absent reads no salted list. A deny rule on a salted list passes, and an allow rule on one fails.
+- The policy authority sets `ring_list_tag` with a policy write that pins a new policy hash.
+- A public list entry is keyed by owner, and later enrollment leaves it in force.
+- Enrollment moves an owner's read from the ring salt to its own salt. The authority must write the owner's ring-salted entries again under the owner's salt once the enrollment applies, and no proof enforces that write.
 - A public and a private block are two rules. One rule over both would admit a publicly blocked owner with no private entry.
 - The wallet derives its salt per ring from its viewing key, so an auditor that holds the nullifier secret cannot derive another ring's salt.
 - Private lists serve one ring. A source of a salted list must pin the ring's tracking registry, so a curator that serves several rings keeps one registry per ring.
-- A list writer reads an enrolled owner's salt through `getListSalt`, which checks the salt against the row's tag and never returns the nullifier secret.
-- A private write proves the owner's applied row. A write for an owner whose enrollment is still pending fails before the proof. A write that names an asset whose mint hashes to its member needs no row.
+- A list writer reads an enrolled owner's salt through `getListSalt`, which checks the salt against the row's tag and never returns the nullifier secret. For an owner with no row it returns the ring salt, which Ring RPC derives per ring and cluster from its auditor secret.
+- A private write proves the owner's applied row, or the owner's absence from the tracking root under a nonzero salt. The SDK refuses a write for an absent owner before the proof unless its salt opens `ring_list_tag`. A write that names an asset whose mint hashes to its member needs no row.
 
 ## Tracking
 
@@ -84,10 +87,10 @@ The apply proof binds that restrictive bit, reading an absent member's old field
 
 ## Tracking floor
 
-- A private write proves its owners' rows under one tracking root, named by its revision. The Storage program raises the registry's `tracking_floor` to that revision with the new policy root, in one instruction.
+- A private write proves each owner's row or absence under one tracking root, named by its revision. The Storage program raises the registry's `tracking_floor` to that revision with the new policy root, in one instruction.
 - A frame that reads salted lists names a tracking revision at or above the highest floor of the sources it reads them through. A lower revision fails with `TrackingRootBelowFloor`.
-- Rows never leave the tracking tree. Every accepted root therefore holds each owner with a private entry, and no such owner proves absence.
-- An owner with no applied row has no private entry, so its proven absence hides none.
+- Rows never leave the tracking tree. Every accepted root therefore holds each owner with an entry under its own salt, and no such owner proves absence to read at the ring salt.
+- An owner with no applied row has entries only under the ring salt, and its proven absence reads them.
 - A public write leaves the floor unchanged, and the floor never falls.
 - The floor is the one exception to tracking grace.
 

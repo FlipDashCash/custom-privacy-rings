@@ -35,7 +35,7 @@ The confidential mode and the anonymous mode differ at the sender and the recipi
 - Enrollment is public. An `Enroll` names the owner as a signer and stores its nullifier key, list tag and viewing key in an account. Anyone sees that a wallet enrolled on a ring.
 - A tracking authorization holds the owner's viewing key for one ring. A leaked viewing secret opens the bodies sealed to that key on every ring whose authorization holds it. A rotation on one ring moves that ring alone to a new key.
 - A transfer, deposit or nonzero-key merge publishes the tracking revision it reads. The revision shows that each row the proof opens existed at that revision, and names no owner.
-- A private write raises the source's tracking floor to the revision its rows open under. The floor shows that the written owner was enrolled by that revision.
+- A private write raises the source's tracking floor to the revision its rows open under. The floor shows that each written owner was enrolled by that revision or absent at it.
 - A public record write names its member. A rule table is public, so observers see which lists a ring screens and who is on the public ones.
 - A deposit publishes the funder, the asset and each amount.
 - A merge links its input notes to one owner.
@@ -47,13 +47,14 @@ The confidential mode and the anonymous mode differ at the sender and the recipi
 - List bits on a salted record stay visible with no identity, so per-list counts and update timing are public.
 - A holder of an owner's salt links the owner to its record and reads the record's list bits. A published ring address contains the salt, so every reader of the address can make that link.
 - The salt is final, so a disclosed salt reveals status permanently.
-- An unenrolled identity has no salt, so a curator can list it only on a public list.
-- A transaction can read a salted list. The party that proves the transaction holds the witness and learns the salts and list status of the other enrolled owners in that proof.
+- An unenrolled identity has no salt of its own. A ring that commits a ring salt lists it privately under that salt, and a ring that commits none lists it only on a public list.
+- Any holder of the ring salt can compute a known identity's ring-salted key and test that identity for a private entry.
+- A transaction can read a salted list. The party that proves the transaction holds the witness and learns the salts and list status of the other enrolled owners in that proof. A proof that reads an unenrolled owner also takes the ring salt.
 
 ## Who else sees what
 
 - The auditor opens every output record and merge record. With an owner's sealed secret it links that owner's spends, see [nullifier secrets](audit-and-recovery.md#nullifier-secrets).
-- The auditor reads each owner's list salt from the enrollment ciphertext. A curator learns the salt of each owner it writes for.
+- The auditor reads each owner's list salt from the enrollment ciphertext. A curator learns the salt of each owner it writes for, and the ring salt when it writes for an unenrolled owner.
 - A zero-key note's sender computes its nullifier and sees when the note is spent.
 - A reader sees what its grant covers, blindings included, and keeps it after a revocation.
 - Ring RPC as relayer receives every secret the proofs need. It links the owner's spends and opens the outputs, so a relayed transfer is anonymous only toward a trusted Ring RPC.
