@@ -32,23 +32,23 @@ export const RING_PROVING_KEY_SHA256S: Readonly<Record<string, string>> = Object
   "custom_ring_register_key.key":
     "90d0f3a05edf2bef59de6726aa1e3c4b08abed8dd4c627f94a169752a49fcfe6",
   "custom_ring_transfer_16_in4_w4_s2.key":
-    "4f51ebc3ca11b501ea8a94af6fbdc7066faf6b1d80b64e44e3f8cd0fc51888a9",
+    "3c82c6b595ff1e08d50bd6629958a2c9c6276f44827ccb09c87f4f846065d67b",
   "custom_ring_transfer_2_in24_w4_s4.key":
-    "13a3503fac341ff16804a7ee3ef96e75db15bac3cf9c8df7b71b870a76c43137",
+    "21fce8ebb515b219385935b35c7a3a0f798d0fa1ce9dfe03a18d56dfbad6ed91",
   "custom_ring_transfer_4_in24_w4_s4.key":
-    "17e8d00006dc4ec9ced41a82f8f690ff50235e425be8b3207e3b477f7a6f9e22",
+    "a0e25ee3aa80a9a07f7dd369f7cea3e04fe72ceb51464fddf0b42490c1d6164b",
   "custom_ring_transfer_8_in16_w4_s4.key":
-    "973da329b0ca13f7542e8e1e8896ee00abca62c9897b55457c0a8cb3c105c1cd",
+    "035355ec7d192ac7f1c1e584ed759cb67db3c6cba66f05d4d95a90a69a2ef4a3",
   "custom_ring_transfer_entry_4_in8_w4_s8.key":
-    "b85d36bf7efc22d8dab71bcd2d26e1ca70c8d9b98888dab0ba7025b79eb669c3",
+    "688d7ab0db6b169a2b93a81384af5e6102fb9b58f2d9e2693af38b9266690812",
   "custom_ring_transfer_entry_8_in2_w4_s2.key":
-    "c99800ef97a01b76199e9ed9f3658486e0e59b2ce58321595108ff9281539616",
+    "611276afcd36ecdea4066f1279ea05f22bed85500f64a026eb8ead4ec255dc56",
   "custom_ring_transfer_entry_8_in5_w4_s4.key":
-    "6c16eac6bf17a199000cfd3ca4c521151dbe45fe0c4f8901068cab64867c5bf2",
+    "5747880edc3ec46d83fdf9c6f649dcea09e046e59b76b14421d448a31318fe2e",
   "custom_ring_transfer_entry_8_in8_w32_s8.key":
-    "0260a09bba5d98c47b678c3e078b6827b09d5e4b3716fad2da3d433c444bd5af",
+    "0bceb1ef739052614b9d819f05bbbb360a18850a87caf00f12857273e61e6cdb",
   "custom_ring_transfer_wide_2_in40_w4_s9.key":
-    "086ddebc3986d743954a7ad22306aad3509325e76439921db275e5732b9f0fc7",
+    "26154e7703c2de00973179866932ce427dbd633675979cb92717b3d8251d9f60",
   "custom_ring_transfer_wide_8_in24_w32_s13.key":
-    "363f94d226211a08bd39ae29170ed9ef4f39488b1ba71b94bb58f217424132cf",
+    "688ba6d1fed21822c149fd79331eb0a19665a5132e985b24724d6009a4064d74",
 });
