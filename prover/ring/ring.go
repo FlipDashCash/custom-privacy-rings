@@ -206,7 +206,10 @@ func (e PooledOwnerEntry) validateOwnerIndices(pools policy.RecordPoolShape) err
 	if err := poolIndex("own salted subject", e.OwnSalted, pools.OwnSubjects); err != nil {
 		return err
 	}
-	for _, index := range e.CuratorSalted {
+	if err := poolIndex("own ring subject", e.OwnRing, pools.OwnSubjects); err != nil {
+		return err
+	}
+	for _, index := range slices.Concat(e.CuratorSalted, e.CuratorRing) {
 		if err := poolIndex("curator salted subject", index, pools.CuratorSubjects); err != nil {
 			return err
 		}

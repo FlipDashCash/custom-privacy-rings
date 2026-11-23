@@ -42,26 +42,32 @@ func FillPools(t testing.TB, policyWitness *policy.Policy, outputs, inputs []sha
 			saltedOwn, saltedCurated = saltedOwn || !curated, saltedCurated || curated
 		}
 	}
+	ringSalted := ringtest.AsBigInt(policyWitness.RingListTag).Sign() != 0
+	policyWitness.RingSalt = 0
+	if ringSalted {
+		policyWitness.RingSalt = RingSalt
+	}
 	entry := func(member frontend.Variable, active bool) policy.PoolEntry {
 		return policy.PoolEntry{Own: own.add(member, active), Curator: [1]frontend.Variable{curator.add(member, active && foreign)}}
 	}
 	owner := func(member frontend.Variable, active bool) policy.OwnerEntry {
 		identity := ringtest.AsBigInt(member)
-		ownerEntry := policy.OwnerEntry{PoolEntry: entry(ringregistry.PublicKey(t, identity), active), Tracking: 0, ListSalt: 0, OwnSalted: 0, CuratorSalted: [1]frontend.Variable{0}}
+		ownerEntry := policy.OwnerEntry{PoolEntry: entry(ringregistry.PublicKey(t, identity), active), Tracking: 0, ListSalt: 0, OwnSalted: 0, CuratorSalted: [1]frontend.Variable{0}, OwnRing: 0, CuratorRing: [1]frontend.Variable{0}}
 		if !active || !(saltedOwn || saltedCurated) {
 			return ownerEntry
 		}
-		salt := ListSaltOf(t, identity)
-		if !tracking.Opening(identity).Present {
-			if ringtest.AsBigInt(policyWitness.RingListTag).Sign() == 0 {
-				return ownerEntry
-			}
-			salt = RingSalt
+		if tracking.Opening(identity).Present {
+			salt := ListSaltOf(t, identity)
+			key := ringregistry.ListKey(t, identity, salt)
+			ownerEntry.ListSalt = salt
+			ownerEntry.OwnSalted = own.add(key, saltedOwn)
+			ownerEntry.CuratorSalted[0] = curator.add(key, saltedCurated)
 		}
-		key := ringregistry.ListKey(t, identity, salt)
-		ownerEntry.ListSalt = salt
-		ownerEntry.OwnSalted = own.add(key, saltedOwn)
-		ownerEntry.CuratorSalted[0] = curator.add(key, saltedCurated)
+		if ringSalted {
+			key := ringregistry.ListKey(t, identity, RingSalt)
+			ownerEntry.OwnRing = own.add(key, saltedOwn)
+			ownerEntry.CuratorRing[0] = curator.add(key, saltedCurated)
+		}
 		return ownerEntry
 	}
 	for j, sender := range senders {

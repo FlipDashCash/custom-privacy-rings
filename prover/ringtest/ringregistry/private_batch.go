@@ -52,6 +52,14 @@ func NewAbsentOwnerWrite(t testing.TB, salt *big.Int) OwnerWrite {
 	return OwnerWrite{Tracking: tracking, Owner: privateOwner(member, salt, opening), Key: ListKey(t, member, salt)}
 }
 
+// NewEnrolledOwnerWrite writes for member 101 under salt, its row commits the tag of 13.
+func NewEnrolledOwnerWrite(t testing.TB, salt *big.Int) OwnerWrite {
+	t.Helper()
+	tracking := SaltedTracking(t, big.NewInt(13))
+	member := big.NewInt(101)
+	return OwnerWrite{Tracking: tracking, Owner: privateOwner(member, salt, tracking.Opening(member)), Key: ListKey(t, member, salt)}
+}
+
 func privateOwner(member, salt *big.Int, opening TrackingOpening) registry.PrivateOwner {
 	return registry.PrivateOwner{Owner: member, ListSalt: salt, TrackingOpening: registry.TrackingOpening{
 		Present: ringtest.Bit(opening.Present), Record: opening.Record.Wires(), Path: opening.Path.Wires(),

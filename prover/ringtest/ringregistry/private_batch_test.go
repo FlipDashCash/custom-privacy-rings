@@ -94,3 +94,14 @@ func TestPrivateWriteForAnAbsentOwner(t *testing.T) {
 		ringtest.RequireRefused(t, solvePrivate(c), owner)
 	})
 }
+
+// An enrolled owner's entry under another salt is written through its row, the salt stays nonzero.
+func TestPrivateWriteForAnEnrolledOwnerUnderAnotherSalt(t *testing.T) {
+	enrolled := func(salt int64) *registry.PrivateApplyRecordsCircuit {
+		return ringregistry.PrivateBatchFor(t, 2, ringregistry.PrivateBlockBit, ringregistry.NewEnrolledOwnerWrite(t, big.NewInt(salt)))
+	}
+	if err := solvePrivate(enrolled(0x5a17)); err != nil {
+		t.Fatal(err)
+	}
+	ringtest.RequireRefused(t, solvePrivate(enrolled(0)), "registry.PrivateOwner.Assert")
+}

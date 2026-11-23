@@ -179,6 +179,8 @@ type PooledOwnerEntry struct {
 	ListSalt      Field    `json:"listSalt"`
 	OwnSalted     uint32   `json:"ownSalted"`
 	CuratorSalted []uint32 `json:"curatorSalted"`
+	OwnRing       uint32   `json:"ownRing"`
+	CuratorRing   []uint32 `json:"curatorRing"`
 }
 
 type SharedRegistryPath struct {
@@ -201,6 +203,8 @@ type PolicyParams struct {
 	CuratorSubjects []PooledSubject     `json:"curatorSubjects"`
 	SenderEntries   []PooledOwnerEntry  `json:"senderEntries"`
 	VoucherEntry    PooledOwnerEntry    `json:"voucherEntry"`
+	// Nil on a ring with no ring salt.
+	RingSalt *Field `json:"ringSalt,omitempty"`
 	// OwnerEntries[o] and AssetEntries[o] index payment o's owner and asset subjects.
 	OwnerEntries       []PooledOwnerEntry `json:"ownerEntries"`
 	AssetEntries       []PooledEntry      `json:"assetEntries"`
