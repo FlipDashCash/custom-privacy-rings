@@ -244,6 +244,8 @@ export interface PrivateApplyProofInput {
 /** Go `PrivateOwnerParams`, a marked write's enrolled row or the row bracketing an unregistered owner. */
 export interface PrivateOwnerProofInput {
   readonly listSalt: Bytes32;
+  /** Keys the write under the ring salt. */
+  readonly ring?: boolean;
   /** The unregistered owner `record` brackets, its write sits under the ring salt. */
   readonly absent?: Bytes32;
   readonly record: TrackingRecord;
@@ -798,6 +800,7 @@ function privateApplyJson(input: PrivateApplyProofInput, capacity: number): Json
       capacity,
       (owner, name) => ({
         listSalt: field(owner.listSalt, `${name}.listSalt`),
+        ...(owner.ring === true ? { ring: true } : {}),
         ...(owner.absent === undefined ? {} : { absent: field(owner.absent, `${name}.absent`) }),
         record: trackingRecordJson(owner.record, `${name}.record`),
         ...quadPathJson(owner.path, TRACKING_QUAD_HEIGHT, name, "index", "path"),

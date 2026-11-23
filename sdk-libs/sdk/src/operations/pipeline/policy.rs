@@ -458,7 +458,7 @@ impl EntryPlan<'_> {
             };
             let ring = self
                 .ring_salt
-                .map(|salt| SaltedKey::of(&member, salt))
+                .map(|salt| SaltedKey::ring(&member, salt))
                 .transpose()?;
             plan.owner(OwnerQuery {
                 member,

@@ -133,6 +133,16 @@ impl WriterSalt {
             Self::Owner(salt) | Self::Ring(salt) => salt,
         }
     }
+
+    pub fn member(
+        &self,
+        owner: &zolana_ring_policy::Member,
+    ) -> Result<zolana_ring_policy::Member, zolana_ring_policy::MemberError> {
+        match self {
+            Self::Owner(salt) => zolana_ring_policy::Member::salted(owner, salt),
+            Self::Ring(salt) => zolana_ring_policy::Member::ring_salted(owner, salt),
+        }
+    }
 }
 
 impl RingRpcClient {

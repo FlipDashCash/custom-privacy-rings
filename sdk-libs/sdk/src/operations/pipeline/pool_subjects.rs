@@ -175,10 +175,18 @@ impl KnownSalts {
 }
 
 impl SaltedKey {
-    pub fn of(member: &[u8; 32], list_salt: [u8; 32]) -> Result<Self, RingError> {
+    fn of(member: &[u8; 32], list_salt: [u8; 32]) -> Result<Self, RingError> {
         let key = Member::salted(&Member::from_bytes(*member)?, &list_salt)?;
         Ok(Self {
             list_salt,
+            key: *key.as_bytes(),
+        })
+    }
+
+    pub fn ring(member: &[u8; 32], ring_salt: [u8; 32]) -> Result<Self, RingError> {
+        let key = Member::ring_salted(&Member::from_bytes(*member)?, &ring_salt)?;
+        Ok(Self {
+            list_salt: ring_salt,
             key: *key.as_bytes(),
         })
     }

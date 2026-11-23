@@ -54,7 +54,7 @@ import {
   type PublicGross,
 } from "../protocol/membership/owner-debits.js";
 import { listTagOf } from "../crypto/keys/list-salt.js";
-import { privateListKey, publicListKey } from "../protocol/membership/private-list.js";
+import { privateListKey, publicListKey, ringListKey } from "../protocol/membership/private-list.js";
 import {
   evaluateInputAssets,
   evaluatePayments,
@@ -350,9 +350,10 @@ export async function policyDemand(
       ? []
       : subjects.ownerMembers.flatMap((member) => {
           const salt = salts.get(bytesKey(member));
-          return [salt, input.ringSalt].flatMap((read) =>
-            read === undefined ? [] : [privateListKey(member, read)],
-          );
+          return [
+            ...(salt === undefined ? [] : [privateListKey(member, salt)]),
+            ...(input.ringSalt === undefined ? [] : [ringListKey(member, input.ringSalt)]),
+          ];
         });
   const members = poolMembers(subjects, saltedKeys);
   return Object.freeze({
@@ -418,7 +419,7 @@ export async function readPolicy(
     ? committedRingSalt(pinned?.ringListTag ?? ZERO_32, input.ringSalt)
     : undefined;
   const ringKeyOf = (member: Bytes32): Bytes32 | undefined =>
-    ringSalt === undefined ? undefined : privateListKey(member, ringSalt);
+    ringSalt === undefined ? undefined : ringListKey(member, ringSalt);
   const ringKeys = subjects.ownerMembers.flatMap((member) => ringKeyOf(member) ?? []);
   const members = poolMembers(subjects, [...keyOf.values(), ...ringKeys]);
   const capacity = transferPoolCapacity(circuit);

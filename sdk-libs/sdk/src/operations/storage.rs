@@ -279,35 +279,8 @@ impl PrivateStorageWrite<'_> {
             }
             .read(rpc)
             .await?;
-            // 3. The salt opens the owner's list tag or the ring's, the circuit checks neither.
-            let tag = domain::list_tag(&owner.write.list_salt)?;
-            let (record, path, absent) = match opening {
-                TrackingOpening::Present { record, path }
-                    if record.nullifier_pk != ZERO_NULLIFIER_PUBKEY =>
-                {
-                    if tag != record.list_tag && tag != policy.ring_list_tag {
-                        return Err(RingError::ListSaltMismatch {
-                            member: owner.member,
-                        });
-                    }
-                    (record, path, None)
-                }
-                TrackingOpening::Absent { low, path } if tag == policy.ring_list_tag => {
-                    (low, path, Some(owner.member))
-                }
-                _ => {
-                    return Err(RingError::WriteOwnerNotEnrolled {
-                        write_index: owner.write.write_index,
-                    })
-                }
-            };
-            requests[usize::from(owner.write.write_index)] = Some(PrivateOwnerRequest {
-                list_salt: owner.write.list_salt,
-                absent,
-                record: (&record).into(),
-                index: path.index,
-                path: path.siblings.as_flattened().to_vec(),
-            });
+            requests[usize::from(owner.write.write_index)] =
+                Some(owner.request(opening, &policy.ring_list_tag)?);
         }
         let statement = self.inputs.statement(RecordStatementContext {
             registry: self.registry,
@@ -331,6 +304,8 @@ impl PrivateStorageWrite<'_> {
 struct BoundOwner {
     write: SaltedOwnerWrite,
     member: [u8; 32],
+    /// The written key sits under the ring salt.
+    ring: bool,
 }
 
 impl BoundOwner {
@@ -338,18 +313,66 @@ impl BoundOwner {
         inputs: &ApplyProofInputs,
     ) -> impl Fn(&SaltedOwnerWrite) -> Result<Self, RingError> + '_ {
         move |write| {
-            let member = solana_owner_identity(write.owner.as_array())?;
-            let key = Member::salted(&Member::from_bytes(member)?, &write.list_salt)?;
-            match inputs.writes.get(usize::from(write.write_index)) {
-                Some(written) if written.entry.member == *key.as_bytes() => Ok(Self {
-                    write: *write,
-                    member,
-                }),
-                _ => Err(RingError::ListKeyMismatch {
-                    write_index: write.write_index,
-                }),
-            }
+            let written = inputs.writes.get(usize::from(write.write_index));
+            Self::keyed(write, written.map(|written| written.entry.member))
         }
+    }
+
+    /// The written key names its family, the owner's salt or the ring's.
+    fn keyed(write: &SaltedOwnerWrite, written: Option<[u8; 32]>) -> Result<Self, RingError> {
+        let member = solana_owner_identity(write.owner.as_array())?;
+        let owner = Member::from_bytes(member)?;
+        let keyed = |key: Member| written == Some(*key.as_bytes());
+        let ring = match Member::salted(&owner, &write.list_salt).is_ok_and(keyed) {
+            true => false,
+            false if keyed(Member::ring_salted(&owner, &write.list_salt)?) => true,
+            false => {
+                return Err(RingError::ListKeyMismatch {
+                    write_index: write.write_index,
+                })
+            }
+        };
+        Ok(Self {
+            write: *write,
+            member,
+            ring,
+        })
+    }
+
+    /// The circuit checks no ring tag, a salt off the committed one writes a record no proof reads.
+    fn request(
+        &self,
+        opening: TrackingOpening,
+        ring_list_tag: &[u8; 32],
+    ) -> Result<PrivateOwnerRequest, RingError> {
+        let write_index = self.write.write_index;
+        let tag = domain::list_tag(&self.write.list_salt)?;
+        let (record, path, absent) = match (self.ring, opening) {
+            (true, _) if tag != *ring_list_tag => {
+                return Err(RingError::RingSaltUncommitted { write_index })
+            }
+            (true, TrackingOpening::Absent { low, path }) => (low, path, Some(self.member)),
+            (true, TrackingOpening::Present { record, path }) => (record, path, None),
+            (false, TrackingOpening::Present { record, path })
+                if record.nullifier_pk != ZERO_NULLIFIER_PUBKEY =>
+            {
+                if tag != record.list_tag {
+                    return Err(RingError::ListSaltMismatch {
+                        member: self.member,
+                    });
+                }
+                (record, path, None)
+            }
+            (false, _) => return Err(RingError::WriteOwnerNotEnrolled { write_index }),
+        };
+        Ok(PrivateOwnerRequest {
+            list_salt: self.write.list_salt,
+            ring: self.ring,
+            absent,
+            record: (&record).into(),
+            index: path.index,
+            path: path.siblings.as_flattened().to_vec(),
+        })
     }
 }
 

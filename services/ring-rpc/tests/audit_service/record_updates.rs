@@ -1275,7 +1275,9 @@ fn unregistered_owner() -> Address {
 
 fn ring_salted_key(owner: Address, salt: &[u8; 32]) -> [u8; 32] {
     let member = Member::owner_tag(owner.as_array()).expect("member");
-    *Member::salted(&member, salt).expect("list key").as_bytes()
+    *Member::ring_salted(&member, salt)
+        .expect("list key")
+        .as_bytes()
 }
 
 fn salted_owner() -> Address {

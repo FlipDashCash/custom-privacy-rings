@@ -50,7 +50,13 @@ import {
   type TransferStatement,
 } from "../../../src/protocol/proof/statement.js";
 import { RingInstructionTag } from "../../../src/operations/management/admin.js";
-import { privateListKey, publicListKey } from "../../../src/protocol/membership/private-list.js";
+import {
+  committedRingListKey,
+  privateListKey,
+  publicListKey,
+  ringListKey,
+} from "../../../src/protocol/membership/private-list.js";
+import { listTagOf } from "../../../src/crypto/keys/list-salt.js";
 import { publicMember, type Member } from "../../../src/protocol/membership/policy.js";
 import { ringRail, ringRailOf } from "../../../src/protocol/transaction/transact.js";
 
@@ -547,6 +553,31 @@ describe("the list lookup key", () => {
     expect(publicMember(seven as Member)).toEqual(publicListKey(seven));
     expect(publicListKey(seven)).not.toEqual(seven);
     expect(privateListKey(seven, field("09".padStart(64, "0")))).not.toEqual(publicListKey(seven));
+  });
+
+  it("keys an entry under the ring salt as Rust `Member::ring_salted` does, off the owner salt keys", () => {
+    const nine = field("09".padStart(64, "0"));
+    expect(hex(ringListKey(seven, nine))).toBe(
+      "15a7b631d43ec4b96f98ec8966e6c29bd975793a919b2d1180dc0b9c500b9ebe",
+    );
+    expect(ringListKey(seven, nine)).not.toEqual(privateListKey(seven, nine));
+  });
+
+  it("plans a ring salted key only under the tag the policy commits", () => {
+    const ringSalt = field("09".padStart(64, "0"));
+    const ringListTag = listTagOf(ringSalt);
+    expect(committedRingListKey({ ownerPkHash: seven, ringSalt, ringListTag })).toEqual(
+      ringListKey(seven, ringSalt),
+    );
+    for (const tag of [ZERO_32 as Bytes32, listTagOf(seven)])
+      expect(() =>
+        committedRingListKey({ ownerPkHash: seven, ringSalt, ringListTag: tag }),
+      ).toThrow(
+        expect.objectContaining({
+          code: "RING_ENTRY_INVALID",
+          details: { reason: "ringSaltUncommitted" },
+        }),
+      );
   });
 
   it("refuses a zero salt for a private key", () => {

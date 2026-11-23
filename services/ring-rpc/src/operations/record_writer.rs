@@ -728,7 +728,7 @@ impl RingSalted<'_> {
     }
 
     fn key(&self, owner: &Address) -> Result<[u8; 32], zolana_ring_policy::MemberError> {
-        let key = zolana_ring_policy::Member::salted(
+        let key = zolana_ring_policy::Member::ring_salted(
             &zolana_ring_policy::Member::owner_tag(owner.as_array())?,
             &self.salt,
         )?;

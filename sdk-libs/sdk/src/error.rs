@@ -362,8 +362,10 @@ pub enum RingError {
     ViewingHistoryNotCurrent,
     #[error("the enrollment of {owner} names a viewing key the wallet does not hold")]
     ViewingKeyNotHeld { owner: Address },
-    #[error("the owner of write {write_index} holds no applied tracking row and the salt opens no ring list tag")]
+    #[error("the owner of write {write_index} holds no applied tracking row")]
     WriteOwnerNotEnrolled { write_index: u8 },
+    #[error("the salt of write {write_index} opens no ring list tag the policy commits")]
+    RingSaltUncommitted { write_index: u8 },
     #[error("write {write_index} is not the list key of its owner under the salt")]
     ListKeyMismatch { write_index: u8 },
     #[error("the salted owners name other write positions than the private writes")]

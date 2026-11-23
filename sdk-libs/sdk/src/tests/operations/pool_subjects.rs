@@ -110,7 +110,9 @@ fn the_ring_salt_opens_the_committed_tag_or_is_refused() {
 fn an_owner_reads_under_its_own_salt_and_the_ring_salt() {
     let ring_salt = [6; 32];
     let key = |salt| SaltedKey::of(&OWNER, salt).unwrap();
-    let (own_key, ring_key) = (key(SALT).key, key(ring_salt).key);
+    let ring = SaltedKey::ring(&OWNER, ring_salt).unwrap();
+    assert_ne!(ring.key, key(ring_salt).key);
+    let (own_key, ring_key) = (key(SALT).key, ring.key);
     let block = ListId::PrivateBlock.record_bit();
     let at = |listed: [u8; 32]| move |member: &[u8; 32]| if *member == listed { block } else { 0 };
     for (salted, opened) in [
@@ -123,7 +125,7 @@ fn an_owner_reads_under_its_own_salt_and_the_ring_salt() {
                 member: OWNER,
                 tracking: 1,
                 salted,
-                ring: Some(key(ring_salt)),
+                ring: Some(ring),
             })
             .unwrap();
         assert_eq!(plan.own.opened(), opened);

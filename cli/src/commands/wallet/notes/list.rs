@@ -144,7 +144,7 @@ impl MemberArgs {
                     SaltedOwner::Key(owner) => (owner.to_bytes(), read_salt(owner)?),
                 };
                 Ok(Subject {
-                    member: Member::salted(&Member::owner_tag(&owner)?, list_salt.salt())?,
+                    member: list_salt.member(&Member::owner_tag(&owner)?)?,
                     label: format!("salted owner {}", Address::new_from_array(owner)),
                     unregistered: matches!(list_salt, WriterSalt::Ring(_))
                         .then(|| Address::new_from_array(owner)),
@@ -521,7 +521,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             unregistered[0].member,
-            Member::salted(&Member::owner_tag(&owner).unwrap(), &ring_salt).unwrap()
+            Member::ring_salted(&Member::owner_tag(&owner).unwrap(), &ring_salt).unwrap()
         );
         assert_eq!(
             unregistered[0].unregistered,

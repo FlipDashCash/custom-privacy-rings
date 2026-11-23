@@ -286,18 +286,22 @@ impl OwnerSaltCheck<'_> {
         let member = *Member::owner_tag(self.owner.as_array())?.as_bytes();
         let policy = self.ring.require_policy(rpc).await?;
         let root = BoundRoot::tracking(&policy, rpc).await?;
-        match (TrackingMemberRead { root, member }).read(rpc).await? {
-            TrackingOpening::Present { record, .. }
-                if domain::list_tag(self.list_salt)? == record.list_tag =>
-            {
-                Ok(())
-            }
+        let opening = (TrackingMemberRead { root, member }).read(rpc).await?;
+        self.opens(&opening, &policy.ring_list_tag)
+    }
+
+    /// An enrolled owner's salt opens its row's tag, any other owner takes the committed ring salt.
+    pub(crate) fn opens(
+        &self,
+        opening: &TrackingOpening,
+        ring_list_tag: &[u8; 32],
+    ) -> Result<(), RingError> {
+        let member = *Member::owner_tag(self.owner.as_array())?.as_bytes();
+        let tag = domain::list_tag(self.list_salt)?;
+        match opening {
+            TrackingOpening::Present { record, .. } if tag == record.list_tag => Ok(()),
             TrackingOpening::Present { .. } => Err(RingError::ListSaltMismatch { member }),
-            TrackingOpening::Absent { .. }
-                if domain::list_tag(self.list_salt)? == policy.ring_list_tag =>
-            {
-                Ok(())
-            }
+            TrackingOpening::Absent { .. } if tag == *ring_list_tag => Ok(()),
             TrackingOpening::Absent { .. } => Err(RingError::ListSaltUnknown { member }),
         }
     }

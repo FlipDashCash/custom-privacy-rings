@@ -693,6 +693,9 @@ pub(crate) struct PrivateApplyRecords {
 pub(crate) struct PrivateOwnerRequest {
     #[serde(with = "fe")]
     pub list_salt: [u8; 32],
+    /// Keys the write under the ring salt.
+    #[serde(skip_serializing_if = "core::ops::Not::not")]
+    pub ring: bool,
     /// The unregistered owner `record` brackets.
     #[serde(skip_serializing_if = "Option::is_none", with = "fe::option")]
     pub absent: Option<[u8; 32]>,
