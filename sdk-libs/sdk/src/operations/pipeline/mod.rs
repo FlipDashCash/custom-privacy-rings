@@ -18,6 +18,7 @@ mod spp;
 #[path = "../../tests/operations/pipeline.rs"]
 mod tests;
 mod voucher;
+pub use voucher::VouchSigner;
 
 use custom_ring_interface::{
     cosign::{ApprovalMask, CoSignDemand, CoSignOperation},
@@ -442,7 +443,7 @@ struct Pipeline<'a> {
     co_signers: Vec<Address>,
     priority_fee: Option<u64>,
     approval_blinder: Option<[u8; 32]>,
-    voucher: Option<OwnerAuthorization<'a>>,
+    voucher: Option<&'a dyn VouchSigner>,
 }
 
 struct Frame {
@@ -471,7 +472,7 @@ struct Unwitnessed<'a> {
     spend: Spend<'a>,
     trees: SpendTrees,
     priority_fee: Option<u64>,
-    voucher: Option<OwnerAuthorization<'a>>,
+    voucher: Option<&'a dyn VouchSigner>,
 }
 
 /// A transfer whose external data is final.
@@ -681,7 +682,6 @@ impl<'a> Prepared<'a> {
             voucher: self
                 .pipeline
                 .voucher
-                .as_ref()
                 .map(|voucher| VoucherKey::of(voucher)?.identity())
                 .transpose()?,
             token_owner_hint: match &staged.spend {
@@ -794,7 +794,7 @@ impl<'a> Prepared<'a> {
                 flags,
                 inputs: &proof_inputs,
                 auditor: &auditor,
-                voucher: voucher.as_ref().map(VoucherKey::of).transpose()?,
+                voucher: voucher.map(VoucherKey::of).transpose()?,
             }
             .seal()?,
         };

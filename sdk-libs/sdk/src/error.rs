@@ -254,6 +254,8 @@ pub enum RingError {
     VoucherSignatureMismatch,
     #[error("a relayed transfer takes no voucher")]
     VouchedRelay,
+    #[error("a transfer no rule table screens takes no voucher")]
+    VoucherUnscreened,
     #[error("input {index} is a default-ring note the in-proof owner rail cannot spend")]
     InProofDefaultRingInput { index: usize },
     #[error("the confidential relay carries no owner signature")]

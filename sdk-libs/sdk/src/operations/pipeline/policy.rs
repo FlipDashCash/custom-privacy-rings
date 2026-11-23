@@ -130,6 +130,9 @@ impl PolicyRead<'_> {
             RootRead::Policy => Some(PinnedPolicy::of(policy)?),
             RootRead::Own | RootRead::None => None,
         };
+        if self.voucher.is_some() && pinned.is_none() {
+            return Err(RingError::VoucherUnscreened);
+        }
         let gates = pinned.as_ref().map_or_else(SourceGates::default, |pinned| {
             SourceGates::of(&pinned.sources)
         });
@@ -623,9 +626,10 @@ impl ScreenedRecords<'_> {
                 .iter()
                 .filter(|sender| **sender != [0; 32])
                 .map(|sender| covered(*sender))
-                // The voucher is one more sender over its own lists.
-                .chain(voucher)
                 .collect();
+            if let Some(voucher) = &voucher {
+                pinned.table.evaluate_voucher(&pinned.sources, voucher)?;
+            }
             pinned.table.evaluate_senders(&pinned.sources, &senders)?;
             pinned.table.evaluate_payments(
                 &pinned.sources,

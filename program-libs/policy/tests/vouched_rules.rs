@@ -28,7 +28,6 @@ struct Transfer {
 }
 
 impl Transfer {
-    /// The voucher is one more sender row over its own lists, it covers the sender and the owner.
     fn screen(self) -> Result<(), RuleRefusal> {
         let sources = SourceMap::new(
             &[ListId::Allow, ListId::Block, ListId::Approval].map(|list_id| (list_id, [0; 32])),
@@ -47,8 +46,10 @@ impl Transfer {
             Some(voucher) => own(lists).vouched_by(voucher),
             None => own(lists),
         };
-        let senders: Vec<RecordLists> = [covered(self.sender)].into_iter().chain(voucher).collect();
-        table.evaluate_senders(&sources, &senders)?;
+        if let Some(voucher) = &voucher {
+            table.evaluate_voucher(&sources, voucher)?;
+        }
+        table.evaluate_senders(&sources, &[covered(self.sender)])?;
         table.evaluate_payments(
             &sources,
             PaymentSubjects {
@@ -87,7 +88,7 @@ fn an_unlisted_sender_and_owner_pass_only_under_a_listed_voucher() {
 }
 
 #[test]
-fn a_voucher_off_the_allow_list_is_refused_as_a_sender() {
+fn a_voucher_off_the_allow_list_is_refused_by_name() {
     let vouched = |voucher| Transfer {
         sender: ALLOW,
         owner: ALLOW,
@@ -96,10 +97,7 @@ fn a_voucher_off_the_allow_list_is_refused_as_a_sender() {
     };
     assert_eq!(vouched(ALLOW).screen(), Ok(()));
     for voucher in [0, BLOCK, APPROVAL] {
-        assert_eq!(
-            vouched(voucher).screen(),
-            refused(SENDER_ALLOW, TransferSubject::Sender)
-        );
+        assert_eq!(vouched(voucher).screen(), Err(RuleRefusal::VoucherUnlisted));
     }
 }
 

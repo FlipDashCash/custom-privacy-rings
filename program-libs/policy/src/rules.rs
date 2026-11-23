@@ -82,6 +82,7 @@ pub enum TransferSubject {
     Asset(usize),
     /// A position in the live inputs `evaluate_input_assets` reads.
     InputAsset(usize),
+    Voucher,
 }
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -91,6 +92,8 @@ pub enum RuleRefusal {
         rule: usize,
         subject: TransferSubject,
     },
+    #[error("the voucher holds no allow entry")]
+    VoucherUnlisted,
 }
 
 impl RuleTable {
@@ -128,6 +131,28 @@ impl RuleTable {
                 },
             },
         )
+    }
+
+    /// The voucher's own check, a signer on a list it covers under every sender rule, mirror `assertVouches` and the voucher row of `assertSenderRules`.
+    pub fn evaluate_voucher(
+        &self,
+        sources: &SourceMap,
+        voucher: &RecordLists,
+    ) -> Result<(), RuleRefusal> {
+        if !voucher
+            .on(foreign_lists(sources), sources.salted())
+            .intersects(ListSet::VOUCHED)
+        {
+            return Err(RuleRefusal::VoucherUnlisted);
+        }
+        self.evaluate_senders(sources, &[*voucher])
+            .map_err(|refusal| match refusal {
+                RuleRefusal::Lists { rule, .. } => RuleRefusal::Lists {
+                    rule,
+                    subject: TransferSubject::Voucher,
+                },
+                other => other,
+            })
     }
 
     /// The owner and asset rules over the payments, a sender rule is not read.
@@ -228,6 +253,7 @@ impl fmt::Display for TransferSubject {
             Self::Owner(output) => write!(f, "the owner of output {output}"),
             Self::Asset(output) => write!(f, "the asset of output {output}"),
             Self::InputAsset(input) => write!(f, "the asset of live input {input}"),
+            Self::Voucher => f.write_str("the voucher"),
         }
     }
 }
@@ -285,7 +311,9 @@ impl RuleCheck<'_> {
     fn listed(&self, subject: TransferSubject, records: RecordLists) -> Result<(), RuleRefusal> {
         let salted = match subject {
             TransferSubject::Asset(_) | TransferSubject::InputAsset(_) => ListSet::EMPTY,
-            TransferSubject::Sender | TransferSubject::Owner(_) => self.salted,
+            TransferSubject::Sender | TransferSubject::Owner(_) | TransferSubject::Voucher => {
+                self.salted
+            }
         };
         if holds(self.rule, records.on(self.foreign, salted)) {
             return Ok(());

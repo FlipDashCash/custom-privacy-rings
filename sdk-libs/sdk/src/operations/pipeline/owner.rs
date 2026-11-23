@@ -2,6 +2,8 @@
 
 use custom_ring_interface::{RingMode, RingRail};
 use spr_client::{AsyncRpc, OwnerAuthorization, SettlementAccountValidation};
+
+use super::VouchSigner;
 use spr_interface::shape::Shape;
 use spr_keypair::{NullifierKey, ShieldedAddress, SigningKey};
 use spr_program::instruction::TransactInterfaceTransferAccounts;
@@ -30,7 +32,7 @@ pub struct Owner<'a> {
     pub(super) token_account_setup: Vec<TokenAccountSetup>,
     /// The other owners of a signer rail spend, each signs the transaction.
     pub(super) co_owners: Vec<CoOwner<'a>>,
-    pub(super) voucher: Option<OwnerAuthorization<'a>>,
+    pub(super) voucher: Option<&'a dyn VouchSigner>,
 }
 
 pub struct CustomRingTransferInput<'a> {
@@ -91,7 +93,7 @@ impl<'a> RingTransfer<Owner<'a>> {
 
     /// A listed wallet signs `VouchMessage::digest` of the transfer, its Allow and PrivateAllow entries admit every sender and payment owner and the auditor reads its key.
     #[must_use = "use the updated transfer"]
-    pub fn with_voucher(mut self, voucher: OwnerAuthorization<'a>) -> Self {
+    pub fn with_voucher(mut self, voucher: &'a dyn VouchSigner) -> Self {
         self.rail.voucher = Some(voucher);
         self
     }

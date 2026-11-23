@@ -1982,8 +1982,20 @@ async fn a_recipient_the_rules_refuse_fails_before_proving() {
 async fn the_request_carries_a_signature_over_the_vouch_digest_vouched_or_not() {
     use crate::tests::support::{keypair, owner_record, Registry};
     use custom_ring_interface::domain::VouchMessage;
-    use spr_client::OwnerAuthorization;
-    use zolana_ring_policy::{RuleRefusal, TransferSubject};
+    use zolana_ring_policy::RuleRefusal;
+
+    use crate::pipeline::VouchSigner;
+    /// A wallet returning a signature over other bytes.
+    struct Unsigned(PublicKey);
+    impl VouchSigner for Unsigned {
+        fn public_key(&self) -> PublicKey {
+            self.0
+        }
+
+        fn sign_vouch(&self, _digest: &[u8; 32]) -> Result<[u8; 64], RingError> {
+            Ok([0; 64])
+        }
+    }
     let (sender, recipient, voucher) = (keypair(1), keypair(2), keypair(3));
     let client = |recipient_lists: u64, voucher_lists: u64| {
         Chain::ring(RingSettings {
@@ -2036,7 +2048,7 @@ async fn the_request_carries_a_signature_over_the_vouch_digest_vouched_or_not() 
         assert!(signer.verify_message(&digest, &bytes(&built["voucher"]["signature"])));
         built
     };
-    let vouching = OwnerAuthorization::SigningKey(&voucher.signing_key);
+    let vouching: &dyn VouchSigner = &voucher.signing_key;
     let voucher_key = voucher.signing_pubkey().as_ed25519().unwrap();
 
     let assembled = transfer()
@@ -2079,18 +2091,13 @@ async fn the_request_carries_a_signature_over_the_vouch_digest_vouched_or_not() 
             .with_voucher(vouching)
             .assemble(&client(0, 0))
             .await,
-        Err(RingError::PolicyRuleUnsatisfied(RuleRefusal::Lists {
-            rule: 0,
-            subject: TransferSubject::Sender,
-        }))
+        Err(RingError::PolicyRuleUnsatisfied(
+            RuleRefusal::VoucherUnlisted
+        ))
     ));
-    let unsigned = OwnerAuthorization::Prepared {
-        owner: voucher.signing_pubkey(),
-        signature: [0; 64],
-    };
     assert!(matches!(
         transfer()
-            .with_voucher(unsigned)
+            .with_voucher(&Unsigned(voucher.signing_pubkey()))
             .assemble(&client(0, 1))
             .await,
         Err(RingError::VoucherSignatureMismatch)
