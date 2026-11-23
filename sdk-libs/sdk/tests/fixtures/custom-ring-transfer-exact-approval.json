@@ -1,14 +1,14 @@
 {
   "circuitType": "custom-ring-transfer-2-in24-w4-s4",
-  "publicInputHash": "0x210a26058fac2dcc30f50fc2428b599cc1dfa6f69c4d777d87fed21a1db053df",
-  "firstNullifier": "0x1a50b68ad9d469793f6afcc27136b5c26d6df203afa402f8d8b2a0762c68acb5",
-  "txViewingSk": "0x7842853170cb5c815e917bfdce0540b5fd8064e6736a63f786f220a204426a76",
+  "publicInputHash": "0x000b2b54bd6ca859f31900901aa6509182003972b9651cf000182178fd7f10c0",
+  "firstNullifier": "0x14f2a5b028201260d9cd5f2e2ac25ec60573b54fde0400b237b7f7c0fac0389b",
+  "txViewingSk": "0x505d502c637614e4530ef4c13d7c638b9218a4741a3603dbe02f981e34a40a66",
   "auditorPk": "0x50a61409b1ddd0325e9b16b700e719e9772c07000b1bd7786e907c653d20495d",
-  "salt": "0x178bbdc8d90d635cc19e4151a55fbd4d",
+  "salt": "0x70d277e31fac6a52945c5847d92c8b94",
   "layout": 0,
   "approvalMask": 0,
-  "approvalTotals": "0x09b70b46310e7179d3953d8019064db62fcab352f0c3d14c0134dc3f582f7987",
-  "approvalBlinder": "0x00a30b92f69cf592e2783f752907d86f075e7eeb23bd2a75874935b05094c6e0",
+  "approvalTotals": "0x2b6ce71e0e68e6aaddcd5abb2287cbfc46fc9ff2b303192265752162b7c7c6b7",
+  "approvalBlinder": "0x008af8421273c789af58a66368ec76d583d426edcf4105cb7abc31767046721d",
   "outputCount": 2,
   "outputs": [
     {
@@ -19,7 +19,7 @@
         "nullifierPk": "0x070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f",
         "asset": "0x2098f5fb9e239eab3ceac3f27b81e481dc3124d55ffed523a839ee8446b64864",
         "amount": "0x0000000000000000000000000000000000000000000000000000000000000006",
-        "blinding": "0x04a0ba31690bdbe477efc8bf278df7fe0e6a734f3174a88f8a15563ac43aa575",
+        "blinding": "0x243dda6b535dc282f628d2d509f20614e3c7df7d226704b5eb9e21a419935ecd",
         "dataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringDataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringProgramId": "0x0bcf0f0d5f8482a0744c386581fb3630b3944910a73fe3b0289b36cbdb4160bf"
@@ -39,7 +39,7 @@
         "nullifierPk": "0x0e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e939",
         "asset": "0x2098f5fb9e239eab3ceac3f27b81e481dc3124d55ffed523a839ee8446b64864",
         "amount": "0x0000000000000000000000000000000000000000000000000000000000000004",
-        "blinding": "0x03df548b0673ad82bd82318528eeec86e110879ba60788a5f03ed776d27726cd",
+        "blinding": "0x1c349f7eb79be3228d4a535d3be98c86c46269177b5e985bb180edb1ec522be3",
         "dataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringDataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringProgramId": "0x0bcf0f0d5f8482a0744c386581fb3630b3944910a73fe3b0289b36cbdb4160bf"
@@ -53,8 +53,8 @@
     }
   ],
   "voucher": {
-    "publicKey": "0x96a69143ad589eda03e80fdd8f0aa96475ea5c0e14cfc32aaccdb2d090577957",
-    "signature": "0xd9faf4c3a7505f749bab363812415054e7f81799edc71b2255a37d278f36372ec45b0893aea57de610792ef81e4366ab93a53496bf8c66fdd1086f6938ee6d0b"
+    "publicKey": "0x81effe6289b789f34eb46fe02f96aa0c9cddb63f7a54998666a297d5aaf3164b",
+    "signature": "0x99afb14c6d9b263ba678f6a85afa6847b34b5f6da2136117c9aee3531d65e5e4a5410fbb3ae41145330d2209f62721aed8729ae0b8e7c695947d7756abbcfe01"
   },
   "inputCount": 1,
   "inputs": [
@@ -65,7 +65,7 @@
       "nullifierPk": "0x070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f",
       "asset": "0x2098f5fb9e239eab3ceac3f27b81e481dc3124d55ffed523a839ee8446b64864",
       "amount": "0x000000000000000000000000000000000000000000000000000000000000000a",
-      "blinding": "0x00ff1ef168063fe0a0926af9803cc7207c948bff42486a1f493e2d3e0fd1df75",
+      "blinding": "0x007bff64d45e59c86ad4098ceb452340b96fbadcd4e2135671946e32dee0b084",
       "dataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
       "ringDataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
       "ringProgramId": "0x0bcf0f0d5f8482a0744c386581fb3630b3944910a73fe3b0289b36cbdb4160bf"
@@ -381,7 +381,7 @@
     "0x0000000000000000000000000000000000000000000000000000000000000000",
     "0x0000000000000000000000000000000000000000000000000000000000000000"
   ],
-  "privateTxHash": "0x05263d9b3acd6db185ddf975f6a942b647a32ec5f52e093284769923a5d1b13b",
+  "privateTxHash": "0x0dea804bf93abf07bcd61357575c21046d661860da71c74c1c8455cd0c7e6fae",
   "inProof": false,
   "hidden": true,
   "delegate": false,
@@ -1054,6 +1054,7 @@
     "0x0000000000000000000000000000000000000000000000000000000000000000",
     "0x0000000000000000000000000000000000000000000000000000000000000000"
   ],
+  "ringListTag": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "ownRecords": [
     {
       "member": "0x273bd8775cbeda538efd4cb8f7d8b52459f1da42f8812a040777432cebc92393",
@@ -6751,6 +6752,10 @@
       "ownSalted": 0,
       "curatorSalted": [
         0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
       ]
     },
     {
@@ -6763,6 +6768,10 @@
       "ownSalted": 0,
       "curatorSalted": [
         0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
       ]
     },
     {
@@ -6775,6 +6784,10 @@
       "ownSalted": 0,
       "curatorSalted": [
         0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
       ]
     },
     {
@@ -6786,6 +6799,10 @@
       "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
       "ownSalted": 0,
       "curatorSalted": [
+        0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
         0
       ]
     }
@@ -6800,8 +6817,13 @@
     "ownSalted": 0,
     "curatorSalted": [
       0
+    ],
+    "ownRing": 0,
+    "curatorRing": [
+      0
     ]
   },
+  "ringSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "ownerEntries": [
     {
       "own": 0,
@@ -6812,6 +6834,10 @@
       "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
       "ownSalted": 0,
       "curatorSalted": [
+        0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
         0
       ]
     },
@@ -6825,29 +6851,9 @@
       "ownSalted": 0,
       "curatorSalted": [
         0
-      ]
-    },
-    {
-      "own": 0,
-      "curator": [
-        0
       ],
-      "tracking": 0,
-      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
-      "ownSalted": 0,
-      "curatorSalted": [
-        0
-      ]
-    },
-    {
-      "own": 0,
-      "curator": [
-        0
-      ],
-      "tracking": 0,
-      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
-      "ownSalted": 0,
-      "curatorSalted": [
+      "ownRing": 0,
+      "curatorRing": [
         0
       ]
     },
@@ -6861,6 +6867,10 @@
       "ownSalted": 0,
       "curatorSalted": [
         0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
       ]
     },
     {
@@ -6872,6 +6882,42 @@
       "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
       "ownSalted": 0,
       "curatorSalted": [
+        0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
+      ]
+    },
+    {
+      "own": 0,
+      "curator": [
+        0
+      ],
+      "tracking": 0,
+      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "ownSalted": 0,
+      "curatorSalted": [
+        0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
+      ]
+    },
+    {
+      "own": 0,
+      "curator": [
+        0
+      ],
+      "tracking": 0,
+      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "ownSalted": 0,
+      "curatorSalted": [
+        0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
         0
       ]
     }
