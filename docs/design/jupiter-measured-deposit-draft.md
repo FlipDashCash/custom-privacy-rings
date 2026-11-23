@@ -86,6 +86,74 @@ remain in force. It is not linked into the Custom
 program and has no guard, proof, or custody authority. A checked account
 view is not an authenticated instruction or an amount attributable to Jupiter.
 
+### Descriptor context V1 source
+
+`jupiter_measured_descriptor_context_draft.rs` implements this separate
+deterministic input to a future descriptor relation. Only its host test imports
+it. It reuses the tag-68 role order, descriptor selection, stock `Revision`
+and `TransferRoots`, and the pinned SPR hashing primitives. A future selected
+caller must obtain the original's first nullifier **and** private transaction
+hash from the genuine stock withdrawal binder after the checked withdrawal,
+not from a signed message containing this descriptor, instruction assertions,
+wallet history or a quote. The current Jupiter prefix check still returns
+only unit; obtaining that stock result in the new private caller remains
+unimplemented.
+
+Byte order is concatenation with no implicit padding. Integers below are
+unsigned little-endian, and every listed word/key/hash is 32 raw bytes:
+
+1. ASCII `pyrol:custom:jupiter:measured-descriptor-context:v1`, one NUL byte,
+   then tag byte 68 and version byte 1.
+2. Independently selected profile words in order: reviewed profile manifest
+   SHA-256, genesis, guard ELF SHA-256, Jupiter ELF SHA-256, descriptor R1CS
+   SHA-256, and raw descriptor VK SHA-256. None comes from the instruction.
+   Select the canonical manifest before this build; do not hash a manifest
+   that includes a digest of its own resulting Custom ELF or this descriptor.
+   The exact deployed Custom executable/bank is qualified separately.
+   A nonzero word does not verify any of these artifacts.
+3. Current Custom program address; stock first nullifier and private
+   transaction hash; gross input and approved fee (two u64); canonical tree
+   ID and live ring generation (u32).
+4. Selected tracking revision (u64), then exact accepted stock roots in order
+   policy hash, own root, curator root, and tracking root. The first three are
+   zero in the restricted anonymous profile. Use the pinned tracking
+   registry's exact served revision at the verified Clock slot; match the
+   frame's selected hash, not a replacement current root. Append the frame
+   expiry slot (u64) and SPL's representational maximum u64.
+5. All 17 V1 outer rows in the fixed order above. Each row is the raw address
+   and a byte with writable bit 0 and signer bit 1. These include the exact
+   input/output mints, output stage, SPP vault, tree account, payer, depositor,
+   fee receiver, and guard/Jupiter program addresses.
+6. Exactly 126 bytes each for the authenticated pre- and post-guard, in that
+   order, followed by their common compiled roster count (u8) and the ordered
+   raw address/privilege rows in the same 33-byte format. The two guard frames
+   must already match the exact route and be minimum-output mode. Their first
+   six rows match the V1 endpoints, and their checked router digest commits
+   the actual compiled Jupiter instruction. The preserved floor is read from
+   pre-guard bytes 28..36, with no independently supplied amount or ceiling.
+
+Take standard SHA-256 of these bytes, then the existing SPR `hash_bytes`
+at **fixed length 32** of that digest for the canonical `operation_context`
+field. The frame's encrypted fields and proof are deliberately excluded to
+avoid circular binding. A future reviewed port of
+[the descriptor projection](https://github.com/FlipDashCash/custom-privacy-rings/blob/f841ff6b9fb454c1228f7d5591735a9536d055e0/program-libs/interface/src/proof/dynamic_descriptor.rs#L195-L246)
+would feed this field to its existing context closure; its other statement
+inputs use the same authenticated ring/registry/roles, selected revision, tree,
+floor, expiry, and V1 recipient fields. It must verify under the separately
+selected **matching** circuit and VK for this Jupiter profile. No part of
+historical CPMM verification or proof readiness transfers automatically.
+The actual credit remains a runtime measurement, never a transcript input.
+
+The host regression reuses ordinary public V44 guard case 0 and the existing
+shared inert tag-68 vector; unprovisioned profile and original fields use
+test-only placeholders. The independent SHA-256 digest is
+`bd97fc8fcfdc8517bffd217dfef505818ca4b006897ce552efb6f0a9186afdfe`.
+No immutable release pins, prover, or verifier are supplied.
+
+```sh
+cargo test --offline --locked -p custom-ring-interface --test jupiter_measured_descriptor_context_draft
+```
+
 Before wiring an owned Custom handler, independently select and pin the exact
 guard and executable profile, Jupiter-specific descriptor transcript and
 matching verifier identity. They are **unprovisioned**. Reuse the checked
