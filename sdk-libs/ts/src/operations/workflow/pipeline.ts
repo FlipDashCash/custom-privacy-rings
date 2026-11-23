@@ -308,6 +308,8 @@ export type StagedTransferInput = Readonly<{
   coSigners?: readonly Address[];
   /** An enrolled subject on a ring reading a salted list needs its salt here. */
   listSalts?: readonly RingListSalt[];
+  /** An unregistered owner on a ring with a ring salt reads the private lists under it. */
+  ringSalt?: Bytes32;
   transaction?: RingTransactionFrame;
   approve?: (coSigners: readonly Address[]) => Promise<void>;
 }>;
@@ -417,6 +419,7 @@ async function selectStagedKey(input: StagedTransferInput, context: RequestConte
     proofInputs: staged.proofInputs,
     publicSlots: publicSlots(transfers),
     listSalts: input.listSalts ?? [],
+    ...(input.ringSalt === undefined ? {} : { ringSalt: input.ringSalt }),
     ...tokenOwnerHint(spend.anonymous?.tokenOwner ?? staged.withdrawalOwner),
   };
   const demand = await policyDemand({ ...demandInput, rows: liveRows }, context);

@@ -269,7 +269,7 @@ impl SaltedOwnerCheck<'_> {
     }
 }
 
-/// An entry under a salt the owner's tag does not open is one no proof reads.
+/// No proof reads an entry whose salt opens neither the owner's tag nor, with no row, the ring's tag.
 #[must_use]
 #[derive(Clone, Copy, Debug)]
 pub struct OwnerSaltCheck<'a> {
@@ -293,6 +293,11 @@ impl OwnerSaltCheck<'_> {
                 Ok(())
             }
             TrackingOpening::Present { .. } => Err(RingError::ListSaltMismatch { member }),
+            TrackingOpening::Absent { .. }
+                if domain::list_tag(self.list_salt)? == policy.ring_list_tag =>
+            {
+                Ok(())
+            }
             TrackingOpening::Absent { .. } => Err(RingError::ListSaltUnknown { member }),
         }
     }

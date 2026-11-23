@@ -29,7 +29,7 @@ import { checkHiddenOwnerSpends } from "../../src/operations/payments/anonymous.
 import { EMPTY_ENTRY_RECORD, InputClass } from "../../src/protocol/codec/audit-stream.js";
 import type { AuditStreamLayout } from "../../src/protocol/codec/ring-disclosure-layout.js";
 import { checkInputKeys, checkOutputKeys } from "../../src/proof/policy-proof.js";
-import { enrolledSalt } from "../../src/proof/policy-proof.js";
+import { ownerSalt } from "../../src/proof/policy-proof.js";
 import { anonymousPartyIdentities } from "../../src/protocol/membership/parties.js";
 import { ANONYMOUS_PARTIES } from "../../src/protocol/transaction/transact.js";
 import { ringCoSignerAccount } from "../helpers/ring-accounts.js";
@@ -203,21 +203,43 @@ describe("selectTransferKey", () => {
   });
 });
 
-describe("enrolledSalt", () => {
+describe("ownerSalt", () => {
   const owner = new Uint8Array(32).fill(1) as Bytes32;
   const salt = new Uint8Array(32).fill(2) as Bytes32;
+  const ringSalt = new Uint8Array(32).fill(3) as Bytes32;
   const salts = new Map([[bytesKey(owner), salt]]);
+  const noRing = { tag: new Uint8Array(32) as Bytes32 };
+  const ring = { tag: listTagOf(ringSalt), salt: ringSalt };
 
   it("takes no salt with no row and the row's salt under its tag", () => {
-    expect(enrolledSalt(owner, undefined, new Map())).toBeUndefined();
-    expect(enrolledSalt(owner, { ...row0(), listTag: listTagOf(salt) }, salts)).toEqual(salt);
+    expect(ownerSalt(owner, undefined, new Map(), noRing)).toBeUndefined();
+    expect(ownerSalt(owner, { ...row0(), listTag: listTagOf(salt) }, salts, noRing)).toEqual(salt);
   });
 
   it("refuses a row with no salt and a salt off the row's tag", () => {
-    expect(refusal(() => enrolledSalt(owner, row0(), new Map())).code).toBe(
+    expect(refusal(() => ownerSalt(owner, row0(), new Map(), noRing)).code).toBe(
       "RING_LIST_SALT_MISSING",
     );
-    expect(refusal(() => enrolledSalt(owner, row0(), salts)).code).toBe("RING_ADDRESS_MISMATCH");
+    expect(refusal(() => ownerSalt(owner, row0(), salts, noRing)).code).toBe(
+      "RING_ADDRESS_MISMATCH",
+    );
+  });
+
+  it("takes the ring salt with no row under the tag the policy commits", () => {
+    expect(ownerSalt(owner, undefined, salts, ring)).toEqual(ringSalt);
+    expect(ownerSalt(owner, { ...row0(), listTag: listTagOf(salt) }, salts, ring)).toEqual(salt);
+  });
+
+  it("refuses a ring tag with no ring salt, a salt off it and a row read at the ring salt", () => {
+    for (const held of [undefined, salt])
+      expect(
+        refusal(() => ownerSalt(owner, undefined, salts, { tag: ring.tag, salt: held })).code,
+      ).toBe("RING_LIST_SALT_MISSING");
+    const atRingSalt = new Map([[bytesKey(owner), ringSalt]]);
+    expect(
+      refusal(() => ownerSalt(owner, { ...row0(), listTag: listTagOf(salt) }, atRingSalt, ring))
+        .code,
+    ).toBe("RING_ADDRESS_MISMATCH");
   });
 });
 

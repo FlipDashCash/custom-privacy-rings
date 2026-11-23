@@ -117,6 +117,8 @@ export interface RingPolicy {
   readonly rules: EncodedRuleTable;
   readonly generation: number;
   readonly generationSlot: bigint;
+  /** `listTagOf` the ring salt, zero commits none. */
+  readonly ringListTag: Bytes32;
 }
 
 /** The instructions that bind roots, Rust `RootRead::transfer` and `merge`. */
@@ -131,7 +133,7 @@ export const RING_CO_SIGNER_SIZE = 35;
 /** Rust `CoSignerCounts::CLASSES`. */
 const RING_COSIGN_CLASSES = [RING_COSIGN_TRANSFERS, RING_COSIGN_DEPOSITS, RING_COSIGN_WITHDRAWALS];
 export const RING_POLICY_DISCRIMINATOR = 15;
-export const RING_POLICY_SIZE = 1157;
+export const RING_POLICY_SIZE = 1189;
 export const STORAGE_REGISTRY_DISCRIMINATOR = 1;
 export const STORAGE_REGISTRY_SIZE = 1657;
 
@@ -319,7 +321,15 @@ function readPolicyFields(reader: Reader, code: AccountInvalidCode) {
   const rules = readEncodedRuleTable(reader, code);
   const generation = reader.u32("generation");
   const generationSlot = reader.u64("generationSlot");
-  return { policyHash, sources: Object.freeze(sources), rules, generation, generationSlot };
+  const ringListTag = reader.bytes(32, "ringListTag") as Bytes32;
+  return {
+    policyHash,
+    sources: Object.freeze(sources),
+    rules,
+    generation,
+    generationSlot,
+    ringListTag,
+  };
 }
 
 function rootRead(policy: RingPolicy, reader: RootReader): "none" | "own" | "policy" {

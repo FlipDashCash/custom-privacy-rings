@@ -177,6 +177,9 @@ impl PolicyRead<'_> {
             tracked: &tracked,
             rows_read: rows_read.as_ref(),
             salts: self.salts,
+            ring_list_tag: pinned
+                .as_ref()
+                .map_or([0; 32], |pinned| *pinned.sources.ring_list_tag()),
         }
         .plan(&mut plan)?;
         // A direct frame and a relayed one select the same key from the same read. A relayed seal
@@ -413,6 +416,7 @@ struct EntryPlan<'a> {
     /// `None` off a table reading a salted list.
     rows_read: Option<&'a TrackingPoolRead>,
     salts: &'a KnownSalts,
+    ring_list_tag: [u8; 32],
 }
 
 impl EntryPlan<'_> {
@@ -429,7 +433,8 @@ impl EntryPlan<'_> {
             let (tracking, salted) = match self.rows_read {
                 Some(rows) => (
                     self.tracked.position(&member),
-                    self.salts.salted_key(&member, rows.record(&member))?,
+                    self.salts
+                        .salted_key(&member, rows.record(&member), &self.ring_list_tag)?,
                 ),
                 None => (0, None),
             };

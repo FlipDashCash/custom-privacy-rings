@@ -717,7 +717,11 @@ const ENTRY = await anonymousRequest({ entry: true });
 
 describe("ring prover requests of the rails", () => {
   it("sends the keys of the Go params in declaration order", () => {
-    const keys = goKeys("TransferParams");
+    const all = goKeys("TransferParams");
+    const ringListTag = Uint8Array.of(...new Uint8Array(31), 7) as Bytes32;
+    expect(Object.keys(ringProofRequestBody({ ...ENTRY, ringListTag }))).toEqual(all);
+    // A table with no ring salt sends no tag.
+    const keys = all.filter((key) => key !== "ringListTag");
     expect(Object.keys(ringProofRequestBody(ENTRY))).toEqual(keys);
     const off = keys.filter((key) => key !== "entries");
     expect(Object.keys(ringProofRequestBody(CONFIDENTIAL))).toEqual(off);

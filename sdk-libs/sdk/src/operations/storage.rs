@@ -269,7 +269,8 @@ impl PrivateStorageWrite<'_> {
         }
         // 2. One tracking root answers every owner. Storage raises the floor to its revision, so a
         //    frame never proves absence under a root older than the rows the write relies on.
-        let tracking = BoundRoot::tracking(&*self.ring.require_policy(rpc).await?, rpc).await?;
+        let policy = self.ring.require_policy(rpc).await?;
+        let tracking = BoundRoot::tracking(&policy, rpc).await?;
         let mut requests = vec![None; width];
         for owner in &owners {
             let opening = TrackingMemberRead {
@@ -278,24 +279,31 @@ impl PrivateStorageWrite<'_> {
             }
             .read(rpc)
             .await?;
-            // 3. Only an enrolled row under a nonzero key carries a list tag the salt can match.
-            let TrackingOpening::Present { record, path } = opening else {
-                return Err(RingError::WriteOwnerNotEnrolled {
-                    write_index: owner.write.write_index,
-                });
+            // 3. An enrolled row fixes the salt by its list tag, an owner with no row writes under the ring salt.
+            let tag = domain::list_tag(&owner.write.list_salt)?;
+            let (record, path, absent) = match opening {
+                TrackingOpening::Present { record, path }
+                    if record.nullifier_pk != ZERO_NULLIFIER_PUBKEY =>
+                {
+                    if tag != record.list_tag {
+                        return Err(RingError::ListSaltMismatch {
+                            member: owner.member,
+                        });
+                    }
+                    (record, path, None)
+                }
+                TrackingOpening::Absent { low, path } if tag == policy.ring_list_tag => {
+                    (low, path, Some(owner.member))
+                }
+                _ => {
+                    return Err(RingError::WriteOwnerNotEnrolled {
+                        write_index: owner.write.write_index,
+                    })
+                }
             };
-            if record.nullifier_pk == ZERO_NULLIFIER_PUBKEY {
-                return Err(RingError::WriteOwnerNotEnrolled {
-                    write_index: owner.write.write_index,
-                });
-            }
-            if domain::list_tag(&owner.write.list_salt)? != record.list_tag {
-                return Err(RingError::ListSaltMismatch {
-                    member: owner.member,
-                });
-            }
             requests[usize::from(owner.write.write_index)] = Some(PrivateOwnerRequest {
                 list_salt: owner.write.list_salt,
+                absent,
                 record: (&record).into(),
                 index: path.index,
                 path: path.siblings.as_flattened().to_vec(),

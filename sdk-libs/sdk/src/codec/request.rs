@@ -433,6 +433,8 @@ impl Serialize for PolicyTable<'_> {
             policy_len: u8,
             #[serde(serialize_with = "fe::seq")]
             rules: &'a [[u8; 32]],
+            #[serde(skip_serializing_if = "Option::is_none", with = "fe::option")]
+            ring_list_tag: Option<[u8; 32]>,
         }
         let rules = self.rules;
         let slots = self.sources.slots();
@@ -444,6 +446,7 @@ impl Serialize for PolicyTable<'_> {
             salted: self.sources.salted().bits(),
             policy_len: rules.rule_count,
             rules: &rules.rules,
+            ring_list_tag: Some(*self.sources.ring_list_tag()).filter(|tag| *tag != [0; 32]),
         }
         .serialize(serializer)
     }
@@ -664,12 +667,15 @@ pub(crate) struct PrivateApplyRecords {
     pub owners: Vec<Option<PrivateOwnerRequest>>,
 }
 
-/// Go `PrivateOwnerParams`, the enrolled row whose salted key a private write names.
+/// Go `PrivateOwnerParams`, the owner's enrolled row or the row bracketing an unregistered owner.
 #[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PrivateOwnerRequest {
     #[serde(with = "fe")]
     pub list_salt: [u8; 32],
+    /// The unregistered owner `record` brackets.
+    #[serde(skip_serializing_if = "Option::is_none", with = "fe::option")]
+    pub absent: Option<[u8; 32]>,
     pub record: TrackingLeafRequest,
     pub index: u64,
     #[serde(serialize_with = "fe::seq")]

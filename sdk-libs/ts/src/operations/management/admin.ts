@@ -11,7 +11,7 @@ import {
   ZERO_32,
   equalBytes,
 } from "@heliuslabs/spr/internal";
-import { SHIELDED_POOL_PROGRAM_ID } from "@heliuslabs/spr/interface";
+import { SHIELDED_POOL_PROGRAM_ID, type Bytes32 } from "@heliuslabs/spr/interface";
 import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
 import {
   ringAuthAddress,
@@ -278,12 +278,15 @@ export interface RingInitialPolicy extends RingPolicyTableInput {
 export type RingPolicyUpdate =
   | (Readonly<{ kind: "rules" }> & RingPolicyTableInput)
   | Readonly<{ kind: "source"; listId: ListId; source: RingPolicySourceOwner }>
-  | Readonly<{ kind: "records"; records: Address }>;
+  | Readonly<{ kind: "records"; records: Address }>
+  /** `listTagOf` the ring salt, zero commits none. */
+  | Readonly<{ kind: "ringListTag"; ringListTag: Bytes32 }>;
 
 const POLICY_UPDATE_VARIANT = Object.freeze({
   rules: 0,
   source: 1,
   records: 2,
+  ringListTag: 3,
 } as const);
 
 /**
@@ -335,6 +338,9 @@ function policyUpdateBody(writer: Writer, update: RingPolicyUpdate): readonly Ad
     }
     case "records":
       return [update.records];
+    case "ringListTag":
+      writer.bytes(update.ringListTag, 32, "ringListTag");
+      return [];
   }
 }
 

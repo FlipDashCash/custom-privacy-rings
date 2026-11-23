@@ -243,7 +243,7 @@ impl RingRpcClient {
         .at(unix_now()?)
         .sign(writer)?;
         let response: GetListSaltResponse = self.call(GET_LIST_SALT, request)?;
-        Ok(response.list_salt.map(|salt| salt.0))
+        Ok(response.list_salt.or(response.ring_salt).map(|salt| salt.0))
     }
 
     /// The caller compares the answering signer with the ring's co-signer.

@@ -181,6 +181,10 @@ pub enum RingError {
     DepositUnkeyed,
     #[error("a salted list reads enrolled owner {member:?} and no list salt is known")]
     ListSaltUnknown { member: [u8; 32] },
+    #[error(
+        "a salted list reads unregistered owner {member:?} and no salt opens the ring's list tag"
+    )]
+    RingSaltUnknown { member: [u8; 32] },
     #[error("no known list salt of owner {member:?} opens its tracking leaf's list tag")]
     ListSaltMismatch { member: [u8; 32] },
     #[error(
@@ -343,7 +347,7 @@ pub enum RingError {
     ViewingHistoryNotCurrent,
     #[error("the enrollment of {owner} names a viewing key the wallet does not hold")]
     ViewingKeyNotHeld { owner: Address },
-    #[error("the owner of write {write_index} holds no applied tracking row")]
+    #[error("the owner of write {write_index} holds no applied tracking row and the salt opens no ring list tag")]
     WriteOwnerNotEnrolled { write_index: u8 },
     #[error("write {write_index} is not the list key of its owner under the salt")]
     ListKeyMismatch { write_index: u8 },

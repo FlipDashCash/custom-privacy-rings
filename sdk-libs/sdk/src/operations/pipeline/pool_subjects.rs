@@ -122,7 +122,10 @@ impl SourceGates {
 }
 
 #[derive(Default)]
-pub(crate) struct KnownSalts(Vec<SubjectListSalt>);
+pub(crate) struct KnownSalts {
+    owners: Vec<SubjectListSalt>,
+    ring: Option<[u8; 32]>,
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct SaltedKey {
@@ -131,21 +134,29 @@ pub(crate) struct SaltedKey {
 }
 
 impl KnownSalts {
-    pub fn new(salts: Vec<SubjectListSalt>) -> Self {
-        Self(salts)
+    pub fn new(owners: Vec<SubjectListSalt>, ring: Option<[u8; 32]>) -> Self {
+        Self { owners, ring }
     }
 
-    /// `None` only with no tracking row.
+    /// `None` only with no tracking row on a ring with a zero `ring_list_tag`.
     pub fn salted_key(
         &self,
         member: &[u8; 32],
         row: Option<&TrackingRecord>,
+        ring_list_tag: &[u8; 32],
     ) -> Result<Option<SaltedKey>, RingError> {
         let Some(row) = row.filter(|row| row.nullifier_pk != ZERO_NULLIFIER_PUBKEY) else {
-            return Ok(None);
+            if *ring_list_tag == [0; 32] {
+                return Ok(None);
+            }
+            let list_salt = self
+                .ring
+                .filter(|salt| domain::list_tag(salt).is_ok_and(|tag| tag == *ring_list_tag))
+                .ok_or(RingError::RingSaltUnknown { member: *member })?;
+            return SaltedKey::of(member, list_salt).map(Some);
         };
         let mut known = self
-            .0
+            .owners
             .iter()
             .filter(|salt| salt.member == *member && salt.list_salt != [0; 32])
             .peekable();
@@ -156,11 +167,17 @@ impl KnownSalts {
             .map(|salt| salt.list_salt)
             .find(|salt| domain::list_tag(salt).is_ok_and(|tag| tag == row.list_tag))
             .ok_or(RingError::ListSaltMismatch { member: *member })?;
+        SaltedKey::of(member, list_salt).map(Some)
+    }
+}
+
+impl SaltedKey {
+    fn of(member: &[u8; 32], list_salt: [u8; 32]) -> Result<Self, RingError> {
         let key = Member::salted(&Member::from_bytes(*member)?, &list_salt)?;
-        Ok(Some(SaltedKey {
+        Ok(Self {
             list_salt,
             key: *key.as_bytes(),
-        }))
+        })
     }
 }
 
@@ -168,7 +185,7 @@ pub(crate) struct OwnerQuery {
     pub member: [u8; 32],
     /// Read only on a table with a salted list.
     pub tracking: u32,
-    /// `None` with no tracking row.
+    /// `None` with no tracking row and no ring salt.
     pub salted: Option<SaltedKey>,
 }
 

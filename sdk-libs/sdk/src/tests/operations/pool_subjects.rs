@@ -25,11 +25,16 @@ fn row(list_salt: &[u8; 32]) -> TrackingRecord {
 }
 
 fn known(list_salt: [u8; 32]) -> KnownSalts {
-    KnownSalts::new(vec![SubjectListSalt {
-        member: OWNER,
-        list_salt,
-    }])
+    KnownSalts::new(
+        vec![SubjectListSalt {
+            member: OWNER,
+            list_salt,
+        }],
+        None,
+    )
 }
+
+const NO_RING_SALT: [u8; 32] = [0; 32];
 
 fn gates(curated: bool) -> SourceGates {
     let registry = if curated { CURATOR } else { [0; 32] };
@@ -48,28 +53,30 @@ fn salted_query() -> OwnerQuery {
     OwnerQuery {
         member: OWNER,
         tracking: 2,
-        salted: known(SALT).salted_key(&OWNER, Some(&row(&SALT))).unwrap(),
+        salted: known(SALT)
+            .salted_key(&OWNER, Some(&row(&SALT)), &NO_RING_SALT)
+            .unwrap(),
     }
 }
 
 #[test]
 fn an_enrolled_owner_with_no_salt_is_refused_by_name() {
-    let refused = KnownSalts::default().salted_key(&OWNER, Some(&row(&SALT)));
+    let refused = KnownSalts::default().salted_key(&OWNER, Some(&row(&SALT)), &NO_RING_SALT);
     assert!(matches!(refused, Err(RingError::ListSaltUnknown { member }) if member == OWNER));
-    let zero = known([0; 32]).salted_key(&OWNER, Some(&row(&SALT)));
+    let zero = known([0; 32]).salted_key(&OWNER, Some(&row(&SALT)), &NO_RING_SALT);
     assert!(matches!(zero, Err(RingError::ListSaltUnknown { .. })));
 }
 
 #[test]
 fn a_salt_of_another_list_tag_is_refused_by_name() {
-    let refused = known([9; 32]).salted_key(&OWNER, Some(&row(&SALT)));
+    let refused = known([9; 32]).salted_key(&OWNER, Some(&row(&SALT)), &NO_RING_SALT);
     assert!(matches!(refused, Err(RingError::ListSaltMismatch { .. })));
 }
 
 #[test]
 fn a_subject_with_no_row_reads_no_salted_list() {
     assert!(KnownSalts::default()
-        .salted_key(&OWNER, None)
+        .salted_key(&OWNER, None, &NO_RING_SALT)
         .unwrap()
         .is_none());
     let mut plan = RecordPlan::new(gates(false));
@@ -83,6 +90,28 @@ fn a_subject_with_no_row_reads_no_salted_list() {
     assert_eq!(entry.list_salt, [0; 32]);
     assert_eq!(plan.own.opened(), [public()]);
     assert_eq!(plan.lists(&OWNER, |_| 1, |_| 0).salted, 0);
+}
+
+#[test]
+fn a_subject_with_no_row_reads_at_the_ring_salt_the_table_commits() {
+    let ring_salt = [6; 32];
+    let tag = domain::list_tag(&ring_salt).unwrap();
+    let holder = KnownSalts::new(Vec::new(), Some(ring_salt));
+    let salted = holder.salted_key(&OWNER, None, &tag).unwrap().unwrap();
+    let key = Member::salted(&Member::from_bytes(OWNER).unwrap(), &ring_salt).unwrap();
+    assert_eq!((salted.list_salt, salted.key), (ring_salt, *key.as_bytes()));
+
+    let unknown = known(SALT).salted_key(&OWNER, None, &tag);
+    assert!(matches!(unknown, Err(RingError::RingSaltUnknown { member }) if member == OWNER));
+    let wrong = KnownSalts::new(Vec::new(), Some([9; 32])).salted_key(&OWNER, None, &tag);
+    assert!(matches!(wrong, Err(RingError::RingSaltUnknown { .. })));
+    // An enrolled owner keeps its own salt, the ring salt opens no row.
+    let enrolled = holder.salted_key(&OWNER, Some(&row(&SALT)), &tag);
+    assert!(matches!(enrolled, Err(RingError::ListSaltUnknown { .. })));
+    assert!(holder
+        .salted_key(&OWNER, None, &NO_RING_SALT)
+        .unwrap()
+        .is_none());
 }
 
 #[test]

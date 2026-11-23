@@ -166,6 +166,8 @@ export type PolicyDemandInput = Readonly<{
   proofInputs: SppProofInputs;
   publicSlots: PublicSlots;
   listSalts: readonly RingListSalt[];
+  /** An unregistered owner on a ring whose policy commits a ring salt reads under it. */
+  ringSalt?: Bytes32;
 }>;
 
 export type PolicyReadInput = PolicyDemandInput &
@@ -335,7 +337,7 @@ export async function policyDemand(
     subjects.view === undefined || subjects.view.salted === 0
       ? []
       : subjects.ownerMembers.flatMap((member) => {
-          const salt = salts.get(bytesKey(member));
+          const salt = salts.get(bytesKey(member)) ?? input.ringSalt;
           return salt === undefined ? [] : [privateListKey(member, salt)];
         });
   const members = poolMembers(subjects, saltedKeys);
@@ -387,7 +389,10 @@ export async function readPolicy(
   const anySalted = view !== undefined && view.salted !== 0;
   const saltOf = new Map(
     (anySalted ? subjects.ownerMembers : []).flatMap((member) => {
-      const salt = enrolledSalt(member, rowOf(member), salts);
+      const salt = ownerSalt(member, rowOf(member), salts, {
+        tag: pinned?.ringListTag ?? ZERO_32,
+        salt: input.ringSalt,
+      });
       return salt === undefined ? [] : [[bytesKey(member), salt] as const];
     }),
   );
@@ -531,7 +536,7 @@ export async function readPolicy(
     ...(pinned === undefined
       ? {}
       : {
-          table: policyTableProofInputs(pinned.table, pinned.sources),
+          table: policyTableProofInputs(pinned.table, pinned.sources, pinned.ringListTag),
           policyHash: pinned.policyHash,
         }),
     own,
@@ -564,13 +569,21 @@ export async function readPolicy(
   });
 }
 
-/** A proven absent row is the one skip, a present row forces its salt, Go `resolveOwner`. */
-export function enrolledSalt(
+/** A present row forces its salt and an absent one the ring's, a zero ring tag is the one skip, Go `resolveOwner`. */
+export function ownerSalt(
   member: Bytes32,
   row: TrackingRecord | undefined,
   salts: ReadonlyMap<string, Bytes32>,
+  ring: Readonly<{ tag: Bytes32; salt?: Bytes32 | undefined }>,
 ): Bytes32 | undefined {
-  if (row === undefined) return undefined;
+  if (row === undefined) {
+    if (isZero(ring.tag)) return undefined;
+    if (ring.salt === undefined || !equalBytes(listTagOf(ring.salt), ring.tag))
+      throw new RingError("RING_LIST_SALT_MISSING", {
+        details: { member: bytesKey(member), ringSalt: true },
+      });
+    return ring.salt;
+  }
   const salt = salts.get(bytesKey(member));
   if (salt === undefined)
     throw new RingError("RING_LIST_SALT_MISSING", { details: { member: bytesKey(member) } });
@@ -916,6 +929,7 @@ function emptyTable(): PolicyTableProofInputs {
     salted: 0,
     policyLen: 0,
     rules: Object.freeze(Array.from({ length: RING_RULE_SLOTS }, () => ZERO_32)),
+    ringListTag: ZERO_32,
   });
 }
 

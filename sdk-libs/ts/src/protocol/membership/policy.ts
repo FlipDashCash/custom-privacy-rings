@@ -606,6 +606,7 @@ const POLICY_TABLE_RATE = 11;
 export function policyTableProofInputs(
   input: RuleTable,
   sources: PolicySources,
+  ringListTag: Bytes32 = ZERO_32,
 ): PolicyTableProofInputs {
   const table = buildRuleTable(input);
   const owners = checkedSourceOwners(sources);
@@ -619,26 +620,36 @@ export function policyTableProofInputs(
       const rule = table.rules[index];
       return rule === undefined ? ZERO_32 : encodeRule(rule);
     }),
+    ringListTag,
   });
 }
 
 /** Rust `EncodedRuleTable::fields`, the fields the policy circuit opens, zero to a full rate. */
-export function policyTableFields(table: RuleTable, sources: PolicySources): readonly Bytes32[] {
-  const slots = policyTableProofInputs(table, sources);
+export function policyTableFields(
+  table: RuleTable,
+  sources: PolicySources,
+  ringListTag: Bytes32 = ZERO_32,
+): readonly Bytes32[] {
+  const slots = policyTableProofInputs(table, sources, ringListTag);
   const values = [
     domainField(RingDomain.policyTable),
     ...slots.sources.flatMap((owner) => [fieldU8(owner.listId), owner.registry]),
     rightAlign(bigIntBytes(BigInt(slots.salted), 2)),
     fieldU8(slots.policyLen),
     ...slots.rules,
+    ringListTag,
   ];
   const padding = (POLICY_TABLE_RATE - (values.length % POLICY_TABLE_RATE)) % POLICY_TABLE_RATE;
   return Object.freeze([...values, ...Array<Bytes32>(padding).fill(ZERO_32)]);
 }
 
 /** `acc = Poseidon(acc, fields[11c .. 11c + 11])` from `acc = 0`, Rust `EncodedRuleTable::hash`. */
-export function policyTableHash(table: RuleTable, sources: PolicySources): Bytes32 {
-  const fields = policyTableFields(table, sources);
+export function policyTableHash(
+  table: RuleTable,
+  sources: PolicySources,
+  ringListTag: Bytes32 = ZERO_32,
+): Bytes32 {
+  const fields = policyTableFields(table, sources, ringListTag);
   let acc = ZERO_32;
   for (let offset = 0; offset < fields.length; offset += POLICY_TABLE_RATE) {
     acc = poseidon([acc, ...fields.slice(offset, offset + POLICY_TABLE_RATE)]);
@@ -651,19 +662,21 @@ export interface PinnedPolicy {
   readonly table: RuleTable;
   readonly sources: readonly PolicySource[];
   readonly policyHash: Bytes32;
+  /** Zero commits no ring salt. */
+  readonly ringListTag: Bytes32;
   /** The one curator registry a source names. */
   readonly curator?: Address;
 }
 
 /** Mirrors Rust `PinnedPolicy::of`, `RING_POLICY_HASH_MISMATCH` unless the stored table reproduces the hash. */
 export function pinnedPolicy(
-  registry: Pick<RingPolicy, "policyHash" | "sources" | "rules" | "generation">,
+  registry: Pick<RingPolicy, "policyHash" | "sources" | "rules" | "generation" | "ringListTag">,
 ): PinnedPolicy {
   if (equalBytes(registry.policyHash, ZERO_32))
     throw new RingError("RING_POLICY_NOT_SET", { details: { generation: registry.generation } });
   const sources = policySourceOwners(registry.sources);
   const table = decodeRuleTable(registry.rules);
-  if (!equalBytes(policyTableHash(table, sources), registry.policyHash))
+  if (!equalBytes(policyTableHash(table, sources, registry.ringListTag), registry.policyHash))
     throw new RingError("RING_POLICY_HASH_MISMATCH", {
       details: { generation: registry.generation },
     });
@@ -672,6 +685,7 @@ export function pinnedPolicy(
     table,
     sources,
     policyHash: registry.policyHash,
+    ringListTag: registry.ringListTag,
     ...(curator === undefined ? {} : { curator }),
   });
 }

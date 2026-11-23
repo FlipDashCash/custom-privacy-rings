@@ -54,6 +54,7 @@ impl<'a> RingTransfer<Relayed<'a>> {
                 owner_signature: None,
             },
             list_salts: Vec::new(),
+            ring_salt: None,
             approval: ApprovalDisclosure::None,
             seal_row: None,
         }
