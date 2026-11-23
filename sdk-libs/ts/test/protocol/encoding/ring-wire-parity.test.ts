@@ -161,7 +161,7 @@ describe("transfer_statement.json", () => {
         envelope: hexToBytes(vector.envelope),
         recipientKeys: hexToBytes(vector.recipient_keys),
         salt: hexToBytes(vector.salt) as Bytes16,
-        layout: { entry: (vector.layout & 2) !== 0 },
+        layout: { entry: (vector.layout & 2) !== 0, vouched: (vector.layout & 1) !== 0 },
       },
       family:
         vector.family === "confidential"

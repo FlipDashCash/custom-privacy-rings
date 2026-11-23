@@ -245,7 +245,7 @@ describe("ring-statements.json", () => {
       envelope: bytes(vector.envelope),
       recipientKeys: bytes(vector.recipient_keys),
       salt: bytes<Bytes16>(vector.salt, 16),
-      layout: { entry: (vector.layout & 2) !== 0 },
+      layout: { entry: (vector.layout & 2) !== 0, vouched: (vector.layout & 1) !== 0 },
     },
     family: family(vector),
     approvalMask: vector.approval_mask,
@@ -274,7 +274,13 @@ describe("ring-statements.json", () => {
       const outputs = vector.outputs.map((slot) => ({ record: bytes(slot.record) }));
       const statement0 = statementOf(vector, outputs);
       expect(
-        hex(envelopeDigest(statement0.head.envelope, statement0.head.recipientKeys)),
+        hex(
+          envelopeDigest(
+            statement0.head.envelope,
+            statement0.head.recipientKeys,
+            statement0.head.layout,
+          ),
+        ),
         vector.rail,
       ).toBe(vector.envelope_digest);
       expect(hex(recordChain(outputs, vector.output_capacity)), vector.rail).toBe(
@@ -309,7 +315,7 @@ describe("ring-statements.json", () => {
         envelope: new Uint8Array(33).fill(3),
         recipientKeys: keys,
         salt: new Uint8Array(16).fill(5) as Bytes16,
-        layout: { entry: false },
+        layout: { entry: false, vouched: false },
       },
       family: { kind: "confidential", inProof: false, delegate: false, sender: zero() },
       approvalMask: 0,
@@ -329,7 +335,9 @@ describe("ring-statements.json", () => {
     const elements = transferStatementElements(statement);
     expect(elements).toHaveLength(44);
     expect(elements[43]).toEqual(field("2c".padStart(64, "0")));
-    expect(elements[7]).toEqual(envelopeDigest(statement.head.envelope, keys));
+    expect(elements[7]).toEqual(
+      envelopeDigest(statement.head.envelope, keys, statement.head.layout),
+    );
     expect(elements[7]).not.toEqual(ciphertextDigest(statement.head.envelope));
     const changed = keys.slice();
     changed[63] = (changed[63] ?? 0) ^ 1;

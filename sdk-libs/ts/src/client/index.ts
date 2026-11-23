@@ -37,6 +37,7 @@ export type {
   TrackingPoolProofInput,
   TrackingWriteProofInput,
   TransferProofInputs,
+  VoucherProofInput,
 } from "../rpc/prover/ring.js";
 export type {
   AnonymousRingTransactProver,

@@ -79,6 +79,9 @@ export const PRIVATE_LIST_BITS =
   (1 << (ListId.privateAllow - 1)) |
   (1 << (ListId.privateFrozen - 1));
 
+/** Rust `ListSet::VOUCHED`, a voucher's entry stands in for a subject's on these. */
+export const VOUCHED_LIST_BITS = (1 << (ListId.allow - 1)) | (1 << (ListId.privateAllow - 1));
+
 /** Owners read it at salted keys, its source needs a tracking floor. */
 export function isPrivateList(id: ListId): boolean {
   return (PRIVATE_LIST_BITS & listBit(id)) !== 0;
@@ -387,6 +390,26 @@ export interface RecordLists {
   readonly curator: bigint;
   /** Read only for an owner's salted list, zero with no tracking row. */
   readonly salted?: bigint;
+}
+
+/** Rust `RecordLists::vouched_by`, the subject's lists with the voucher's allow bits beside its own. */
+export function vouchedBy(subject: RecordLists, voucher: RecordLists): RecordLists {
+  const cover = BigInt(VOUCHED_LIST_BITS);
+  return Object.freeze({
+    own: subject.own | (voucher.own & cover),
+    curator: subject.curator | (voucher.curator & cover),
+    salted: (subject.salted ?? 0n) | ((voucher.salted ?? 0n) & cover),
+  });
+}
+
+/** The sender rows a vouched screen reads, the voucher last over its own lists, Go `assertSenderRules`. */
+export function vouchedSenders(
+  senders: readonly RecordLists[],
+  voucher: RecordLists | undefined,
+): readonly RecordLists[] {
+  return voucher === undefined
+    ? senders
+    : [...senders.map((sender) => vouchedBy(sender, voucher)), voucher];
 }
 
 /** Rust `OutputSubjects`. */

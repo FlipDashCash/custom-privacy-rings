@@ -154,6 +154,8 @@ export interface CustomRingTransferInput {
   readonly withdrawalOwner?: Address;
   /** The settlement accounts of each deposit leg `transfer` names, in leg order. */
   readonly deposits?: readonly TransactDeposit[];
+  /** A listed wallet vouching for the transfer. */
+  readonly voucher?: AnonymousSpendSigner;
 }
 
 /** The confidential rail, the owner signs its spends in public or inside the proof, Rust `RingTransfer<Owner>`. */
@@ -185,6 +187,16 @@ export class CustomRingTransfer {
   withExactApproval(): CustomRingTransfer {
     return new CustomRingTransfer(
       { ...this.#input, exactApproval: true },
+      this.#withdrawal,
+      this.#inProofOwner,
+      this.#coOwners,
+    );
+  }
+
+  /** `voucher` signs the transfer inside the proof, its allow entry stands in for every sender and payment owner. */
+  withVoucher(voucher: AnonymousSpendSigner): CustomRingTransfer {
+    return new CustomRingTransfer(
+      { ...this.#input, voucher },
       this.#withdrawal,
       this.#inProofOwner,
       this.#coOwners,
@@ -293,6 +305,7 @@ export class CustomRingTransfer {
     const { ringProgramId, keys } = this.#input;
     const signer = this.#inProofOwner;
     if (signer === undefined) throw new RingError("RING_IN_PROOF_OWNER_MISMATCH");
+    checkRelayUnvouched(this.#input);
     const { quote } = input;
     const { config, staged, prepared, owner, approvalBlinder } = await this.#stage(client, context);
     try {
@@ -384,6 +397,7 @@ export class CustomRingTransfer {
           },
           ...suppliedCoSigners(this.#input.coSigners),
           listSalts: this.#input.listSalts ?? [],
+          ...suppliedVoucher(this.#input),
           ...approvedStage(approval, prepared),
         },
         context,
@@ -626,6 +640,11 @@ export class AnonymousTransfer {
     });
   }
 
+  /** `voucher` signs the transfer inside the proof, its allow entry stands in for every sender and payment owner. */
+  withVoucher(voucher: AnonymousSpendSigner): AnonymousTransfer {
+    return new AnonymousTransfer({ ...this.#fields(), owner: { ...this.#owner, voucher } });
+  }
+
   /** Pads to `shape`, else the transfer takes the smallest supported shape. */
   withShape(shape: Shape): AnonymousTransfer {
     this.#owner.transfer.withShape(shape);
@@ -691,6 +710,7 @@ export class AnonymousTransfer {
           staged: { ...staged, ...stagedBlinder(approvalBlinder), spend },
           ...suppliedCoSigners(this.#owner.coSigners),
           listSalts: this.#owner.listSalts ?? [],
+          ...suppliedVoucher(this.#owner),
           ...approvedStage(approval, prepared),
         },
         context,
@@ -726,6 +746,7 @@ export class AnonymousTransfer {
     context: RequestContext | undefined,
   ): Promise<PreparedRingRelay> {
     const { ringProgramId, keys } = this.#owner;
+    checkRelayUnvouched(this.#owner);
     const { quote } = input;
     const { config, staged, prepared, approvalBlinder } = await this.#stage(client, context);
     try {
@@ -1003,6 +1024,18 @@ export class PublicOwnerTransfer {
     });
   }
 
+  /** `voucher` signs the transfer inside the proof, its allow entry stands in for every sender and payment owner. */
+  withVoucher(voucher: AnonymousSpendSigner): PublicOwnerTransfer {
+    return new PublicOwnerTransfer({
+      owner: { ...this.#owner, voucher },
+      withdrawal: this.#withdrawal,
+      wallet: this.#wallet,
+      inProofOwner: this.#inProofOwner,
+      coOwners: this.#coOwners,
+      payments: this.#payments,
+    });
+  }
+
   prove(client: PublicOwnerTransferClient, context?: RequestContext): Promise<ProvenRingTransfer> {
     return this.#prove(client, undefined, context);
   }
@@ -1045,6 +1078,7 @@ export class PublicOwnerTransfer {
           staged: { ...staged, spend: { ...spend, prove } },
           ...suppliedCoSigners(this.#owner.coSigners),
           listSalts: this.#owner.listSalts ?? [],
+          ...suppliedVoucher(this.#owner),
           ...approvedStage(approval, prepared),
         },
         context,
@@ -1424,6 +1458,17 @@ function suppliedCoSigners(
 }
 
 /** A Solana address names a wallet or a PDA alike, a key rebuilt as Ed25519 never equals a PDA owner. */
+function suppliedVoucher(
+  input: Pick<CustomRingTransferInput, "voucher">,
+): Pick<StagedTransferInput, "voucher"> {
+  return input.voucher === undefined ? {} : { voucher: input.voucher };
+}
+
+/** Ring RPC proves a relayed transfer unvouched. */
+function checkRelayUnvouched(input: Pick<CustomRingTransferInput, "voucher">): void {
+  if (input.voucher !== undefined) throw new RingError("RING_RELAY_VOUCHER_UNSUPPORTED");
+}
+
 function ownedBy(spent: ProofInputUtxo, owner: Address): boolean {
   return equalBytes(spent.utxo.owner.confidentialViewTag(), addressBytes(owner));
 }
@@ -1625,6 +1670,7 @@ function depositRelayFrame(
   }>,
 ): DepositRelayFrame {
   const { owner, config, prepared, staged, spend } = input;
+  checkRelayUnvouched(owner);
   const { quote, nullifierKey } = input.input;
   if (prepared.payer !== quote.feePayer)
     throw new RingError("RING_RELAY_PAYER_MISMATCH", {

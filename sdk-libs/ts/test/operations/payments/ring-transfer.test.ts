@@ -10,6 +10,8 @@ import {
   type Address,
 } from "@solana/kit";
 import { describe, expect, it, vi } from "vitest";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { vouchDigest } from "../../../src/proof/vouch.js";
 
 import {
   addressBytes,
@@ -699,6 +701,87 @@ describe("policy ring", () => {
     );
     expect(fixture.ringRequests).toHaveLength(0);
     expect(fixture.sppCalls).toHaveLength(0);
+  });
+
+  it("admits an unlisted recipient beside a listed voucher, proves its vouch and seals its key", async () => {
+    const sender = ShieldedKeypair.generate();
+    const recipient = ShieldedKeypair.generate();
+    const vouching = SigningKey.generate();
+    const voucher = ShieldedKeypair.fromKeypair(vouching);
+    const fixture = await curatedRing([sender, voucher]);
+    const rail = (signer: SigningKey) =>
+      CustomRingTransfer.new({
+        ringProgramId: fixture.ringProgramId,
+        keys: walletKeys(sender),
+        transfer: transferTo(fixture, sender, [recipient], { each: 100n }),
+        assets,
+      }).withVoucher(signingKeySpendSigner(signer));
+    const proven = await rail(vouching).prove(fixture.client);
+    const { data, call } = await expanded(fixture, proven, "confidential");
+
+    expect(data.vouched).toBe(true);
+    const request = checkTransferProof(fixture, data);
+    expect(request.layout).toEqual({ entry: false, vouched: true });
+    const key = vouching.publicKey().ed25519();
+    expect(request.voucher.publicKey).toEqual(key);
+    const digest = vouchDigest({
+      privateTxHash: request.privateTxHash,
+      withdrawalHash: request.withdrawalHash,
+    });
+    expect(vouching.verify(digest, request.voucher.signature)).toBe(true);
+    expect(vouching.verify(call.proofInputs.messageHash(), request.voucher.signature)).toBe(false);
+    expect(itemAt(request.curatorPool.subjects, request.voucherEntry.curator).member).toEqual(
+      publicMember(
+        memberOfIdentity(voucher.shieldedAddress().signingPublicKey.ownerProofInputHash()),
+      ),
+    );
+    expect(checkDisclosure(fixture, call, data).voucher).toEqual(key);
+
+    // An unlisted voucher covers nobody, and Ring RPC proves no vouch.
+    await expect(rail(SigningKey.generate()).prove(fixture.client)).rejects.toThrow(
+      ringError("RING_POLICY_RULE_UNSATISFIED", { subject: "owner", slotIndex: 1 }),
+    );
+    await expect(
+      rail(vouching)
+        .withInProofOwner(signingKeySpendSigner(SigningKey.generate()))
+        .prepareRelay(fixture.client, {
+          quote: { feePayer: fixture.authority, validUntilSlot: 100n },
+          nullifierKey: sender.nullifierKey(),
+          notes: [],
+        }),
+    ).rejects.toThrow(ringError("RING_RELAY_VOUCHER_UNSUPPORTED"));
+  });
+
+  it("signs an unvouched transfer under a throwaway key and reads no voucher record", async () => {
+    const sender = ShieldedKeypair.generate();
+    const recipient = ShieldedKeypair.generate();
+    const fixture = await curatedRing([sender, recipient]);
+    const proven = await prove(
+      fixture,
+      sender,
+      transferTo(fixture, sender, [recipient], { each: 100n }),
+    );
+    const { data, call } = await expanded(fixture, proven, "confidential");
+    expect(data.vouched).toBe(false);
+    const request = checkTransferProof(fixture, data);
+    expect(request.layout).toEqual({ entry: false, vouched: false });
+    expect(request.voucherEntry).toEqual({
+      own: 0,
+      curator: 0,
+      tracking: 0,
+      listSalt: new Uint8Array(32),
+      ownSalted: 0,
+      curatorSalted: 0,
+    });
+    const digest = vouchDigest({
+      privateTxHash: request.privateTxHash,
+      withdrawalHash: request.withdrawalHash,
+    });
+    expect(ed25519.verify(request.voucher.signature, digest, request.voucher.publicKey)).toBe(true);
+    expect(request.voucher.publicKey).not.toEqual(
+      sender.shieldedAddress().signingPublicKey.ed25519(),
+    );
+    expect(checkDisclosure(fixture, call, data).voucher).toBeUndefined();
   });
 
   it("refuses an outflow past the co-sign bound on a ring without a co-signer", async () => {

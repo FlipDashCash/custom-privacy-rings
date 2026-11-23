@@ -1277,6 +1277,17 @@ describe("ring read request", () => {
     ]);
   });
 
+  it("names the voucher of a vouched transfer and none otherwise", async () => {
+    expect((await readItem(decryptedItem())).vouchedBy).toBeUndefined();
+    expect((await readItem(decryptedItem({ vouchedBy: null }))).vouchedBy).toBeUndefined();
+    expect((await readItem(decryptedItem({ vouchedBy: addressOf(21) }))).vouchedBy).toBe(
+      addressOf(21),
+    );
+    await expect(readItem(decryptedItem({ vouchedBy: "not-base58!" }))).rejects.toMatchObject({
+      code: "RING_RPC",
+    });
+  });
+
   it("reads the wallet activity the Rust ring rpc serializes for its sender and a recipient", async () => {
     const activityPage = rustPage("wallet_activity_page.json");
     const { fetch, bodies } = capturingFetch(activityPage);

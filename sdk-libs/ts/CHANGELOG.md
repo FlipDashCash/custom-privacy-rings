@@ -60,6 +60,7 @@ Added
 - `rotateViewingKey` moves a wallet's `LocalRingKeys` and `ViewingHistory` to a new viewing key, `updateViewingKey` builds the Rotate write Ring RPC applies to the owner's tracking leaf only while the leaf holds the key it replaces and raises `RING_VIEWING_KEY_NOT_HELD` when the leaf holds a key the wallet never held, and `confirmViewingKey` raises `RING_VIEWING_KEY_NOT_PUBLISHED` until the leaf under the newest root holds it.
 - `sealViewingKey` checks a served viewing key against its leaf, `encodeEnrollmentWrite` and `enrollmentWriteEntry` give a write's bytes and tracking entry, `trackingRotationOf` gives a rotation's entry, `signedWrite` gives a write's entry hash and the message its owner signs, `StorageProgramError` names `invalidStorageProgram`, `invalidSignatureInstruction` and `ownerSignatureMismatch`, and `RingInstructionTag.enrollBatch` names the batch the enrollment writer signs.
 - `TransferStatement.delegateAsset` carries the asset of the mint whose permanent delegate signs an authority transfer, and `transferStatementElements` returns 44 elements.
+- `CustomRingTransfer.withVoucher(signer)`, also on `AnonymousTransfer` and `PublicOwnerTransfer`, lets a wallet on a ring's allow list sign one transfer so senders and recipients missing from that list pass it while a block or a freeze on them still refuses it, an auditor reads that wallet as `AuditedRingTransaction.voucher` and `DecryptedRingTransaction.vouchedBy`, and a relayed transfer with a voucher raises `RING_RELAY_VOUCHER_UNSUPPORTED`.
 
 Changed
 

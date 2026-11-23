@@ -110,6 +110,7 @@ function layoutOf(entry: Case): AuditStreamLayout {
     inputs: entry.input_count,
     outputs: entry.output_count,
     capacity: entry.outputs,
+    vouched: (entry.layout & 1) !== 0,
   };
 }
 
@@ -141,6 +142,7 @@ function audited(entry: Case, edits: StreamEdits = {}, rest: Partial<Transaction
         ? keysCt.subarray(slot * 32, (slot + 1) * 32)
         : schedule.apply(recipientKeyRegion(layout, slot).startCounter, named);
     }),
+    keysCt.subarray(recipientKeys.length * 32),
   );
   const records = entry.record_ciphertexts.map((record, slot) => {
     const edited = edits.records?.get(slot);

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
 import { hexToBytes } from "@noble/hashes/utils.js";
-import type { Bytes32 } from "@heliuslabs/spr/interface";
+import type { Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
 import { bytesKey } from "@heliuslabs/spr/internal";
 import type { Address } from "@solana/kit";
 
@@ -403,6 +403,7 @@ describe("input evidence", () => {
     inputs,
     outputs: 1,
     capacity: 2,
+    vouched: false,
   });
   const address = note({ address: true });
 
@@ -673,7 +674,7 @@ describe("prover/ring/params.go", () => {
       txViewingSk: zero,
       auditorPk: zero,
       salt: new Uint8Array(16) as TransferProofRequest["salt"],
-      layout: { entry: false },
+      layout: { entry: false, vouched: false },
       approvalMask: 0,
       outputCount: 2,
       outputs: repeat(2, {
@@ -682,6 +683,7 @@ describe("prover/ring/params.go", () => {
         mintChunks: [zero, zero],
         recipientKey: zero,
       }),
+      voucher: { publicKey: zero, signature: new Uint8Array(64) as Bytes64 },
       inputCount: 1,
       addressChain: zero,
       inputs: repeat(24, opening),
@@ -722,6 +724,7 @@ describe("prover/ring/params.go", () => {
       ownPool: unopenedRecordPool(capacity.own),
       curatorPool: unopenedRecordPool(capacity.curator),
       senderEntries: repeat(4, ownerEntry),
+      voucherEntry: ownerEntry,
       ownerEntries: repeat(6, ownerEntry),
       assetEntries: repeat(6 + circuit.class, entry),
       publicAssetEntries: repeat(3, 0),
