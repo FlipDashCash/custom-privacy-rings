@@ -5,7 +5,9 @@
 // counter with no other slot. The frame omits padding and unpublished slots, so the bytes the statement
 // hashes are the regions the published n and m select.
 //
-// The auditor stream holds the envelope, then one recipient key per output slot at full output capacity.
+// The auditor stream holds the envelope, then one recipient key per output slot at full output capacity,
+// then the voucher's key. The voucher region sits last, so no key's counter moves and a frame that is not
+// vouched omits it like an unpublished slot.
 // The envelope seals the viewing key and the note count before any entry evidence. Entry evidence keeps
 // one record per published input in note order. Key counters start after the envelope at full input
 // capacity, rounded up to an AES block. Readers must use that capacity even when the frame carries fewer
@@ -14,7 +16,7 @@
 // Each output record is its own stream under its slot secret, so no counter of the auditor stream serves it.
 //
 // The file proves the following.
-//  1. The layout value holds the entry flag alone, a value past it fails its decomposition.
+//  1. The layout value holds the vouched flag and the entry flag, a value past them fails its decomposition.
 //  2. The entry flag equals the key's entry capacity.
 //  3. Range construction rejects an input capacity outside the entry bitmap.
 //
@@ -28,8 +30,12 @@ import (
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
 )
 
-// LayoutEntry is the one flag of the audit statement's layout value, mirrored by AuditLayout::value in program-libs/interface/src/proof/disclosure.rs.
-const LayoutEntry = 1 << 1
+// The flags of the audit statement's layout value, mirrored by AuditLayout::value in program-libs/interface/src/proof/disclosure.rs.
+const (
+	// LayoutVouched is set when the frame publishes the voucher region.
+	LayoutVouched = 1 << 0
+	LayoutEntry   = 1 << 1
+)
 
 const layoutBits = 2
 
@@ -38,21 +44,21 @@ type StreamShape struct {
 	Entry               bool
 }
 
-// AssertLayout pins the layout to the key's entry flag, bit 0 stays clear.
-func (s StreamShape) AssertLayout(api frontend.API, layout frontend.Variable) {
+// AssertLayout pins the layout to the key's entry flag and returns the vouched flag, the one bit a frame chooses.
+func (s StreamShape) AssertLayout(api frontend.API, layout frontend.Variable) frontend.Variable {
 	// The decomposition bounds the layout to its two bits.
 	bits := api.ToBinary(layout, layoutBits)
 	entry := 0
 	if s.Entry {
 		entry = 1
 	}
-	api.AssertIsEqual(bits[0], 0)
 	api.AssertIsEqual(bits[1], entry)
+	return bits[0]
 }
 
 // StreamRanges mirrors AuditStreamLayout in program-libs/interface/src/proof/audit_stream.rs.
 //
-//	envelope, EnvelopeBlocks | recipient keys, Outputs * KeyBlocks
+//	envelope, EnvelopeBlocks | recipient keys, Outputs * KeyBlocks | voucher key, KeyBlocks
 type StreamRanges struct {
 	StreamShape
 }
@@ -115,9 +121,14 @@ func (r StreamRanges) KeyCounter(i int) int {
 	return StreamFirstCounter + r.EnvelopeBlocks() + i*KeyBlocks
 }
 
-// CapacityBlocks covers the envelope and every slot's key, a frame omits what it does not publish.
+// CapacityBlocks covers the envelope, every slot's key and the voucher's key, a frame omits what it does not publish.
 func (r StreamRanges) CapacityBlocks() int {
-	return r.EnvelopeBlocks() + r.Outputs*KeyBlocks
+	return r.EnvelopeBlocks() + (r.Outputs+1)*KeyBlocks
+}
+
+// VoucherOffset is the block past the last slot's key.
+func (r StreamRanges) VoucherOffset() int {
+	return r.KeyOffset(r.Outputs)
 }
 
 func (r StreamRanges) KeyOffset(i int) int {

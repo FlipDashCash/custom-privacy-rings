@@ -42,6 +42,7 @@ export function ringFrame(
     hasData?: boolean;
     publicOwners?: boolean;
     wideOwners?: boolean;
+    vouched?: boolean;
   }>,
 ): RingTransactData {
   const { rail, inputs, outputs } = input;
@@ -59,6 +60,7 @@ export function ringFrame(
     outputs,
     entry,
     publicOwners,
+    vouched: input.vouched ?? false,
   });
   const anonymous = isAnonymousFrame(rail);
   const slot = (index: number): RingOutput => {
@@ -93,6 +95,7 @@ export function ringFrame(
     hasData,
     entry,
     wideOwners: input.wideOwners ?? false,
+    vouched: input.vouched ?? false,
     outputs: Array.from({ length: outputs }, (_, index) => slot(index)),
     ...(anonymous ? { sender: { tag: field(1), body: new Uint8Array(SENDER_BUNDLE_LEN) } } : {}),
     envelope: new Uint8Array(envelopeRegion(layout).length).fill(3),

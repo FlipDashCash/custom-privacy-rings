@@ -79,6 +79,9 @@ export const PRIVATE_LIST_BITS =
   (1 << (ListId.privateAllow - 1)) |
   (1 << (ListId.privateFrozen - 1));
 
+/** Rust `ListSet::VOUCHED`, a voucher's entry stands in for a subject's on these. */
+export const VOUCHED_LIST_BITS = (1 << (ListId.allow - 1)) | (1 << (ListId.privateAllow - 1));
+
 /** Owners read it at salted keys, its source needs a tracking floor. */
 export function isPrivateList(id: ListId): boolean {
   return (PRIVATE_LIST_BITS & listBit(id)) !== 0;
@@ -389,6 +392,16 @@ export interface RecordLists {
   readonly salted?: bigint;
 }
 
+/** Rust `RecordLists::vouched_by`, the subject's lists with the voucher's allow bits beside its own. */
+export function vouchedBy(subject: RecordLists, voucher: RecordLists): RecordLists {
+  const cover = BigInt(VOUCHED_LIST_BITS);
+  return Object.freeze({
+    own: subject.own | (voucher.own & cover),
+    curator: subject.curator | (voucher.curator & cover),
+    salted: (subject.salted ?? 0n) | ((voucher.salted ?? 0n) & cover),
+  });
+}
+
 /** Rust `OutputSubjects`. */
 export interface OutputSubjects {
   /** Set on a same-ring output, clear on an exit or a withdrawal. */
@@ -420,10 +433,14 @@ export type TransferSubject =
   | Readonly<{ kind: "sender" }>
   | Readonly<{ kind: "owner"; output: number }>
   | Readonly<{ kind: "asset"; output: number }>
-  | Readonly<{ kind: "inputAsset"; input: number }>;
+  | Readonly<{ kind: "inputAsset"; input: number }>
+  | Readonly<{ kind: "voucher" }>;
 
 /** Rust `RuleRefusal`. */
 export type RuleRefusal = Readonly<{ kind: "lists"; rule: number; subject: TransferSubject }>;
+
+/** Rust `RuleRefusal::VoucherUnlisted` beside a rule's refusal. */
+export type VoucherRefusal = RuleRefusal | Readonly<{ kind: "voucherUnlisted" }>;
 
 /** Rust `RuleTable::admit`, the first refusal in the table's order, caps, outflow and co-sign left out. */
 export function admitTransfer(
@@ -441,6 +458,19 @@ export function evaluateSenders(
   senders: readonly RecordLists[],
 ): RuleRefusal | undefined {
   return screen(table, sources, { senders, payments: { ringInputs: [], outputs: [] } });
+}
+
+/** Rust `RuleTable::evaluate_voucher`, a signer on a list it covers under every sender rule. */
+export function evaluateVoucher(
+  table: RuleTable,
+  sources: PolicySources,
+  voucher: RecordLists,
+): VoucherRefusal | undefined {
+  const subject: TransferSubject = { kind: "voucher" };
+  if ((listReads(sources)(subject, voucher) & BigInt(VOUCHED_LIST_BITS)) === 0n)
+    return { kind: "voucherUnlisted" };
+  const refusal = evaluateSenders(table, sources, [voucher]);
+  return refusal === undefined ? undefined : { ...refusal, subject };
 }
 
 /**

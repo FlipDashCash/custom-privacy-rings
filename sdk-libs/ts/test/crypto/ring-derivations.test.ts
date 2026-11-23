@@ -48,6 +48,7 @@ describe("ring domains", () => {
       applyEnrollments: ascii("CRTA"),
       listTag: ascii("CRPT"),
       listPosition: ascii("CRPL"),
+      vouch: ascii("CRVC"),
       dummyKey: ascii("CRDK"),
     });
     const values = [

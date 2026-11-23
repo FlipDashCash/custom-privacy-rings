@@ -182,6 +182,7 @@ fn audited(inputs: Vec<Input>, outputs: Vec<AuditedOutput>) -> AuditedTransactio
                 Input::Note(_) | Input::Padding(_) => None,
             })
             .collect(),
+        voucher: None,
     }
 }
 

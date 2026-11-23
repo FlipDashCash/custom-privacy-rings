@@ -291,6 +291,7 @@ export class ScanWallet {
         inputs: nullifiers.length,
         outputs: outputs.length,
         capacity: shape.outputs,
+        vouched: false,
       },
       published: rail.publishedSlots(proof, this.address, SCAN_AUDITOR.publicKey()),
       inputs: spent,

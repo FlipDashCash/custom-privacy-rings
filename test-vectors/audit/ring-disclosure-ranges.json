@@ -2,7 +2,7 @@
   "description": "Auditor stream ranges for each transfer key at full output capacity, the envelope then one sealed recipient key per slot.",
   "keys": [
     {
-      "capacity_blocks": 7,
+      "capacity_blocks": 9,
       "class": 24,
       "entry": false,
       "envelope_blocks": 3,
@@ -40,7 +40,7 @@
       "outputs": 2
     },
     {
-      "capacity_blocks": 11,
+      "capacity_blocks": 13,
       "class": 24,
       "entry": false,
       "envelope_blocks": 3,
@@ -80,7 +80,7 @@
       "outputs": 4
     },
     {
-      "capacity_blocks": 19,
+      "capacity_blocks": 21,
       "class": 16,
       "entry": false,
       "envelope_blocks": 3,
@@ -116,7 +116,7 @@
       "outputs": 8
     },
     {
-      "capacity_blocks": 35,
+      "capacity_blocks": 37,
       "class": 4,
       "entry": false,
       "envelope_blocks": 3,
@@ -148,7 +148,7 @@
       "outputs": 16
     },
     {
-      "capacity_blocks": 19,
+      "capacity_blocks": 21,
       "class": 24,
       "entry": false,
       "envelope_blocks": 3,
@@ -192,7 +192,7 @@
       "outputs": 8
     },
     {
-      "capacity_blocks": 7,
+      "capacity_blocks": 9,
       "class": 40,
       "entry": false,
       "envelope_blocks": 3,
@@ -246,7 +246,7 @@
       "outputs": 2
     },
     {
-      "capacity_blocks": 79,
+      "capacity_blocks": 81,
       "class": 8,
       "entry": true,
       "envelope_blocks": 71,
@@ -270,7 +270,7 @@
       "outputs": 4
     },
     {
-      "capacity_blocks": 36,
+      "capacity_blocks": 38,
       "class": 2,
       "entry": true,
       "envelope_blocks": 20,
@@ -292,7 +292,7 @@
       "outputs": 8
     },
     {
-      "capacity_blocks": 62,
+      "capacity_blocks": 64,
       "class": 5,
       "entry": true,
       "envelope_blocks": 46,
@@ -317,7 +317,7 @@
       "outputs": 8
     },
     {
-      "capacity_blocks": 87,
+      "capacity_blocks": 89,
       "class": 8,
       "entry": true,
       "envelope_blocks": 71,

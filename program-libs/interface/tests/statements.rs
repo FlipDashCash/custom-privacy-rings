@@ -240,6 +240,7 @@ fn stream(key: AuditKey, inputs: usize, outputs: &[RingOutput<'_>]) -> AuditStre
         inputs,
         outputs: outputs.len(),
         capacity: outputs.len(),
+        vouched: false,
     }
 }
 
@@ -303,6 +304,7 @@ fn transfer_case(statement: &TransferStatement<'_>) -> TransferCase {
             Poseidon::hashv(&[
                 &ciphertext_digest(head.envelope).unwrap(),
                 &ciphertext_digest(head.recipient_keys).unwrap(),
+                &[0; 32],
             ])
             .unwrap(),
         ),
@@ -471,7 +473,13 @@ fn compute_vectors() -> StatementVectors {
         ..anonymous_policy_transfer
     };
     let entry = TransferStatement {
-        head: values.head(AuditLayout { entry: true }, stream(entry_key, 3, &four)),
+        head: values.head(
+            AuditLayout {
+                entry: true,
+                vouched: false,
+            },
+            stream(entry_key, 3, &four),
+        ),
         roots: &tracking_roots,
         signers: SignerSet::default(),
         ..anonymous_policy_transfer
@@ -549,8 +557,8 @@ fn compute_vectors() -> StatementVectors {
     StatementVectors {
         description: "Every ring statement and its public input HashChain4(elements). The transfer \
                       head is [CRTX, n0, ring_id, pack_be(0x04 || tx_u), pack_be(auditor_pubkey), \
-                      Poseidon(digest(envelope), digest(recipient_keys)), salt, layout] with the frame's \
-                      random salt and layout = entry << 1. \
+                      Poseidon(digest(envelope), digest(recipient_keys), 0), salt, layout] with the frame's \
+                      random salt and layout = entry << 1, no case is vouched. \
                       digest(ct) = Poseidon(u32 len(ct), HashChain4(pack_left31(ct))). Each \
                       envelope and key region has the length of its stream layout. The transfer statements are HashChain4 over the \
                       audit head under CRTX, in_proof, hidden, delegate, \
@@ -855,9 +863,51 @@ fn the_anonymous_transfer_statement_follows_the_contract_order() {
         Poseidon::hashv(&[
             &ciphertext_digest(statement.head.envelope).unwrap(),
             &ciphertext_digest(statement.head.recipient_keys).unwrap(),
+            &zero,
         ])
         .unwrap()
     );
+    // A vouched head digests the voucher's sealed key apart from the slot keys and moves no other element.
+    let vouched_stream = AuditStreamLayout {
+        vouched: true,
+        ..stream(key, 3, &outputs)
+    };
+    let vouched_layout = AuditLayout {
+        entry: false,
+        vouched: true,
+    };
+    let vouched = TransferStatement {
+        head: values.head(vouched_layout, vouched_stream),
+        ..statement
+    };
+    let (slot_keys, voucher_key) = vouched
+        .head
+        .recipient_keys
+        .split_last_chunk::<32>()
+        .unwrap();
+    assert_eq!(slot_keys, statement.head.recipient_keys);
+    let vouched_elements = vouched.elements().unwrap();
+    assert_eq!(
+        vouched_elements[7],
+        Poseidon::hashv(&[
+            &ciphertext_digest(vouched.head.envelope).unwrap(),
+            &ciphertext_digest(slot_keys).unwrap(),
+            &hash_bytes(voucher_key).unwrap(),
+        ])
+        .unwrap()
+    );
+    assert_eq!(vouched_elements[9], right_aligned(1));
+    assert_eq!(vouched_elements[..7], elements[..7]);
+    assert_eq!(vouched_elements[8], elements[8]);
+    assert_eq!(vouched_elements[10..], elements[10..]);
+    let keyless = TransferStatement {
+        head: AuditHead {
+            recipient_keys: &[],
+            ..vouched.head
+        },
+        ..statement
+    };
+    assert!(keyless.elements().is_err());
     let mut tail = vec![
         right_aligned(0),
         right_aligned(0),

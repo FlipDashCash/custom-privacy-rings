@@ -17,9 +17,12 @@ mod spp;
 #[cfg(test)]
 #[path = "../../tests/operations/pipeline.rs"]
 mod tests;
+mod voucher;
+pub use voucher::VouchSigner;
 
 use custom_ring_interface::{
     cosign::{ApprovalMask, CoSignDemand, CoSignOperation},
+    domain::VouchMessage,
     key_catalog::{RecordPools, RingCircuit, RowAuthorization, TransferAddresses, TransferSpend},
     AnonymousParties, CheckedAuthorization, CustomRingError, CustomRingProof, FramedSenderBundle,
     InputTrees, InstructionTag, ParsedTransact, PlainGroth16Proof, PolicyProof, PublicLeg,
@@ -84,6 +87,7 @@ use self::{
     plan::{PlannedTransfer, TransferPlanner},
     policy::{owner_rows, PolicyInputs, PolicyRead},
     spp::{Spp, SppRail, SppWitness},
+    voucher::{Vouch, Voucher},
 };
 use crate::client::{RingClient, RingIndexerBackend};
 use crate::{
@@ -92,6 +96,7 @@ use crate::{
     limits::Outflows,
     projection::retry_projection_lag,
     relay_message::ApprovalOpening,
+    request::VoucherParams,
     submission::{check_transaction_size, send_budget, BoundPolicy, BoundState},
     trees::{spend_trees, SpendTrees},
     CustomRing, CustomRingConfig, RingError,
@@ -443,6 +448,9 @@ impl<R: Rail> RingTransfer<R> {
         client: &C,
     ) -> Result<Sealed<'_, PlannedTransfer>, RingError> {
         let prepared = boxed(|| self.prepare(client)).await?;
+        if prepared.pipeline.voucher.is_some() {
+            return Err(RingError::VouchedRelay);
+        }
         let planner = prepared.planner()?;
         // A direct submission reads before it plans. The relay reads after the seal and keeps
         // it only where the read's key opens the same stream, so the seal takes the key the
@@ -470,6 +478,14 @@ impl<R: Rail> RingTransfer<R> {
         };
         check_ring_output_markers(&staged.proof_inputs)?;
         staged.list_salts.extend_from_slice(&self.list_salts);
+        let voucher = match self.rail.kind() {
+            RailKind::Owner(owner) => owner.voucher,
+            RailKind::Anonymous(rail) => rail.owner.voucher,
+            RailKind::PublicOwners(public) => public.owner.voucher,
+            RailKind::Delegated(_) | RailKind::Relayed(_) => None,
+        }
+        .map(Voucher::of)
+        .transpose()?;
         let approval_blinder = match (self.rail.kind(), self.approval) {
             (RailKind::Relayed(relayed), _) => relayed.approval_blinder(),
             (RailKind::Delegated(_), _) | (_, ApprovalDisclosure::None) => None,
@@ -483,6 +499,7 @@ impl<R: Rail> RingTransfer<R> {
                 co_signers: self.co_signers.clone(),
                 priority_fee: self.priority_fee,
                 approval_blinder,
+                voucher,
             }
             .prepare(client)
         })
@@ -497,6 +514,7 @@ struct Pipeline<'a> {
     co_signers: Vec<Address>,
     priority_fee: Option<u64>,
     approval_blinder: Option<[u8; 32]>,
+    voucher: Option<Voucher<'a>>,
 }
 
 struct Frame {
@@ -525,6 +543,7 @@ struct Unwitnessed<'a> {
     spend: Spend<'a>,
     trees: SpendTrees,
     priority_fee: Option<u64>,
+    voucher: Option<Voucher<'a>>,
 }
 
 /// A transfer whose external data is final.
@@ -573,6 +592,7 @@ struct Preview {
     /// Past the sender bundle and ahead of the auditor's message.
     app_messages: Vec<OwnedAppMessage>,
     discloses_approval: bool,
+    vouched: bool,
 }
 
 impl Preview {
@@ -607,6 +627,7 @@ pub(crate) struct Assembled {
     party_identities: [[u8; 32]; ANONYMOUS_PARTIES],
     /// The statement's sender identity, zero where the rail names none.
     sender: [u8; 32],
+    voucher: VoucherParams,
     bound: BoundState,
 }
 
@@ -682,12 +703,14 @@ impl<'a> Pipeline<'a> {
                 })
                 .collect(),
             discloses_approval: self.approval_blinder.is_some(),
+            vouched: self.voucher.is_some(),
         };
 
         Ok(Prepared {
             pipeline: Pipeline {
                 priority_fee: self.priority_fee,
                 approval_blinder: self.approval_blinder,
+                voucher: self.voucher,
                 ring: self.ring,
                 config: self.config,
                 co_signers: self.co_signers,
@@ -727,6 +750,11 @@ impl<'a> Prepared<'a> {
             .map(|presealed| planner.plan_at(presealed.row))
             .transpose()?;
         PolicyRead {
+            voucher: self
+                .pipeline
+                .voucher
+                .map(|voucher| voucher.identity())
+                .transpose()?,
             token_owner_hint: match &staged.spend {
                 Spend::Anonymous(a) => a.token_owner,
                 _ => None,
@@ -794,6 +822,7 @@ impl<'a> Prepared<'a> {
             co_signers,
             priority_fee,
             approval_blinder,
+            voucher,
         } = pipeline;
         let Staged {
             mut proof_inputs,
@@ -836,6 +865,7 @@ impl<'a> Prepared<'a> {
                 flags,
                 inputs: &proof_inputs,
                 auditor: &auditor,
+                voucher: voucher.map(|voucher| voucher.key),
             }
             .seal()?,
         };
@@ -849,6 +879,7 @@ impl<'a> Prepared<'a> {
             pipeline: Pipeline {
                 priority_fee,
                 approval_blinder,
+                voucher,
                 ring,
                 config,
                 co_signers,
@@ -887,6 +918,7 @@ impl<'a> Sealed<'a> {
                     co_signers: supplied_co_signers,
                     priority_fee,
                     approval_blinder,
+                    voucher,
                 },
             sealed,
             trees,
@@ -1057,6 +1089,7 @@ impl<'a> Sealed<'a> {
             spend,
             trees,
             priority_fee,
+            voucher,
         };
         unwitnessed.check_size()?;
         Ok(unwitnessed)
@@ -1105,6 +1138,7 @@ impl Unwitnessed<'_> {
             authority,
             spend,
             trees,
+            voucher,
             ..
         } = self;
         let spp_rail = spend.spp_rail(&frame.proof_inputs)?;
@@ -1133,6 +1167,14 @@ impl Unwitnessed<'_> {
         .await?;
         let private_tx_hash = spp.private_tx_hash();
         frame.parts.private_tx_hash = private_tx_hash;
+        let voucher = Vouch {
+            voucher,
+            message: VouchMessage {
+                private_tx_hash: &private_tx_hash,
+                withdrawal_hash: &frame.policy.withdrawal_hash()?,
+            },
+        }
+        .sign()?;
         let auditor = config.auditor_pubkey;
         let parsed = ParsedTransact::new(frame.parts.data()?)?;
         // Only the in-proof owner is named, the signer set carries the signer rail's owners.
@@ -1184,6 +1226,7 @@ impl Unwitnessed<'_> {
             public_input_hash,
             party_identities,
             sender,
+            voucher,
             bound,
         })
     }
@@ -1401,6 +1444,7 @@ fn preview_parts(parts: PreviewParts<'_>) -> TransactParts {
         has_data: payload_width(&parts.inputs.output_utxos).is_some(),
         entry: spends_default_ring(&parts.inputs.input_utxos),
         wide_owners: parts.wide_owners,
+        vouched: preview.vouched,
         outputs: parts
             .published
             .iter()

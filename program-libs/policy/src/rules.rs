@@ -28,6 +28,24 @@ pub struct RecordLists {
     pub salted: u64,
 }
 
+/// A voucher past `RuleTable::evaluate_voucher`, no other path makes one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub struct VoucherCover(RecordLists);
+
+impl RecordLists {
+    /// The subject's lists with the voucher's allow bits beside its own, mirror `subjectView.cover` in `prover/circuits/policy/voucher.go`.
+    #[must_use]
+    pub const fn vouched_by(self, voucher: VoucherCover) -> Self {
+        let (voucher, cover) = (voucher.0, ListSet::VOUCHED.record_bits());
+        Self {
+            own: self.own | voucher.own & cover,
+            curator: self.curator | voucher.curator & cover,
+            salted: self.salted | voucher.salted & cover,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OutputSubjects {
     /// Set on a same-ring output, clear on an exit or a withdrawal.
@@ -51,6 +69,13 @@ pub struct TransferSubjects<'a> {
     pub outputs: &'a [OutputSubjects],
 }
 
+impl PaymentSubjects<'_> {
+    const NONE: Self = Self {
+        ring_inputs: &[],
+        outputs: &[],
+    };
+}
+
 /// The side of a transfer the owner and asset rules read, it holds no sender row.
 #[derive(Clone, Copy, Debug)]
 pub struct PaymentSubjects<'a> {
@@ -69,6 +94,7 @@ pub enum TransferSubject {
     Asset(usize),
     /// A position in the live inputs `evaluate_input_assets` reads.
     InputAsset(usize),
+    Voucher,
 }
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -78,6 +104,8 @@ pub enum RuleRefusal {
         rule: usize,
         subject: TransferSubject,
     },
+    #[error("the voucher holds no allow entry")]
+    VoucherUnlisted,
 }
 
 impl RuleTable {
@@ -91,6 +119,7 @@ impl RuleTable {
             sources,
             Screened {
                 senders: &[transfer.sender],
+                signer: TransferSubject::Sender,
                 payments: PaymentSubjects {
                     ring_inputs: transfer.ring_inputs,
                     outputs: transfer.outputs,
@@ -109,12 +138,33 @@ impl RuleTable {
             sources,
             Screened {
                 senders,
-                payments: PaymentSubjects {
-                    ring_inputs: &[],
-                    outputs: &[],
-                },
+                signer: TransferSubject::Sender,
+                payments: PaymentSubjects::NONE,
             },
         )
+    }
+
+    /// The voucher's own check, a signer on a list it covers under every sender rule, mirror `assertVouches` and the voucher row of `assertSenderRules`.
+    pub fn evaluate_voucher(
+        &self,
+        sources: &SourceMap,
+        voucher: RecordLists,
+    ) -> Result<VoucherCover, RuleRefusal> {
+        if !voucher
+            .on(foreign_lists(sources), sources.salted())
+            .intersects(ListSet::VOUCHED)
+        {
+            return Err(RuleRefusal::VoucherUnlisted);
+        }
+        self.screen(
+            sources,
+            Screened {
+                senders: &[voucher],
+                signer: TransferSubject::Voucher,
+                payments: PaymentSubjects::NONE,
+            },
+        )?;
+        Ok(VoucherCover(voucher))
     }
 
     /// The owner and asset rules over the payments, a sender rule is not read.
@@ -131,6 +181,7 @@ impl RuleTable {
             sources,
             Screened {
                 senders: &[],
+                signer: TransferSubject::Sender,
                 payments,
             },
         )
@@ -169,7 +220,11 @@ impl RuleTable {
     }
 
     fn screen(&self, sources: &SourceMap, screened: Screened<'_>) -> Result<(), RuleRefusal> {
-        let Screened { senders, payments } = screened;
+        let Screened {
+            senders,
+            signer,
+            payments,
+        } = screened;
         let foreign = foreign_lists(sources);
         let salted = sources.salted();
         let debits: Vec<DebitOutput> = payments
@@ -198,7 +253,7 @@ impl RuleTable {
                 // No guard exempts the sender, with or without a spent input.
                 Subject::Sender => senders
                     .iter()
-                    .try_for_each(|sender| check.listed(TransferSubject::Sender, *sender))?,
+                    .try_for_each(|sender| check.listed(signer, *sender))?,
                 Subject::OutputOwner | Subject::Asset => {
                     (0..payments.outputs.len()).try_for_each(|output| check.output(output))?
                 }
@@ -215,6 +270,7 @@ impl fmt::Display for TransferSubject {
             Self::Owner(output) => write!(f, "the owner of output {output}"),
             Self::Asset(output) => write!(f, "the asset of output {output}"),
             Self::InputAsset(input) => write!(f, "the asset of live input {input}"),
+            Self::Voucher => f.write_str("the voucher"),
         }
     }
 }
@@ -231,6 +287,8 @@ impl RecordLists {
 
 struct Screened<'a> {
     senders: &'a [RecordLists],
+    /// The name a refused row of `senders` takes.
+    signer: TransferSubject,
     payments: PaymentSubjects<'a>,
 }
 
@@ -272,7 +330,9 @@ impl RuleCheck<'_> {
     fn listed(&self, subject: TransferSubject, records: RecordLists) -> Result<(), RuleRefusal> {
         let salted = match subject {
             TransferSubject::Asset(_) | TransferSubject::InputAsset(_) => ListSet::EMPTY,
-            TransferSubject::Sender | TransferSubject::Owner(_) => self.salted,
+            TransferSubject::Sender | TransferSubject::Owner(_) | TransferSubject::Voucher => {
+                self.salted
+            }
         };
         if holds(self.rule, records.on(self.foreign, salted)) {
             return Ok(());

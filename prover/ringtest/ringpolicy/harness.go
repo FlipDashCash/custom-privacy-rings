@@ -28,6 +28,9 @@ type SectionCircuit struct {
 	ApprovalMask      frontend.Variable
 	ApprovalTotals    frontend.Variable
 	ApprovalBlinder   frontend.Variable
+	// Vouched and Voucher stand for the layout bit and the identity transfer verifies a signature for.
+	Vouched frontend.Variable
+	Voucher frontend.Variable
 }
 
 // sectionSenders is the sender rows of the transfer keys the harness stands for.
@@ -73,7 +76,8 @@ func (c *SectionCircuit) Define(api frontend.API) error {
 		inputs[i] = w.Open(api)
 	}
 	g := policy.Rail{ThresholdsActive: c.ThresholdsActive, Delegate: c.Delegate}.Gates(api, c.PolicyHash)
-	screening := c.Screen(api, rc, g, policy.Spend{Senders: c.Senders, Inputs: inputs, Tracking: c.OpenTracking(api)}, outputs)
+	api.AssertIsBoolean(c.Vouched)
+	screening := c.Screen(api, rc, g, policy.Spend{Senders: c.Senders, Inputs: inputs, Tracking: c.OpenTracking(api), Vouch: policy.Vouch{Active: c.Vouched, Identity: c.Voucher}}, outputs)
 	api.AssertIsEqual(c.ApprovalMask, screening.ApprovalMask)
 	screening.AssertApprovalTotals(api, c.ApprovalTotals, c.ApprovalBlinder)
 	api.AssertIsEqual(c.PublicInputHash, gadget.HashChain4(api, c.Statement()))
@@ -82,7 +86,7 @@ func (c *SectionCircuit) Define(api frontend.API) error {
 
 // Statement binds every value the section reads from the program, in the harness's own order.
 func (c *SectionCircuit) Statement() []frontend.Variable {
-	fields := []frontend.Variable{c.ThresholdsActive, c.Delegate, c.ApprovalMask, c.ApprovalTotals, c.PrivateTxHash, c.PolicyHash, c.RingProgramID, c.OwnRoot, c.CuratorRoot, c.TrackingRoot}
+	fields := []frontend.Variable{c.ThresholdsActive, c.Delegate, c.Vouched, c.ApprovalMask, c.ApprovalTotals, c.PrivateTxHash, c.PolicyHash, c.RingProgramID, c.OwnRoot, c.CuratorRoot, c.TrackingRoot}
 	fields = append(fields, c.Senders...)
 	for k := range c.PublicAssets {
 		fields = append(fields, c.PublicAssets[k], c.PublicAmounts[k], c.PublicGross[k])

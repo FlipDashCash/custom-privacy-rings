@@ -1977,6 +1977,148 @@ async fn a_recipient_the_rules_refuse_fails_before_proving() {
     ));
 }
 
+/// The circuit verifies one signature over the vouch digest on every proof, a listed voucher admits an unlisted recipient.
+#[tokio::test]
+async fn the_request_carries_a_signature_over_the_vouch_digest_vouched_or_not() {
+    use crate::tests::support::{keypair, owner_record, Registry};
+    use custom_ring_interface::domain::VouchMessage;
+    use zolana_ring_policy::RuleRefusal;
+
+    use crate::pipeline::VouchSigner;
+    /// A wallet returning a signature over other bytes.
+    struct Unsigned(PublicKey);
+    impl VouchSigner for Unsigned {
+        fn public_key(&self) -> PublicKey {
+            self.0
+        }
+
+        fn sign_vouch(&self, _digest: &[u8; 32]) -> Result<[u8; 64], RingError> {
+            Ok([0; 64])
+        }
+    }
+    let (sender, recipient, voucher) = (keypair(1), keypair(2), keypair(3));
+    let client = |recipient_lists: u64, voucher_lists: u64| {
+        Chain::ring(RingSettings {
+            has_policy: true,
+            ..RingSettings::new(RingMode::Confidential)
+        })
+        .with_registry(
+            Registry::new(&[
+                (&sender, 1),
+                (&recipient, recipient_lists),
+                (&voucher, voucher_lists),
+            ]),
+            &crate::tests::pipeline_rules(),
+        )
+        .client()
+    };
+    let transfer = || {
+        let mut transaction = ring_transaction(vec![ring_utxo(&sender, Mint::SOL, 10, 0)]);
+        transaction
+            .transfer_with_ring(
+                &recipient.shielded_address().unwrap(),
+                Mint::SOL,
+                3,
+                Some(ring().program_id()),
+            )
+            .unwrap();
+        owner_transfer(&sender, transaction)
+    };
+    fn bytes<const N: usize>(value: &serde_json::Value) -> [u8; N] {
+        hex::decode(value.as_str().unwrap().trim_start_matches("0x"))
+            .unwrap()
+            .try_into()
+            .unwrap()
+    }
+    let hex_of = |bytes: &[u8]| format!("0x{}", hex::encode(bytes));
+    // The built request with its signature checked over the digest of its own hashes.
+    let signed = |assembled: &Assembled| {
+        let request = assembled.request().unwrap();
+        let built = serde_json::to_value(
+            crate::prover::RequestBody::new(request.circuit, &request.body).unwrap(),
+        )
+        .unwrap();
+        let digest = VouchMessage {
+            private_tx_hash: &bytes(&built["privateTxHash"]),
+            withdrawal_hash: &bytes(&built["withdrawalHash"]),
+        }
+        .digest()
+        .unwrap();
+        let signer = PublicKey::from_ed25519(&bytes(&built["voucher"]["publicKey"]));
+        assert!(signer.verify_message(&digest, &bytes(&built["voucher"]["signature"])));
+        built
+    };
+    let vouching: &dyn VouchSigner = &voucher.signing_key;
+    let voucher_key = voucher.signing_pubkey().as_ed25519().unwrap();
+
+    let assembled = transfer()
+        .with_voucher(vouching)
+        .assemble(&client(0, 1))
+        .await
+        .unwrap();
+    let built = signed(&assembled);
+    assert_eq!(built["voucher"]["publicKey"], hex_of(&voucher_key));
+    assert_eq!(built["layout"], 1);
+    let own = built["voucherEntry"]["own"].as_u64().unwrap() as usize;
+    assert_eq!(
+        built["ownSubjects"][own]["member"],
+        hex_of(owner_record(&voucher).as_bytes())
+    );
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/custom-ring-transfer-vouched.json");
+    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
+        std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
+    }
+    assert!(path.exists());
+    let parts = assembled.parts();
+    assert!(parts.vouched);
+    assert_eq!(parts.recipient_keys.len(), 32 * (parts.outputs.len() + 1));
+
+    let assembled = transfer().assemble(&client(1, 1)).await.unwrap();
+    let built = signed(&assembled);
+    assert_ne!(built["voucher"]["publicKey"], hex_of(&voucher_key));
+    assert_eq!(built["layout"], 0);
+    assert_eq!(
+        built["voucherEntry"],
+        serde_json::to_value(crate::request::OwnerEntry::default()).unwrap()
+    );
+    let parts = assembled.parts();
+    assert!(!parts.vouched);
+    assert_eq!(parts.recipient_keys.len(), 32 * parts.outputs.len());
+
+    assert!(matches!(
+        transfer()
+            .with_voucher(vouching)
+            .assemble(&client(0, 0))
+            .await,
+        Err(RingError::PolicyRuleUnsatisfied(
+            RuleRefusal::VoucherUnlisted
+        ))
+    ));
+    assert!(matches!(
+        transfer()
+            .with_voucher(&Unsigned(voucher.signing_pubkey()))
+            .assemble(&client(0, 1))
+            .await,
+        Err(RingError::VoucherSignatureMismatch)
+    ));
+    assert!(matches!(
+        transfer()
+            .with_voucher(vouching)
+            .seal_unread(client(0, 1).zolana())
+            .await,
+        Err(RingError::VouchedRelay)
+    ));
+    let unscreened = Chain::ring(RingSettings::new(RingMode::Confidential)).client();
+    assert!(matches!(
+        transfer()
+            .with_voucher(vouching)
+            .assemble(&unscreened)
+            .await,
+        Err(RingError::VoucherUnscreened)
+    ));
+}
+
 /// The records follow the ring account, a curator registry only where a source names one.
 #[tokio::test]
 async fn a_policy_transfer_names_a_curator_registry_only_under_a_curator_source() {

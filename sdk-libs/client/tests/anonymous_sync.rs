@@ -448,6 +448,7 @@ fn test_layout(inputs: usize, outputs: usize) -> AuditStreamLayout {
         inputs,
         outputs,
         capacity: outputs,
+        vouched: false,
     }
 }
 
@@ -470,6 +471,7 @@ fn auditor_message(
             .iter()
             .map(X25519Pubkey::u)
             .collect(),
+        voucher: None,
     }
     .seal(&audit_key())
     .unwrap();

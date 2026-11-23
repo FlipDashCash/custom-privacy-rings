@@ -294,3 +294,26 @@ func TestRepeatedSubjectReusesItsRecords(t *testing.T) {
 	}
 	requireSolved(t, b)
 }
+
+// A voucher covers the private allow list from its salted key, an unenrolled signer or one on another private list holds no list a vouch covers.
+func TestVoucherCoversThePrivateAllowList(t *testing.T) {
+	vouched := func() ringpolicy.World {
+		w := saltedWorld(ringpolicy.Require(policy.SubjectOutputOwner, privateAllow))
+		w.Voucher, w.Enrolled = ringpolicy.Carol, []int64{ringpolicy.Carol}
+		w.Salted[ringpolicy.Carol] = privateAllow
+		return w
+	}
+	if err := solveSalted(vouched().Build(t)); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("a voucher with no tracking row", func(t *testing.T) {
+		w := vouched()
+		w.Enrolled = nil
+		ringtest.RequireRefused(t, solveSalted(w.Build(t)), "policy.subjectView.assertVouches")
+	})
+	t.Run("a voucher on the private block list alone", func(t *testing.T) {
+		w := vouched()
+		w.Salted[ringpolicy.Carol] = privateBlock
+		ringtest.RequireRefused(t, solveSalted(w.Build(t)), "policy.subjectView.assertVouches")
+	})
+}

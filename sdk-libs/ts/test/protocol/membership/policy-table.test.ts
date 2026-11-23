@@ -16,6 +16,9 @@ import {
   evaluatePayments,
   evaluateSenders,
   ListId,
+  recordBit,
+  vouchedBy,
+  evaluateVoucher,
   policyTableFields,
   policyTableHash,
   type RecordLists,
@@ -171,5 +174,100 @@ describe("sender, payment and input asset evaluation", () => {
       rules: [{ ...table("asset").rules[0]!, guard: { kind: "aboveAmount" as const, amount: 9n } }],
     };
     expect(evaluateInputAssets(guarded, sources, inputs)).toBeUndefined();
+  });
+});
+
+describe("a vouched screen", () => {
+  const sources = [] as const;
+  const bits = (...lists: readonly ListId[]): bigint =>
+    lists.reduce((set, list) => set | recordBit(list), 0n);
+  const own = (...lists: readonly ListId[]): RecordLists => ({ own: bits(...lists), curator: 0n });
+  const off = own();
+  const allowed = own(ListId.allow);
+  const rule = (subject: "sender" | "outputOwner", present: ListId[], absent: ListId[]) => ({
+    subject,
+    source: { kind: "lists" as const, present, absent },
+    guard: { kind: "always" as const },
+  });
+  const senders = {
+    rules: [rule("sender", [ListId.allow], []), rule("sender", [], [ListId.block])],
+  };
+  const refusedRule = (rows: readonly RecordLists[], voucher: RecordLists | undefined) => {
+    const refusal =
+      voucher === undefined
+        ? evaluateSenders(senders, sources, rows)
+        : (evaluateVoucher(senders, sources, voucher) ??
+          evaluateSenders(
+            senders,
+            sources,
+            rows.map((row) => vouchedBy(row, voucher)),
+          ));
+    return refusal?.kind === "lists" ? refusal.rule : refusal?.kind;
+  };
+
+  it("refuses an unlisted sender nobody vouches for", () => {
+    expect(refusedRule([off], undefined)).toBe(0);
+  });
+
+  it("admits an unlisted sender beside a listed voucher", () => {
+    expect(refusedRule([off], allowed)).toBeUndefined();
+    expect(refusedRule([off, allowed, off], allowed)).toBeUndefined();
+  });
+
+  it("keeps a covered sender's block entry its own", () => {
+    expect(refusedRule([own(ListId.block)], allowed)).toBe(1);
+  });
+
+  it("refuses a voucher off the allow list though every sender is listed", () => {
+    expect(refusedRule([allowed], off)).toBe("voucherUnlisted");
+    const blocklist = { rules: [rule("sender", [], [ListId.block])] };
+    expect(evaluateVoucher(blocklist, sources, off)).toEqual({ kind: "voucherUnlisted" });
+    expect(evaluateVoucher(blocklist, sources, allowed)).toBeUndefined();
+  });
+
+  it("refuses a blocked voucher and copies none of its deny entries", () => {
+    const blocked = own(ListId.allow, ListId.block, ListId.frozen);
+    expect(refusedRule([off], blocked)).toBe(1);
+    expect(vouchedBy(off, blocked)).toEqual({ own: bits(ListId.allow), curator: 0n, salted: 0n });
+  });
+
+  it("covers the allow and the private allow list alone, in each registry", () => {
+    const approval = { rules: [rule("sender", [ListId.approval], [])] };
+    const approved = own(ListId.approval);
+    expect(evaluateSenders(approval, sources, [vouchedBy(off, approved)])?.rule).toBe(0);
+    const every = bits(...Object.values(ListId));
+    const covered = bits(ListId.allow, ListId.privateAllow);
+    expect(vouchedBy(off, { own: every, curator: every, salted: every })).toEqual({
+      own: covered,
+      curator: covered,
+      salted: covered,
+    });
+    const held = { own: bits(ListId.frozen), curator: bits(ListId.block), salted: 0n };
+    expect(vouchedBy(held, { own: 0n, curator: 0n, salted: bits(ListId.privateAllow) })).toEqual({
+      ...held,
+      salted: bits(ListId.privateAllow),
+    });
+  });
+
+  it("admits an unlisted payment owner beside a listed voucher", () => {
+    const owners = { rules: [rule("outputOwner", [ListId.allow], [])] };
+    const paid = (ownerLists: RecordLists) =>
+      evaluatePayments(owners, sources, {
+        ringInputs: [],
+        outputs: [
+          {
+            ring: true,
+            owner: new Uint8Array(32).fill(1) as Bytes32,
+            asset: new Uint8Array(32).fill(2) as Bytes32,
+            amount: 5n,
+            ownerLists,
+            assetLists: off,
+            mintPolicy: EMPTY_MINT_POLICY,
+          },
+        ],
+      });
+    expect(paid(off)?.subject).toEqual({ kind: "owner", output: 0 });
+    expect(paid(vouchedBy(off, allowed))).toBeUndefined();
+    expect(paid(vouchedBy(off, off))?.subject).toEqual({ kind: "owner", output: 0 });
   });
 });

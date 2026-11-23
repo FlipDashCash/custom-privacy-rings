@@ -311,6 +311,7 @@ fn anonymous_transfer_with(
         }),
         envelope: &[],
         recipient_keys: &keys,
+        vouched: false,
         private_tx_hash: &field,
         anonymous: Some(AnonymousProofData {
             commitment: &field,

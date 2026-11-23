@@ -18,7 +18,7 @@ use zolana_ring_transaction::{
     address_chain, note_count, published_outputs, ClassifiedInput, RingOutputRail,
 };
 
-use super::SealRow;
+use super::{voucher::VoucherKey, SealRow};
 use crate::{
     request::{owner_key, AuditParams, EntryOpening, Opening, OutputOpening},
     RingError,
@@ -28,7 +28,7 @@ pub(crate) struct SealedAudit {
     pub flags: AuditLayout,
     pub eph_u: [u8; 32],
     pub envelope: Vec<u8>,
-    /// One sealed recipient key per published slot.
+    /// One sealed recipient key per published slot, then the voucher's on a vouched frame.
     pub keys: Vec<u8>,
     /// One record per exit in slot order.
     pub exit_records: Vec<[u8; EXIT_RECORD_LEN]>,
@@ -46,6 +46,7 @@ pub(super) struct AuditSeal<'a> {
     pub flags: AuditLayout,
     pub inputs: &'a SppProofInputs,
     pub auditor: &'a X25519Pubkey,
+    pub voucher: Option<VoucherKey>,
 }
 
 impl AuditSeal<'_> {
@@ -64,6 +65,7 @@ impl AuditSeal<'_> {
             real_inputs: note_count(&self.inputs.input_utxos)?,
             evidence: self.evidence()?,
             recipient_keys,
+            voucher: self.voucher.map(|voucher| voucher.0),
         }
         .seal(self.auditor)?;
         let first_nullifier = self.inputs.first_nullifier()?;

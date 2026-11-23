@@ -1564,22 +1564,20 @@ function sentRecipientKeys(
   }
 }
 
-/** One plain layout, the plain envelope fixes every counter, then one per entry class holding `n`. */
+/** One plain layout, the plain envelope fixes every counter, then one per entry class holding `n`, each unvouched and vouched. */
 function senderAuditLayouts(inputs: number, outputs: number): readonly AuditStreamLayout[] {
   const entryClasses = new Set(
     TRANSFER_SHAPES.filter((shape) => shape.entry && shape.inputs >= inputs).map(
       (shape) => shape.inputs,
     ),
   );
-  return [
-    { key: { class: inputs, entry: false }, inputs, outputs, capacity: outputs },
-    ...[...entryClasses].map((keyClass) => ({
-      key: { class: keyClass, entry: true },
-      inputs,
-      outputs,
-      capacity: outputs,
-    })),
+  const keys = [
+    { class: inputs, entry: false },
+    ...[...entryClasses].map((keyClass) => ({ class: keyClass, entry: true })),
   ];
+  return keys.flatMap((key) =>
+    [false, true].map((vouched) => ({ key, inputs, outputs, capacity: outputs, vouched })),
+  );
 }
 
 /** Key `k` names slot `k`, zero keys, the sender's own change keys and keys no ECDH accepts left out. */

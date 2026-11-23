@@ -15,7 +15,11 @@
 
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
 
-use crate::{bytes::Bytes, error::CustomRingError};
+use crate::{
+    bytes::Bytes,
+    disclosure::{AuditLayout, SealedKeys},
+    error::CustomRingError,
+};
 
 pub const STREAM_BLOCK_LEN: usize = 16;
 pub const STREAM_FIRST_COUNTER: u32 = 2;
@@ -121,6 +125,8 @@ pub struct AuditStreamLayout {
     pub outputs: usize,
     /// `N`, the key's output capacity, the key region spans every slot of it.
     pub capacity: usize,
+    /// The frame publishes the voucher's key.
+    pub vouched: bool,
 }
 
 impl AuditStreamLayout {
@@ -161,8 +167,31 @@ impl AuditStreamLayout {
         }
     }
 
+    /// The voucher's key on the blocks past the last slot's, no slot key's counter moves for it.
+    pub const fn voucher(self) -> StreamRegion {
+        StreamRegion {
+            start_counter: self.first_key_counter() + (self.capacity * SEALED_KEY_BLOCKS) as u32,
+            max_blocks: SEALED_KEY_BLOCKS,
+            len: match self.vouched {
+                true => SEALED_KEY_LEN,
+                false => 0,
+            },
+        }
+    }
+
     pub const fn keys_len(self) -> usize {
-        SEALED_KEY_LEN * self.outputs
+        SEALED_KEY_LEN * self.outputs + self.voucher().len
+    }
+
+    /// `None` at any length but `keys_len`.
+    pub fn split_keys(self, sealed: &[u8]) -> Option<SealedKeys<'_>> {
+        let layout = AuditLayout {
+            entry: self.key.entry,
+            vouched: self.vouched,
+        };
+        layout
+            .split_keys(sealed)
+            .filter(|_| sealed.len() == self.keys_len())
     }
 
     pub const fn sealed_len(self) -> usize {
@@ -171,7 +200,7 @@ impl AuditStreamLayout {
 
     /// The blocks a reader decrypts.
     pub const fn capacity_blocks(self) -> usize {
-        self.key.envelope_blocks() + self.capacity * SEALED_KEY_BLOCKS
+        self.key.envelope_blocks() + (self.capacity + 1) * SEALED_KEY_BLOCKS
     }
 }
 

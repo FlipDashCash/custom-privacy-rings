@@ -60,6 +60,7 @@ pub fn wide_frame(tag: u8) -> Vec<u8> {
         sender: None,
         envelope: &[],
         recipient_keys: &keys,
+        vouched: false,
         private_tx_hash: &field,
         anonymous: None,
         in_proof_owner: None,

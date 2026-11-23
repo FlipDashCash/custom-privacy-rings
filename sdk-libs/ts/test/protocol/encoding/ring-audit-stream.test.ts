@@ -34,6 +34,7 @@ import {
   type OutputRecord,
 } from "../../../src/protocol/codec/audit-stream.js";
 import {
+  auditLayoutValue,
   auditorMessageLen,
   capacityBlocks,
   checkedStreamLayout,
@@ -42,6 +43,9 @@ import {
   EXIT_RECORD_LEN,
   firstRecipientKeyCounter,
   recipientKeyRegion,
+  recipientKeysLen,
+  splitSealedKeys,
+  voucherRegion,
   RECIPIENT_KEY_LEN,
   RING_RECORD_LEN,
   type AuditStreamLayout,
@@ -76,6 +80,7 @@ interface StreamCase {
   readonly envelope_ciphertext: string;
   readonly recipient_keys: readonly string[];
   readonly recipient_keys_ciphertext: string;
+  readonly voucher: string;
   readonly records: readonly string[];
   readonly record_ciphertexts: readonly string[];
   readonly output_hashes: readonly string[];
@@ -103,6 +108,7 @@ describe("the stream regions", () => {
         inputs,
         outputs: key.outputs,
         capacity: key.outputs,
+        vouched: false,
       });
       const layout = layoutAt(1);
       expect(envelopeBlocks(layout.key)).toBe(key.envelope_blocks);
@@ -125,6 +131,7 @@ describe("the stream regions", () => {
       inputs: 2,
       outputs: 2,
       capacity: 4,
+      vouched: false,
     };
     expect(envelopeBlocks(layout.key)).toBe(3);
     expect(firstRecipientKeyCounter(layout.key)).toBe(5);
@@ -132,9 +139,44 @@ describe("the stream regions", () => {
       5, 7, 9, 11,
     ]);
     expect(recipientKeyRegion(layout, 2).length).toBe(0);
-    expect(capacityBlocks(layout)).toBe(3 + 4 * 2);
+    expect(capacityBlocks(layout)).toBe(3 + 5 * 2);
     // `0x04 ‖ eph_u ‖ envelope ‖ keys ‖ one exit record`.
     expect(auditorMessageLen(layout, 1)).toBe(33 + 33 + 64 + 137);
+  });
+
+  it("keeps the voucher's key past the last slot of the capacity and transmits it on a vouched frame alone", () => {
+    const plain: AuditStreamLayout = {
+      key: { class: 2, entry: false },
+      inputs: 2,
+      outputs: 2,
+      capacity: 4,
+      vouched: false,
+    };
+    const vouched: AuditStreamLayout = { ...plain, vouched: true };
+    expect(voucherRegion(plain)).toEqual({ startCounter: 13, maxBlocks: 2, length: 0 });
+    expect(voucherRegion(vouched)).toEqual({ startCounter: 13, maxBlocks: 2, length: 32 });
+    expect([0, 1, 2, 3].map((slot) => recipientKeyRegion(vouched, slot).startCounter)).toEqual([
+      5, 7, 9, 11,
+    ]);
+    expect(recipientKeysLen(plain)).toBe(64);
+    expect(recipientKeysLen(vouched)).toBe(96);
+    expect(auditorMessageLen(vouched, 1)).toBe(auditorMessageLen(plain, 1) + 32);
+    expect(capacityBlocks(vouched)).toBe(capacityBlocks(plain));
+    expect(
+      [
+        { entry: false, vouched: false },
+        { entry: false, vouched: true },
+        { entry: true, vouched: false },
+        { entry: true, vouched: true },
+      ].map(auditLayoutValue),
+    ).toEqual([0, 1, 2, 3]);
+    const sealed = Uint8Array.from({ length: 96 }, (_, at) => at);
+    expect(splitSealedKeys(plain, sealed)).toEqual({ keys: sealed });
+    expect(splitSealedKeys(vouched, sealed)).toEqual({
+      keys: sealed.subarray(0, 64),
+      voucher: sealed.subarray(64),
+    });
+    expect(() => splitSealedKeys(vouched, new Uint8Array(31))).toThrow();
   });
 
   it("refuses an input past the class and an output past the capacity", () => {
@@ -143,6 +185,7 @@ describe("the stream regions", () => {
       inputs: 2,
       outputs: 2,
       capacity: 2,
+      vouched: false,
     };
     expect(checkedStreamLayout(base)).toBe(base);
     expect(() => checkedStreamLayout({ ...base, inputs: 3 })).toThrow();
@@ -173,6 +216,9 @@ const keyCiphertexts = (testCase: StreamCase): string[] =>
     ),
   );
 
+const voucherCiphertext = (testCase: StreamCase): string =>
+  testCase.recipient_keys_ciphertext.slice(testCase.recipient_keys.length * 2 * RECIPIENT_KEY_LEN);
+
 describe("the stream vector", () => {
   const auditor = (): X25519Keypair => X25519Keypair.fromBytes(hex(vector.auditor_sk) as Bytes32);
 
@@ -182,6 +228,7 @@ describe("the stream vector", () => {
       inputs: testCase.input_count,
       outputs: testCase.output_count,
       capacity: testCase.outputs,
+      vouched: (testCase.layout & 1) !== 0,
     };
     const salt = hex(vector.salt) as Bytes16;
     const txKey = (): X25519Keypair =>
@@ -190,6 +237,7 @@ describe("the stream vector", () => {
       ephemeralPublicKey: txKey().publicKey(),
       envelope: hex(testCase.envelope_ciphertext),
       recipientKeys: keyCiphertexts(testCase).map(hex),
+      ...(testCase.voucher === "" ? {} : { voucher: hex(voucherCiphertext(testCase)) }),
     });
 
     it(`${testCase.name} seals byte for byte as Rust and refuses another salt`, async () => {
@@ -203,7 +251,16 @@ describe("the stream vector", () => {
           counter: recipientKeyRegion(layout, slot).startCounter,
           bytes: hex(key),
         })),
+        ...(testCase.voucher === ""
+          ? {}
+          : {
+              voucher: {
+                counter: voucherRegion(layout).startCounter,
+                bytes: hex(testCase.voucher),
+              },
+            }),
       });
+      expect(bytesToHex(sealed.voucher ?? new Uint8Array())).toBe(voucherCiphertext(testCase));
       expect(bytesToHex(sealed.envelope)).toBe(testCase.envelope_ciphertext);
       expect(sealed.recipientKeys.map((bytes) => bytesToHex(bytes))).toEqual(
         keyCiphertexts(testCase),
@@ -219,6 +276,7 @@ describe("the stream vector", () => {
       const opened = openRingDisclosure(auditor(), { layout, message: message(), salt });
       expect(bytesToHex(encodeAuditEnvelope(opened.envelope))).toBe(testCase.envelope_plaintext);
       expect(opened.recipientKeys.map((key) => bytesToHex(key))).toEqual(testCase.recipient_keys);
+      expect(bytesToHex(opened.voucher ?? new Uint8Array())).toBe(testCase.voucher);
     });
 
     it(`${testCase.name} binds its digest and record chain`, async () => {
@@ -229,6 +287,7 @@ describe("the stream vector", () => {
           envelopeDigest(
             hex(testCase.envelope_ciphertext),
             hex(testCase.recipient_keys_ciphertext),
+            layout,
           ),
         ),
       ).toBe(testCase.envelope_digest);
@@ -279,6 +338,7 @@ describe("the stream vector", () => {
       inputs: 1,
       outputs: 2,
       capacity: 2,
+      vouched: false,
     };
     const keys = [
       X25519Keypair.generate().publicKey().u(),
@@ -381,12 +441,75 @@ describe("the stream codecs", () => {
     expect(() => decodeMergeRecord(merge.subarray(1))).toThrow(RingError);
   });
 
+  it("seals the voucher's key at its own counter and opens it on a vouched layout alone", async () => {
+    await initializePoseidon();
+    const layout: AuditStreamLayout = {
+      key: { class: 2, entry: false },
+      inputs: 1,
+      outputs: 2,
+      capacity: 4,
+      vouched: true,
+    };
+    const keys = [
+      X25519Keypair.generate().publicKey().u(),
+      X25519Keypair.generate().publicKey().u(),
+    ];
+    const voucher = new Uint8Array(32).fill(0x76) as Bytes32;
+    const disclosure: RingDisclosure = {
+      envelope: {
+        txViewingSecret: hex(vector.tx_viewing_sk) as Bytes32,
+        realInputs: 1,
+        evidence: { kind: "none" },
+      },
+      recipientKeys: keys,
+      voucher,
+    };
+    const keypair = X25519Keypair.fromBytes(hex(vector.auditor_sk) as Bytes32);
+    const salt = hex(vector.salt) as Bytes16;
+    const seal = { auditorPublicKey: keypair.publicKey(), salt };
+    const sealed = sealRingDisclosure({ ...seal, layout, disclosure });
+    expect(sealed.voucher).toHaveLength(32);
+    expect(sealed.voucher).not.toEqual(voucher);
+    const exitRecord = new Uint8Array(137).fill(5);
+    const data = Uint8Array.of(
+      ...sealed.ephemeralPublicKey.toBytes(),
+      ...sealed.envelope,
+      ...sealed.recipientKeys.flatMap((bytes) => [...bytes]),
+      ...(sealed.voucher ?? []),
+      ...exitRecord,
+    );
+    const message = parseAuditorMessage(data, layout, 1);
+    expect(message.voucher).toEqual(sealed.voucher);
+    expect(message.exitRecords).toEqual([exitRecord]);
+    const opened = openRingDisclosure(keypair, { layout, message, salt });
+    expect(opened.voucher).toEqual(voucher);
+    expect(opened.recipientKeys).toEqual(keys);
+    // The voucher region starts at the capacity, a narrower key reads another counter.
+    const narrow = { ...layout, capacity: 2 };
+    expect(openRingDisclosure(keypair, { layout: narrow, message, salt }).voucher).not.toEqual(
+      voucher,
+    );
+    const plain = { ...layout, vouched: false };
+    expect(() => parseAuditorMessage(data, plain, 1)).toThrow();
+    expect(() => openRingDisclosure(keypair, { layout: plain, message, salt })).toThrow();
+    expect(() => sealRingDisclosure({ ...seal, layout: plain, disclosure })).toThrow();
+    expect(() =>
+      sealRingDisclosure({ ...seal, layout, disclosure: { ...disclosure, recipientKeys: keys } }),
+    ).not.toThrow();
+    const { voucher: _dropped, ...unvouched } = disclosure;
+    expect(() => sealRingDisclosure({ ...seal, layout, disclosure: unvouched })).toThrow();
+    expect(sealRingDisclosure({ ...seal, layout: plain, disclosure: unvouched }).voucher).toBe(
+      undefined,
+    );
+  });
+
   it("refuses an envelope off its layout", () => {
     const layout: AuditStreamLayout = {
       key: { class: 2, entry: true },
       inputs: 1,
       outputs: 2,
       capacity: 2,
+      vouched: false,
     };
     const envelope = new Uint8Array(envelopeRegion(layout).length);
     expect(decodeAuditEnvelope(envelope, layout).evidence.kind).toBe("entry");

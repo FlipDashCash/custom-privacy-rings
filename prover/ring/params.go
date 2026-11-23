@@ -82,6 +82,12 @@ type TrackingParams struct {
 	OutputEntries    []uint32               `json:"outputEntries"`
 }
 
+// VoucherParams is the signer of the vouch digest, a throwaway pair off a vouched transfer.
+type VoucherParams struct {
+	PublicKey Bytes `json:"publicKey"`
+	Signature Bytes `json:"signature"`
+}
+
 type TransferParams struct {
 	RequestHead
 	AuditParams
@@ -97,6 +103,7 @@ type TransferParams struct {
 	ApprovalBlinder *Field          `json:"approvalBlinder,omitempty"`
 	OutputCount     uint8           `json:"outputCount"`
 	Outputs         []OutputOpening `json:"outputs"`
+	Voucher         VoucherParams   `json:"voucher"`
 	InputCount      uint8           `json:"inputCount"`
 	// Inputs hold the spent notes in SPP's note order, then dummies.
 	Inputs        []Opening      `json:"inputs"`
@@ -191,6 +198,7 @@ type PolicyParams struct {
 	OwnSubjects     []PooledSubject     `json:"ownSubjects"`
 	CuratorSubjects []PooledSubject     `json:"curatorSubjects"`
 	SenderEntries   []PooledOwnerEntry  `json:"senderEntries"`
+	VoucherEntry    PooledOwnerEntry    `json:"voucherEntry"`
 	// OwnerEntries[o] and AssetEntries[o] index payment o's owner and asset subjects.
 	OwnerEntries       []PooledOwnerEntry `json:"ownerEntries"`
 	AssetEntries       []PooledEntry      `json:"assetEntries"`

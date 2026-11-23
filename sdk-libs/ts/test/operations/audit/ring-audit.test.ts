@@ -270,6 +270,7 @@ function streamLayout(inputs: number, outputs: number): StreamLayout {
     inputs,
     outputs,
     capacity: shape.outputs,
+    vouched: false,
   };
 }
 
@@ -312,6 +313,7 @@ function sealedTransfer(
     disclosed?: (keys: readonly X25519PublicKey[]) => readonly X25519PublicKey[];
     /** A ring data hash every published commitment binds, no payload carries it. */
     ringDataHash?: Bytes32;
+    voucher?: Bytes32;
   }>,
 ) {
   const records = input.records ?? otherRecords;
@@ -341,7 +343,10 @@ function sealedTransfer(
   );
   txKey.destroy();
   const stream = sealStream({
-    layout: streamLayout(nullifiers.length, records.length),
+    layout: {
+      ...streamLayout(nullifiers.length, records.length),
+      vouched: input.voucher !== undefined,
+    },
     auditorPublicKey: input.auditor,
     salt: TX_SALT,
     disclosure: {
@@ -351,6 +356,7 @@ function sealedTransfer(
         evidence: { kind: "none" },
       },
       recipientKeys: (input.disclosed?.(keys) ?? keys).map((key) => key.u()),
+      ...(input.voucher === undefined ? {} : { voucher: input.voucher }),
     },
   });
   const message = auditorMessageData(
@@ -411,12 +417,15 @@ function sealedMerge(
   }).sealed;
 }
 
-const transferRows = (rail: RingRail): TransactionOrigin => ({
+const transferRows = (rail: RingRail, vouched = false): TransactionOrigin => ({
   confirmedTransaction: async (transaction) => ({
     kind: "transfer",
     transaction,
     inputTreeIds: transaction.nullifiers.map(() => undefined),
-    layout: streamLayout(transaction.nullifiers.length, transaction.outputSlots.length),
+    layout: {
+      ...streamLayout(transaction.nullifiers.length, transaction.outputSlots.length),
+      vouched,
+    },
     rail,
     noSpend: false,
     hasData: false,
@@ -538,6 +547,26 @@ describe("auditRing", () => {
     const refused = await scan([substituted], TRANSFERS, { auditor });
     expect(refused.transactions[0]?.outputs.map((output) => output.slotIndex)).toEqual([1]);
     expect(refused.transactions[0]?.payloadErrors.map((error) => error.slotIndex)).toEqual([0]);
+  });
+
+  it("names the voucher of a vouched frame and none of an unvouched one", async () => {
+    const auditor = X25519Keypair.generate();
+    const voucher = new Uint8Array(32).fill(0x76) as Bytes32;
+    const { transaction } = sealedTransfer({ auditor: auditor.publicKey(), voucher });
+    const opened = await scan([transaction], transferRows("confidential", true), { auditor });
+    expect(opened.transactions[0]?.voucher).toEqual(voucher);
+    expect(opened.transactions[0]?.outputs.map((output) => output.opening.kind)).toEqual([
+      "ring",
+      "exit",
+    ]);
+    expect(opened.transactions[0]?.payloadErrors).toEqual([]);
+    // The unvouched layout expects a message one key shorter.
+    const mismatched = await scan([transaction], TRANSFERS, { auditor });
+    expect(mismatched.transactions).toEqual([]);
+    expect(mismatched.skipped).toHaveLength(1);
+    const { transaction: plain } = sealedTransfer({ auditor: auditor.publicKey() });
+    const unvouched = await scan([plain], TRANSFERS, { auditor });
+    expect(unvouched.transactions[0]).not.toHaveProperty("voucher");
   });
 
   it("keeps each proven record when no payload rebuilds its commitment and reports the payload", async () => {

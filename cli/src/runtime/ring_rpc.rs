@@ -543,6 +543,7 @@ mod tests {
             spenders: Vec::new(),
             signers: Vec::new(),
             withdrawals: Vec::new(),
+            vouched_by: None,
         }
     }
 

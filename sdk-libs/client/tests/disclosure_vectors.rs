@@ -56,6 +56,7 @@ fn every_stream_rebuilds_its_published_hashes_with_no_mint_registry() {
             inputs: case["input_count"].as_u64().unwrap() as usize,
             outputs: case["output_count"].as_u64().unwrap() as usize,
             capacity: case["outputs"].as_u64().unwrap() as usize,
+            vouched: bits & 1 != 0,
         };
         let hashes = list(&case["output_hashes"]);
         let plain_records = list(&case["records"]);

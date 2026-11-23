@@ -144,7 +144,7 @@ func (a Audit) OutputCount() int {
 }
 
 func (a Audit) Layout() int64 {
-	return ringtest.Bit(a.Shape.Entry) * audit.LayoutEntry
+	return ringtest.Bit(a.Shape.Entry)*audit.LayoutEntry + ringtest.Bit(a.Vouched())*audit.LayoutVouched
 }
 
 // RealInputs is R, the spent notes among the slots.
@@ -181,8 +181,17 @@ func (a Audit) Stream(t testing.TB) Stream {
 // Head is what the program holds for the statement's head.
 func (a Audit) Head(t testing.TB, stream Stream) AuditHead {
 	t.Helper()
-	head := a.Keys.AuditHead(t, a.FirstNullifier, a.RingProgramID, a.Salt, stream.Envelope(a.InputCount), stream.Keys(a.OutputCount()))
+	return a.headOver(t, stream, a.InputCount, a.OutputCount())
+}
+
+// headOver is the head of a frame publishing n entries and m keys.
+func (a Audit) headOver(t testing.TB, stream Stream, n, m int) AuditHead {
+	t.Helper()
+	head := a.Keys.AuditHead(t, a.FirstNullifier, a.RingProgramID, a.Salt, stream.Envelope(n), stream.Keys(m))
 	head.Layout = a.Layout()
+	if a.Vouched() {
+		head.Voucher = stream.Voucher()
+	}
 	return head
 }
 

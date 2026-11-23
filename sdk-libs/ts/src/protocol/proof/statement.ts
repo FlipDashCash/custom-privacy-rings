@@ -15,6 +15,7 @@ import {
   EXIT_RECORD_LEN,
   RING_RECORD_LEN,
   auditLayoutValue,
+  splitSealedKeys,
   type AuditLayout,
 } from "../codec/ring-disclosure-layout.js";
 
@@ -42,7 +43,7 @@ export interface AuditHead {
   readonly auditorPubkey: Bytes33;
   /** `envelope_ct`, the transmitted length is the stream layout's. */
   readonly envelope: Uint8Array;
-  /** `keys_ct`, 32 bytes per published slot. */
+  /** `keys_ct`, 32 bytes per published slot, then the voucher's sealed key under `layout.vouched`. */
   readonly recipientKeys: Uint8Array;
   readonly salt: Bytes16;
   readonly layout: AuditLayout;
@@ -390,7 +391,7 @@ function auditHeadElements(head: AuditHead): readonly Bytes32[] {
     checkedBytes<Bytes32>(head.ringId, 32, "ring id"),
     ...packedKey(taggedX25519(head.txViewingU)),
     ...packedKey(checkedBytes<Bytes33>(head.auditorPubkey, 33, "auditor pubkey")),
-    envelopeDigest(head.envelope, head.recipientKeys),
+    envelopeDigest(head.envelope, head.recipientKeys, head.layout),
     rightAlign(checkedBytes<Bytes16>(head.salt, 16, "salt")),
     rightAlign(Uint8Array.of(auditLayoutValue(head.layout))),
   ];
@@ -404,9 +405,18 @@ export function ciphertextDigest(ciphertext: Uint8Array): Bytes32 {
   ]) as Bytes32;
 }
 
-/** `Poseidon(ciphertext_digest(envelope_ct), ciphertext_digest(keys_ct))`. */
-export function envelopeDigest(envelope: Uint8Array, recipientKeys: Uint8Array): Bytes32 {
-  return poseidon([ciphertextDigest(envelope), ciphertextDigest(recipientKeys)]) as Bytes32;
+/** `Poseidon(ciphertext_digest(envelope_ct), ciphertext_digest(slot keys_ct), hash_bytes(voucher key_ct))`, zero in the last place off a vouched frame, Rust `AuditHead::stream_digest`. */
+export function envelopeDigest(
+  envelope: Uint8Array,
+  recipientKeys: Uint8Array,
+  layout: Pick<AuditLayout, "vouched">,
+): Bytes32 {
+  const { keys, voucher } = splitSealedKeys(layout, recipientKeys);
+  return poseidon([
+    ciphertextDigest(envelope),
+    ciphertextDigest(keys),
+    voucher === undefined ? ZERO_FIELD : hashBytes(voucher),
+  ]) as Bytes32;
 }
 
 /** `HashChain4(hash_bytes(record_ct_i))`, untagged since the proof derives each slot's length from its ring id. */

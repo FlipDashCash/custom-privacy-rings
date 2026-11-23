@@ -101,6 +101,7 @@ impl Case {
                 inputs: spend.inputs,
                 outputs: spend.outputs,
                 capacity: usize::from(shape.outputs),
+                vouched: false,
             },
             spans_capacity: self.approval,
         }

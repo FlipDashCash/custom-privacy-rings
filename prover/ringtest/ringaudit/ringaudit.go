@@ -159,6 +159,11 @@ func (s Stream) Keys(m int) []byte {
 	return s.Ciphertext[offset : offset+m*audit.KeyLen]
 }
 
+// Voucher is the voucher region a vouched frame transmits.
+func (s Stream) Voucher() []byte {
+	return s.Ciphertext[s.Ranges.VoucherOffset():][:audit.KeyLen]
+}
+
 func (s Stream) Record(i int) []byte {
 	return s.Records[i]
 }

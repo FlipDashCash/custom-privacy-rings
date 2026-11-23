@@ -107,7 +107,7 @@ pub use crate::{
         DelegateSource, DelegateTransfer, DelegateTransferInput, DelegateWithdrawal, Delegated,
         EntrySpend, NoteData, Owner, OwnerExposure, ProvenRingTransfer, PublicOwnerTransfer,
         PublicOwners, Rail, RailKind, ReadCache, Relayed, RelayedTransfer, RelayedTransferInput,
-        RingPayment, RingSender, RingTransfer, SealRow, TransferKey, UnsignedRelay,
+        RingPayment, RingSender, RingTransfer, SealRow, TransferKey, UnsignedRelay, VouchSigner,
     },
     records::{
         AuthorityRecordUpdate, MemberRecords, OwnerSaltCheck, RecordUpdateService,
