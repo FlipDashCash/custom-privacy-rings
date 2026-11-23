@@ -17,6 +17,7 @@ export function authoritySigner(): LocalnetSigner {
   return localnetSigner(JSON.parse(requiredEnv("RING_AUTHORITY_SIGNER")));
 }
 
+/** Ring RPC applies enrollments only for rings the live recipe reserves. */
 export async function reservedProgram(client: CustomRingClient): Promise<LocalnetSigner> {
   const programs: unknown = JSON.parse(requiredEnv("RING_E2E_PROGRAM_SIGNERS"));
   if (!Array.isArray(programs)) throw new Error("expected an array of reserved program signers");
@@ -27,7 +28,7 @@ export async function reservedProgram(client: CustomRingClient): Promise<Localne
       .send();
     if (value === null) return program;
   }
-  throw new Error("every reserved ring program is deployed");
+  throw new Error("every reserved ring program is deployed, the live recipe reserves too few");
 }
 
 function localnetSigner(descriptor: unknown): LocalnetSigner {
@@ -42,7 +43,7 @@ function localnetSigner(descriptor: unknown): LocalnetSigner {
     throw new Error("invalid localnet KMS signer descriptor");
   const signer = address(descriptor.address);
   const publicKey = new Uint8Array(getAddressEncoder().encode(signer));
-  const endpoint = requiredEnv("RING_LOCALNET_KMS");
+  const endpoint = requiredEnv("RING_RPC_LOCALNET_KMS");
   if (!/^127\.0\.0\.1:\d+$/.test(endpoint)) throw new Error("expected a loopback KMS endpoint");
   const keyArn = descriptor.key_arn;
   const algorithm = "ED25519_SHA_512";

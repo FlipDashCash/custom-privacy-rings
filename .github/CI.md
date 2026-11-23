@@ -11,7 +11,6 @@ It reports `ci sanity result`, which does not replace the required `ci result` c
 The TypeScript suites seed `crypto.getRandomValues` from `ZOLANA_RANDOM_SEED`, fixed in the workflow env, and a Rust test that seeds its draws reads it through `spr_test_utils::seed::random_seed`.
 Dispatch with `random_seed` to run them under another seed.
 A failing TypeScript test prints its seed and the replay command, a seeded Rust test prints its seed.
-CI omits prover logs from failure reports because proof errors can contain private witness values.
 
 The `keys` job downloads every ring proving key and the SPP ring transfer keys once and saves them under the hash of both lockfiles.
 The localnet and e2e jobs restore that entry and download only a key it lacks.
@@ -19,6 +18,9 @@ A pull request that changes a lockfile saves its own entry, the jobs of that pul
 
 The localnet matrix runs each shape and full capacity sweep of `program-tests/custom-ring/tests/ring_shapes.rs` as its own job.
 Those sweeps prove every catalog key.
+The localnet and TypeScript live jobs start `tools/localnet-kms.mjs`, a local KMS emulator, on the pinned Node.
+A failed localnet job prints the end of the Photon and ring indexer logs, and a failed TypeScript live job prints the end of each service log under `target/ts-sdk-e2e`.
+CI omits prover logs from failure reports because proof errors can contain private witness values.
 
 Dispatch the final pushed branch after the Zolana pin passes its release source check and the pinned proving keys are public.
 The `prover` and `ring-indexer` workflows have separate manual dispatches.

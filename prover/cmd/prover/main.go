@@ -14,16 +14,20 @@ import (
 func main() {
 	command := subcommand(os.Args[1:])
 	// Proof errors can contain private witness values.
-	private := command == "start" || command == "prove"
-	if private {
+	if command == "start" || command == "prove" {
 		zerolog.SetGlobalLevel(zerolog.Disabled)
 	}
 	if err := app.Run(os.Args); err != nil {
-		if private {
-			fmt.Fprintf(os.Stderr, "prover %s failed. Check the proving keys and backend configuration.\n", command)
-			os.Exit(1)
+		switch command {
+		case "start":
+			// Proofs fail inside request handlers and start returns none of their errors.
+			fmt.Fprintf(os.Stderr, "prover start failed: %v\n", err)
+		case "prove":
+			fmt.Fprintln(os.Stderr, "prover prove failed. Check the proving keys and backend configuration.")
+		default:
+			logging.Logger().Fatal().Err(err).Msg("App failed.")
 		}
-		logging.Logger().Fatal().Err(err).Msg("App failed.")
+		os.Exit(1)
 	}
 }
 

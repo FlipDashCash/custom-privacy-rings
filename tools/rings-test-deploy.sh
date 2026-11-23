@@ -1,13 +1,30 @@
 #!/usr/bin/env bash
 # tools/rings-test-deploy.sh {provision|up|status|down}
 # provision requires RINGS_TEST_SERVICE_KEY_ARN, RINGS_TEST_WRAPPING_KEY_ARN, RINGS_TEST_GENESIS_HASH and ring-rpc on PATH.
-# up requires RINGS_TEST_INDEXER_URL.
-# RINGS_TEST_SOLANA_RPC_URL defaults to devnet.
 # down retains the KMS keys and the custody record in Parameter Store.
+#
+# The deployment uses a derived auditor. Grant the deployer iam:PassRole on the
+# task and execution roles. Run provision once, then up. Each ring RPC task uses
+# version 1 of the custody record in Parameter Store. The load balancer accepts
+# plain HTTP. For production, terminate TLS on a trusted ingress and restrict
+# access to the ring RPC and prover origins.
+#
+# Needs aws (with write access), docker, jq, python3, git.
+#
+# Environment
+#   RINGS_TEST_PROVER_TAG     tag in zolana-ring-prover, default ring-prover-<branch>-<sha12>
+#   RINGS_TEST_RING_RPC_TAG   tag in zolana-ring-rpc, default ring-rpc-<branch>-<sha12>
+#   RINGS_TEST_INDEXER_URL    photon the ring RPC reads, required. A plain HTTP
+#                             one also gets a distribution of this stack in
+#                             front of it, the photon itself is not changed.
+#   RINGS_TEST_SOLANA_RPC_URL default https://api.devnet.solana.com
+#   AWS_REGION            default eu-north-1
+#   RINGS_TEST_VPC        VPC id, default the account's default VPC
+#   RINGS_TEST_ORIGINS    browser origins for the ring RPC, default * (any page)
 set -euo pipefail
 
 usage() {
-    sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2
+    sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//' >&2
     exit 2
 }
 
@@ -82,6 +99,7 @@ ensure_role() {
             Version:"2012-10-17", Statement:[{Effect:"Allow", Principal:{Service:"ecs-tasks.amazonaws.com"},
                 Action:"sts:AssumeRole", Condition:{StringEquals:{"aws:SourceAccount":$account},
                                                    ArnLike:{"aws:SourceArn":$source}}}]}')" >/dev/null
+        aws_ iam wait role-exists --role-name "$name"
     fi
     aws_ iam get-role --role-name "$name" --query Role.Arn --output text
 }
@@ -406,7 +424,7 @@ down() {
     [[ "$sg" == None || -z "$sg" ]] || { sleep 20; aws_ ec2 delete-security-group --group-id "$sg"; }
     aws_ logs delete-log-group --log-group-name "$log_group" 2>/dev/null || true
     if aws_ iam get-role --role-name "$task_role" >/dev/null 2>&1; then
-        aws_ iam delete-role-policy --role-name "$task_role" --policy-name custody
+        aws_ iam delete-role-policy --role-name "$task_role" --policy-name custody 2>/dev/null || true
         aws_ iam delete-role --role-name "$task_role"
     fi
     if aws_ iam get-role --role-name "$role" >/dev/null 2>&1; then

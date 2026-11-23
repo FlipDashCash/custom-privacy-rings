@@ -1,10 +1,12 @@
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { createServer } from "node:http";
 
-const port = Number(process.argv[2] ?? 8787);
-if (!Number.isInteger(port) || port < 0 || port > 65535) {
-  throw new Error("invalid local KMS port");
+const [portArgument] = process.argv.slice(2);
+if (!/^\d+$/.test(portArgument ?? "") || Number(portArgument) > 65535) {
+  throw new Error("usage: localnet-kms.mjs PORT, where 0 takes a free port");
 }
+const port = Number(portArgument);
+const region = "us-east-1";
 
 const ed25519 = "ECC_NIST_EDWARDS25519";
 const ed25519Algorithm = "ED25519_SHA_512";
@@ -13,7 +15,7 @@ const object = (value) => value !== null && typeof value === "object" && !Array.
 
 function createKey({ KeySpec = "SYMMETRIC_DEFAULT", KeyUsage = "ENCRYPT_DECRYPT" }) {
   const KeyId = randomUUID();
-  const Arn = `arn:aws:kms:us-east-1:000000000000:key/${KeyId}`;
+  const Arn = `arn:aws:kms:${region}:000000000000:key/${KeyId}`;
   if (KeySpec === ed25519 && KeyUsage === "SIGN_VERIFY") {
     keys.set(Arn, generateKeyPairSync("ed25519"));
   } else if (KeySpec === "SYMMETRIC_DEFAULT" && KeyUsage === "ENCRYPT_DECRYPT") {

@@ -72,10 +72,12 @@ done
 export ZOLANA_PROVER_KEYS_DIR="$keys_dir"
 
 # Under the scope dir, --stop signals only recorded receipts.
+source tools/localnet-kms-start.sh
 cleanup() {
-  if [[ -n "${kms_pid:-}" ]]; then
-    kill "$kms_pid" 2>/dev/null || true
-    wait "$kms_pid" 2>/dev/null || true
+  local status=$?
+  stop_localnet_kms
+  if (( status != 0 )); then
+    find "$ZOLANA_PROCESS_SCOPE_DIR" -type f -name '*.log' ! -name prover-server.log -exec tail -n 200 {} + || true
   fi
   "$ZOLANA_CLI_BIN" dev start --local --stop \
     --rpc-port "$ZOLANA_LOCALNET_RPC_PORT" --photon-port "$ZOLANA_LOCALNET_PHOTON_PORT" \
@@ -100,7 +102,6 @@ else
   cargo build --locked -p ring-indexer --features surfpool-fixture
   cargo build --locked -p custom-ring-cli -p zolana-ring-rpc --features zolana-ring-rpc/surfpool-fixture
 fi
-source tools/localnet-custody.sh
 start_localnet_kms "$ZOLANA_PROCESS_SCOPE_DIR/kms.addr"
 program="$(tools/localnet-custody.sh signer)"
 upgrade="$(tools/localnet-custody.sh signer)"

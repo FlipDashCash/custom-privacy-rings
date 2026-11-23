@@ -14,7 +14,6 @@ import {
   verifyRingProgram,
 } from "../../src/ring/index.js";
 import { liveClient, requiredEnv } from "./live-helpers.js";
-import { authoritySigner, reservedProgram } from "./localnet-kms.js";
 import { airdrop, sendInstruction } from "./ring-live-helpers.js";
 
 describe("ring program", () => {
@@ -23,8 +22,8 @@ describe("ring program", () => {
     // The registry binary first, the larger ring binary upgrades over it and extends the account.
     const first = RingProgramBinary.parse(await readFile(requiredEnv("USER_REGISTRY_PROGRAM_SO")));
     const ring = RingProgramBinary.parse(await readFile(requiredEnv("RING_PROGRAM_SO")));
-    const operator = authoritySigner();
-    const program = await reservedProgram(client);
+    const operator = await generateKeyPairSigner();
+    const program = await generateKeyPairSigner();
 
     for (const _ of [1, 2, 3]) await airdrop(client, operator.address);
     const deployed = await deployRingProgram({
