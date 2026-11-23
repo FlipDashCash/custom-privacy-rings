@@ -296,6 +296,10 @@ impl<S: TransactionSource + 'static> ServedRings for HubRings<S> {
         }
     }
 
+    async fn ring_salt(&self, ring: Address) -> Result<Option<[u8; 32]>, RingRpcError> {
+        Ok(Some(*self.0.service(Some(ring))?.ring_salt()?))
+    }
+
     async fn delegate(&self, ring: Address) -> Result<Option<Address>, RingRpcError> {
         Ok(self
             .0

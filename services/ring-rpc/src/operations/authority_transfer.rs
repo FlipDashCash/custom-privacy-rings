@@ -286,11 +286,15 @@ impl<S: TransactionSource> Hub<S> {
                 now,
             })
             .await?;
+        let list_salt = service.enrolled_list_salt(&owner.to_bytes()).await?;
+        // 3. An owner with no row reads and writes the private lists under the ring salt.
+        let ring_salt = match list_salt {
+            Some(_) => None,
+            None => Some(Hash(*service.ring_salt()?)),
+        };
         Ok(GetListSaltResponse {
-            list_salt: service
-                .enrolled_list_salt(&owner.to_bytes())
-                .await?
-                .map(Hash),
+            list_salt: list_salt.map(Hash),
+            ring_salt,
         })
     }
 
@@ -940,7 +944,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_list_writer_reads_the_enrolled_salt_and_another_key_nothing() {
+    async fn a_list_writer_reads_the_enrolled_salt_or_the_ring_salt_and_another_key_nothing() {
         let (fixture, _prover) = served(Keypair::new_from_array([21; 32]).pubkey()).await;
         let wallet = Keypair::new_from_array([11; 32]);
         fixture.enroll(&wallet, &NullifierKey::from_secret([11; 31]));
@@ -951,6 +955,7 @@ mod tests {
             .await
             .expect("the writer reads");
         assert_eq!(read.list_salt.expect("salt").0, LIST_SALT);
+        assert_eq!(read.ring_salt, None);
         let impostor = Keypair::new_from_array([22; 32]);
         let refused = fixture
             .hub
@@ -965,6 +970,13 @@ mod tests {
             .await
             .expect("a complete scan without the enrollment reads nothing");
         assert_eq!(none.list_salt, None);
+        let ring_salt = fixture
+            .hub
+            .service(Some(RING))
+            .expect("service")
+            .ring_salt()
+            .expect("ring salt");
+        assert_eq!(none.ring_salt.expect("ring salt").0, *ring_salt);
     }
 
     #[tokio::test]
