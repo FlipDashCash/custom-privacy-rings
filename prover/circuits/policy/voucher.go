@@ -13,14 +13,16 @@
 // Properties:
 // 1. Key signs the vouch digest of the transfer's private_tx_hash and withdrawal_hash on every proof, vouched or not.
 // 2. Identity is the Solana owner identity of Key, the member the voucher's records read at.
-// 3. While Active under Screened, the voucher meets every sender rule over its own records.
-// 4. While Active under Screened, a sender and a payment owner read the voucher's bit on Allow and PrivateAllow beside their own, every other list reads the subject's own record alone and an asset reads no voucher bit.
-// 5. A clear Active or a clear Screened reads the voucher off every list, every subject's view stays as its own records give it.
+// 3. Active is set only under Screened and only for a signer on Allow or PrivateAllow, so the key the stream seals is a listed key.
+// 4. While Active, the voucher meets every sender rule over its own records.
+// 5. While Active, a sender and a payment owner read the voucher's bit on Allow and PrivateAllow beside their own, every other list reads the subject's own record alone and an asset reads no voucher bit.
+// 6. A clear Active reads the voucher off every list, every subject's view stays as its own records give it.
 
 package policy
 
 import (
 	"github.com/consensys/gnark/frontend"
+	"github.com/reilabs/gnark-lean-extractor/v3/abstractor"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/ringgadget"
 	"github.com/helius-labs/zolana/prover/server/circuits/crypto/ed25519"
@@ -50,6 +52,15 @@ func (w VoucherWires) Open(api frontend.API, rc frontend.Rangechecker, active, d
 	// 2. Verify's SHA-512 transcript bounds every key and message byte, the identity and the stream read bounded bytes.
 	key := ed25519.Verify(api, ed25519.Inputs{PublicKey: w.PublicKey, Signature: w.Signature, Message: message[:]})
 	return Vouch{Active: active, Identity: gadget.SolanaOwnerIdentityBounded(api, key), Key: key}
+}
+
+// assertVouches holds an active voucher to a list it covers, an unlisted signer lends no bit and the auditor would still read its key as the transfer's voucher.
+func (v subjectView) assertVouches(api frontend.API, active frontend.Variable) {
+	listed := frontend.Variable(0)
+	for _, list := range vouchedLists {
+		listed = api.Add(listed, v.onList[list])
+	}
+	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: active, V: api.IsZero(listed)})
 }
 
 // cover merges the voucher's allow bits into a subject's view, a block or frozen bit stays the subject's own.

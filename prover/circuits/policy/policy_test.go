@@ -185,7 +185,9 @@ var refusals = []struct {
 	{name: "curator member behind a filled predecessor on the list", honest: curatedAbsent, world: func(w *ringpolicy.World) {
 		w.Curator[ringpolicy.Alice] = ringpolicy.Record{Lists: ringregistry.BlockBit}
 	}, in: "policy.paymentScreen.assert"},
-	{name: "voucher off the allow list", honest: vouched, world: func(w *ringpolicy.World) { w.Own[ringpolicy.Carol] = ringpolicy.Record{Lists: 0} }, in: "policy.assertSenderRules", wide: true},
+	{name: "voucher off the allow list", honest: vouched, world: func(w *ringpolicy.World) { w.Own[ringpolicy.Carol] = ringpolicy.Record{Lists: 0} }, in: "policy.subjectView.assertVouches", wide: true},
+	{name: "unlisted voucher that passes every sender rule", honest: vouchedListed, world: func(w *ringpolicy.World) { delete(w.Own, ringpolicy.Carol) }, in: "policy.subjectView.assertVouches"},
+	{name: "vouched transfer on a ring with no rule table", honest: vouched, world: func(w *ringpolicy.World) { w.Unscreened = true }, in: "policy.(*Policy).resolveSubjects"},
 	{name: "voucher on a forbidden list", honest: vouched, world: func(w *ringpolicy.World) {
 		w.Own[ringpolicy.Carol] = ringpolicy.Record{Lists: ringregistry.AllowBit | ringregistry.FrozenBit}
 	}, in: "policy.assertSenderRules"},
@@ -207,6 +209,13 @@ func vouched() ringpolicy.World {
 	w.Table.Rules = append(w.Table.Rules, ringpolicy.Require(policy.SubjectSender, ringregistry.AllowBit))
 	delete(w.Own, ringpolicy.Sender)
 	delete(w.Own, ringpolicy.Alice)
+	w.Voucher, w.Own[ringpolicy.Carol] = ringpolicy.Carol, ringpolicy.Record{Lists: ringregistry.AllowBit}
+	return w
+}
+
+// vouchedListed lists every owner, the table holds no sender allow rule and the voucher covers nobody.
+func vouchedListed() ringpolicy.World {
+	w := ringpolicy.Confidential()
 	w.Voucher, w.Own[ringpolicy.Carol] = ringpolicy.Carol, ringpolicy.Record{Lists: ringregistry.AllowBit}
 	return w
 }

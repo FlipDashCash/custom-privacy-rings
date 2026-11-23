@@ -117,8 +117,11 @@ func (p *Policy) resolveSubjects(api frontend.API, table tableView, g Gates, spe
 	resolved := subjects{owners: make([]subjectView, len(payments)), assets: make([]subjectView, len(payments)), mintPolicies: make([]mintPolicyWires, len(payments))}
 	resolved.senders, resolved.liveSenders = make([]subjectView, len(senders)), make([]frontend.Variable, len(senders))
 	// 3. The voucher reads its lists as any owner does, off a vouched transfer its query closes and it covers nobody.
-	resolved.vouched = api.Mul(g.Screened, spend.Vouch.Active)
+	// A vouched transfer needs the rules on and the signer on a list it covers. The stream seals the signer's key on the vouched bit alone, a frame vouched off the rules would hand the auditor a key no record names.
+	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: spend.Vouch.Active, V: api.Sub(1, g.Screened)})
+	resolved.vouched = spend.Vouch.Active
 	resolved.voucher = resolveOwner(p.VoucherEntry, resolved.vouched, spend.Vouch.Identity)
+	resolved.voucher.assertVouches(api, resolved.vouched)
 	// 4. A padded row and a dummy or unused payment close their gates and read zeros, the rule sections skip them on the same bits.
 	for j, sender := range senders {
 		// A zero identity pads the list and carries no rule.
