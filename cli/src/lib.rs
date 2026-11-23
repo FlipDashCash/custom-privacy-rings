@@ -8,6 +8,10 @@ pub use arguments::*;
 
 #[path = "runtime/context.rs"]
 mod context;
+#[path = "runtime/operator.rs"]
+mod operator;
+#[path = "config/operator_manifest.rs"]
+mod operator_manifest;
 #[path = "runtime/submission.rs"]
 mod submission;
 #[cfg(test)]
@@ -247,9 +251,12 @@ pub fn run(cli: Cli) -> Result<()> {
 fn dispatch(ctx: &mut Context, command: Command) -> Result<()> {
     match command {
         Command::Status => status::run(ctx),
-        Command::Deploy(args) => {
+        Command::Deploy { program, command } => {
             localnet::ensure_validator(ctx)?;
-            deploy::run(ctx, args)
+            match command {
+                Some(DeployCommand::CloseBuffer(buffer)) => deploy::close_buffer(ctx, buffer),
+                None => deploy::run(ctx, program),
+            }
         }
         Command::Init(args) => init::run(ctx, args),
         Command::Pipeline(args) => pipeline::run(ctx, args),
@@ -321,6 +328,36 @@ mod tests {
                 .command,
             Command::Localnet(LocalnetArgs { no_start: true })
         ));
+    }
+
+    #[test]
+    fn deploy_takes_its_binary_on_the_command_or_on_close_buffer_never_both() {
+        let parse = |args: &[&str]| {
+            let argv = ["zolana-ring", "deploy"].iter().chain(args).copied();
+            Cli::try_parse_from(argv).map(|cli| cli.command)
+        };
+        assert!(matches!(
+            parse(&[]),
+            Ok(Command::Deploy {
+                program: DeployArgs { program_so: None },
+                command: None
+            })
+        ));
+        assert!(matches!(
+            parse(&["--program-so", "ring.so"]),
+            Ok(Command::Deploy {
+                program: DeployArgs { program_so: Some(binary) },
+                command: None
+            }) if binary == Path::new("ring.so")
+        ));
+        assert!(matches!(
+            parse(&["close-buffer", "--program-so", "ring.so"]),
+            Ok(Command::Deploy {
+                program: DeployArgs { program_so: None },
+                command: Some(DeployCommand::CloseBuffer(DeployArgs { program_so: Some(binary) }))
+            }) if binary == Path::new("ring.so")
+        ));
+        assert!(parse(&["--program-so", "ring.so", "close-buffer"]).is_err());
     }
 
     #[test]
@@ -480,7 +517,7 @@ mod tests {
         assert!(transact.cosigner.cosigner.is_none());
     }
 
-    fn transaction_error(error: TransactionError) -> ClientError {
+    pub(crate) fn transaction_error(error: TransactionError) -> ClientError {
         ClientError::SolanaRpcTransaction {
             operation: "test",
             source: solana_rpc_client_api::client_error::Error {

@@ -18,8 +18,7 @@ use custom_ring_interface::{
     storage::Revision,
     storage::StorageRegistry,
     storage_instruction::{RecordWriteClassification, StorageUpdateIxData},
-    ApplyRecordsIxData, CustomRingError, RecordWrite, RecordWriteData, RingAccount, RingPolicy,
-    PROOF_UNITS,
+    ApplyRecordsIxData, CustomRingError, RecordWrite, RecordWriteData, RingPolicy, PROOF_UNITS,
 };
 use custom_ring_sdk::{
     CustomRing, InitializeStorage, PrivateStorageWrite, ProvenPrivateWrite, RingError,
@@ -53,7 +52,7 @@ use crate::{
         limits_within_bounds, ApplyInputsCheck, CheckedUpdate, ListApproval, QueuedCheck,
         QueuedState, QueuedUpdate, RecordUpdateCheck, RecordUpdateRefusal, UpdateContext,
     },
-    storage_chain::StorageChain,
+    storage_chain::{ring_policy, storage_registry, StorageChain},
     update_queue::{
         ApprovalCandidates, ApprovalScope, BatchOutcome, NewBatch, NewUpdate, OpenBatch,
         PendingApprovalPage, UpdateQueue,
@@ -470,6 +469,7 @@ impl RecordWriter {
             latest.blockhash,
             ComputeBudgetConfig::new(PROOF_UNITS),
         )?;
+        // Signed ahead of the checks, a slow signer never ages the slot they read.
         let transaction = signed_transaction(&message, &[self.authority.as_ref()]).await?;
         let policies = self.queued_authorities(batch.iter()).await?;
         let slot = self.chain.slot().await?;
@@ -627,19 +627,11 @@ impl RecordWriter {
     }
 
     async fn ring_policy(&self, ring: Address) -> Result<Option<RingPolicy>, RingRpcError> {
-        let account = self
-            .chain
-            .account(CustomRing::new(ring).policy_pda())
-            .await?;
-        Ok(account.and_then(|account| RingPolicy::decode(&account.owner, &ring, &account.data)))
+        ring_policy(self.chain.as_ref(), ring).await
     }
 
     async fn registry(&self, address: Address) -> Result<Option<StorageRegistry>, RingRpcError> {
-        Ok(self
-            .chain
-            .account(address)
-            .await?
-            .and_then(|account| StorageRegistry::decode(&account.owner, &account.data)))
+        storage_registry(self.chain.as_ref(), address).await
     }
 
     fn queue(&self) -> UpdateQueue<'_> {

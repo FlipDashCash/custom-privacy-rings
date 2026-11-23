@@ -278,6 +278,8 @@ fn cli_init_names_the_roles_and_reruns_from_the_chain() -> Result<()> {
     let project = RingProject::create(&env)?;
     let init = || project.run(&["init"]);
 
+    // 1. The local ring rpc releases the auditor key, `init` names the manifest's
+    //    policy signer as the policy authority.
     project.write_config(RingToml {
         env: &env,
         ring_rpc: &project.ring_rpc.url,
@@ -292,6 +294,7 @@ fn cli_init_names_the_roles_and_reruns_from_the_chain() -> Result<()> {
     assert_eq!(config.roles.policy, project.policy_authority);
     assert_eq!(config.auditor_pubkey, project.auditor.pubkey());
 
+    // 2. The rerun reads the key from the chain and never contacts `ring.invalid`.
     project.write_config(RingToml {
         env: &env,
         ring_rpc: "http://ring.invalid:1",

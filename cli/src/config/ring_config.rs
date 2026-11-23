@@ -14,9 +14,10 @@ use solana_address::{error::ParseAddressError, Address};
 use spr_client::{prover::tee::TeePolicy, AsyncProverClient};
 use spr_transaction::SOL_MINT;
 use toml_edit::{DocumentMut, Item};
-use zolana_operator_custody::{SignerRef, WrappedSecret};
 
+pub use crate::operator_manifest::OperatorManifest;
 use crate::{
+    context::expanded,
     file,
     macros::{named_enum, serde_via_str},
     policy::{render, PolicySpec},
@@ -31,7 +32,9 @@ pub struct RingConfig {
     /// `--target` overrides it for one command.
     pub target: Target,
     pub program_id: Base58Address,
-    pub operator_manifest: PathBuf,
+    /// Operator commands read it, a member's ring.toml names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_manifest: Option<PathBuf>,
     /// Fixed once `init` creates the config.
     #[serde(default, skip_serializing_if = "is_default")]
     pub mode: ModeName,
@@ -43,71 +46,6 @@ pub struct RingConfig {
     pub cosigner: Option<CoSignerSpec>,
     pub localnet: Urls,
     pub devnet: Urls,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct OperatorManifest {
-    pub region: String,
-    pub deployment: String,
-    pub localnet_kms: Option<std::net::SocketAddr>,
-    pub program: SignerRef,
-    pub upgrade_authority: SignerRef,
-    pub admin: SignerRef,
-    pub policy: SignerRef,
-    pub pauser: SignerRef,
-    pub cosign_admin: SignerRef,
-    pub enrollment_writer: SignerRef,
-    pub delegate: Option<SignerRef>,
-    pub auditor: Option<WrappedSecret>,
-    pub rpc_custody: Option<PathBuf>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct RpcSigningRoles {
-    pub service: SignerRef,
-    pub storage_authority: Option<SignerRef>,
-    pub enrollment_applier: Option<SignerRef>,
-}
-
-impl RpcSigningRoles {
-    pub fn load(path: &Path) -> Result<Self> {
-        serde_json::from_str(&file::read(path)?)
-            .with_context(|| format!("cannot read RPC custody from {}", path.display()))
-    }
-}
-
-impl OperatorManifest {
-    pub fn load(path: &Path) -> Result<Self> {
-        let manifest: Self = serde_json::from_str(&file::read(path)?)
-            .with_context(|| format!("cannot parse {}", path.display()))?;
-        ensure!(
-            !manifest.deployment.trim().is_empty(),
-            "missing KMS deployment"
-        );
-        Ok(manifest)
-    }
-
-    pub fn rpc_custody_path(&self, operator_path: &Path) -> Result<PathBuf> {
-        let path = self
-            .rpc_custody
-            .as_deref()
-            .context("missing RPC custody manifest")?;
-        expand_tilde(&crate::context::resolve(
-            &crate::context::config_root(operator_path),
-            path,
-        ))
-    }
-
-    pub fn role(&self, role: RingRole) -> &SignerRef {
-        match role {
-            RingRole::Admin => &self.admin,
-            RingRole::Policy => &self.policy,
-            RingRole::Pauser => &self.pauser,
-            RingRole::CosignAdmin => &self.cosign_admin,
-            RingRole::EnrollmentWriter => &self.enrollment_writer,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -333,7 +271,7 @@ impl Urls {
             None => self
                 .prover_tee_policy
                 .as_deref()
-                .map(|path| read_tee_policy(&expand_tilde(&crate::resolve(root, path))?))
+                .map(|path| read_tee_policy(&expanded(root, path)?))
                 .transpose()?,
         };
         let prover = AsyncProverClient::new(self.prover.clone());
@@ -357,6 +295,7 @@ impl Urls {
         reqwest::Url::parse(url).ok()?.port()
     }
 
+    /// A loopback, unspecified or `localhost` host.
     pub fn is_local(url: &str) -> bool {
         Self::local_address(url).is_some_and(|ip| ip.is_loopback() || ip.is_unspecified())
     }
@@ -380,7 +319,11 @@ impl Urls {
 
 impl RingConfig {
     pub fn operator_manifest_path(&self, root: &Path) -> Result<PathBuf> {
-        expand_tilde(&crate::context::resolve(root, &self.operator_manifest))
+        let path = self
+            .operator_manifest
+            .as_deref()
+            .context("ring.toml names no operator_manifest, an operator command needs one")?;
+        expanded(root, path)
     }
 
     /// `.env` next to ring.toml fills `${NAME}` placeholders, the environment wins.
@@ -482,6 +425,11 @@ pub fn expand_tilde(path: &Path) -> Result<PathBuf> {
 pub(crate) fn parse_ring_toml<T: DeserializeOwned>(path: &Path) -> Result<T> {
     let text = file::read(path)?;
     toml::from_str(&text).with_context(|| format!("cannot parse {}", path.display()))
+}
+
+pub(crate) fn parse_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
+    let text = file::read(path)?;
+    serde_json::from_str(&text).with_context(|| format!("cannot parse {}", path.display()))
 }
 
 /// Never overrides a variable already set.
@@ -673,6 +621,31 @@ ring_rpc = "http://127.0.0.1:8785"
         assert_eq!(
             toml::from_str::<RingConfig>(&rendered).expect("reparse"),
             config
+        );
+    }
+
+    #[test]
+    fn a_ring_without_an_operator_manifest_parses_and_refuses_operator_commands() {
+        let member = EXAMPLE.replacen("operator_manifest = \"operator.json\"\n", "", 1);
+        let config: RingConfig = toml::from_str(&member).expect("parse");
+        assert_eq!(config.operator_manifest, None);
+        assert!(!config
+            .render()
+            .expect("render")
+            .contains("operator_manifest"));
+        let refused = config
+            .operator_manifest_path(Path::new("ring"))
+            .expect_err("no manifest");
+        assert_eq!(
+            refused.to_string(),
+            "ring.toml names no operator_manifest, an operator command needs one"
+        );
+        let operator: RingConfig = toml::from_str(EXAMPLE).expect("parse");
+        assert_eq!(
+            operator
+                .operator_manifest_path(Path::new("ring"))
+                .expect("named"),
+            Path::new("ring/operator.json")
         );
     }
 

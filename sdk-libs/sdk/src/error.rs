@@ -335,6 +335,8 @@ pub enum RingError {
     RelayFailed { reason: String },
     #[error("the submission sends only an attempt its charged outflows were read from")]
     SubmissionUnproved,
+    #[error("the signers returned signatures the submission's message does not verify")]
+    SubmissionSignatures,
     #[error("{owner} holds no tracking leaf, enroll before a rotation")]
     RotationUnenrolled { owner: Address },
     #[error("the viewing history's current key differs from the key holder's")]

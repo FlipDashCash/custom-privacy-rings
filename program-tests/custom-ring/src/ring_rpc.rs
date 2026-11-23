@@ -89,6 +89,12 @@ impl ServerParts {
             relay: None,
         })
     }
+
+    #[must_use]
+    fn with_relay(mut self, relay: RelayServices) -> Self {
+        self.relay = Some(relay);
+        self
+    }
 }
 
 struct Served {
@@ -118,12 +124,12 @@ impl RingRpcSpec<'_> {
         let _ = tracing_subscriber::fmt()
             .with_env_filter(tracing_subscriber::EnvFilter::new("warn"))
             .try_init();
-        let mut server = ServerParts::new(Arc::new(self.env.payer.insecure_clone()))?;
+        let server = ServerParts::new(Arc::new(self.env.payer.insecure_clone()))?;
         let fee_payer = Keypair::new();
         let fee_payer_address = fee_payer.pubkey();
         self.env.fund(fee_payer_address, ACTOR_AIRDROP)?;
         let store = server.store.clone();
-        server.relay = Some(
+        let server = server.with_relay(
             RelayServicesInit {
                 fee_payer: Arc::new(fee_payer),
                 store: store.clone(),

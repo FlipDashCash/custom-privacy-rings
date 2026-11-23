@@ -17,7 +17,6 @@ name = "ring-rpc"
 path = "src/main.rs"
 
 [dependencies]
-zolana-operator-custody.workspace = true
 aes-gcm = { workspace = true }
 async-trait = { workspace = true }
 custom-ring-interface = { workspace = true }
@@ -70,6 +69,7 @@ spr-rpc-http = { workspace = true }
 spr-instruction = { workspace = true }
 spr-interface = { workspace = true }
 spr-keypair = { workspace = true }
+zolana-operator-custody = { workspace = true }
 zolana-ring-client = { workspace = true, features = ["rpc", "solana-rpc"] }
 zolana-ring-indexer = { workspace = true }
 zolana-ring-member-registry = { workspace = true }

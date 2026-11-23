@@ -215,6 +215,7 @@ serde_json = "1.0"
 serde_bytes = "0.11.19"
 serde_norway = "0.9.42"
 serde_path_to_error = "0.1"
+serde_with = "3"
 serial_test = "3.2.0"
 sha2 = "0.10"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "sqlite", "rust_decimal"] }
@@ -241,7 +242,6 @@ zerocopy = "0.8.25"
 # Browser (wasm) bindings.
 console_error_panic_hook = "0.1.7"
 js-sys = "0.3"
-serde_with = "3"
 serde-wasm-bindgen = "0.6.5"
 tsify = { version = "0.5.8", default-features = false, features = ["js"] }
 wasm-bindgen = "0.2.104"
@@ -261,9 +261,10 @@ ctr = { version = "0.9", default-features = false }
 hkdf = "0.12"
 percent-encoding = "2.3"
 zeroize = "1"
+subtle = "2.6"
 # HSM custody backends exercised by the keypair test suite.
-aws-config = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio", "credentials-process", "sso"] }
-aws-sdk-kms = "1"
+aws-config = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-kms = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-smithy-mocks = "0.3"
 criterion = "0.5"
 proptest = "1"

@@ -9,7 +9,6 @@ use custom_ring_interface::CoSignScope;
 use sea_orm::{ConnectionTrait, DbErr, TransactionTrait};
 use solana_address::Address;
 use solana_message::VersionedMessage;
-use solana_signature::Signature;
 use zolana_operator_custody::SigningIdentity;
 use zolana_ring_policy::{
     ApprovalInputs, ApprovalMask, Member, MintPolicy, OwnerDebit, PublicGross,
@@ -17,8 +16,8 @@ use zolana_ring_policy::{
 
 use crate::{
     cosign::{
-        AssetFlow, CoSignDecision, CoSignError, CoSignFlows, CoSignRefusal, CoSignSettlement,
-        CoSignerApproval, OwnerFlow,
+        AssetFlow, CoSignError, CoSignFlows, CoSignRefusal, CoSignSettlement, CoSignerApproval,
+        OwnerFlow,
     },
     cosign_usage::{
         AdmissionSlot, AssetScope, Measure, ReservationState, Reserve, UsageLedger, WindowSum,
@@ -239,7 +238,7 @@ impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
         {
             return Ok(Verdict::Refused(CoSignRefusal::NotApproved));
         }
-        let signature = request.ticket;
+        let ticket = request.ticket;
 
         let transaction = self.store.connection().begin().await?;
         let ledger = UsageLedger { conn: &transaction };
@@ -248,7 +247,7 @@ impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
             assets: &assets,
         };
         ledger.admit(scope).await?;
-        match ledger.reservation_state(&signature).await? {
+        match ledger.reservation_state(&ticket).await? {
             Some(ReservationState::Held | ReservationState::Confirmed) => {
                 return Ok(Verdict::Admitted);
             }
@@ -273,11 +272,11 @@ impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
             assets: &checks,
             held: &held,
         }
-        .decide(signature);
-        if let CoSignDecision::Signed(_) = decision {
+        .decide();
+        if decision == Verdict::Admitted {
             ledger
                 .reserve(Reserve {
-                    signature: &signature,
+                    ticket: &ticket,
                     ring: &request.ring,
                     slot,
                     flows: &flows,
@@ -289,22 +288,17 @@ impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
             return Err(CoSignError::LimitsUnavailable.into());
         }
         transaction.commit().await?;
-        Ok(match decision {
-            CoSignDecision::Signed(_) => Verdict::Admitted,
-            CoSignDecision::Refused(refusal) => Verdict::Refused(refusal),
-        })
+        Ok(decision)
     }
 
     async fn settle(&self, settlement: CoSignSettlement) -> Result<(), RingRpcError> {
         let ledger = UsageLedger {
             conn: self.store.connection(),
         };
-        let signature = match settlement {
-            CoSignSettlement::Confirmed(signature) | CoSignSettlement::Failed(signature) => {
-                signature
-            }
+        let ticket = match settlement {
+            CoSignSettlement::Confirmed(ticket) | CoSignSettlement::Failed(ticket) => ticket,
         };
-        let Some(scope) = ledger.settlement_scope(&signature).await? else {
+        let Some(scope) = ledger.settlement_scope(&ticket).await? else {
             return Ok(());
         };
         let transaction = self.store.connection().begin().await?;
@@ -533,16 +527,15 @@ impl WindowTotals {
 }
 
 impl LimitDecision<'_> {
-    /// `signature` is the co-signature over the request message.
-    pub fn decide(self, signature: Signature) -> CoSignDecision {
+    pub fn decide(self) -> Verdict {
         let within = self.assets.iter().all(|check| {
             window_caps(&check.policy.limits)
                 .iter()
                 .all(|cap| self.within(check.asset, cap))
         });
         match within {
-            true => CoSignDecision::Signed(signature),
-            false => CoSignDecision::Refused(CoSignRefusal::OverLimit),
+            true => Verdict::Admitted,
+            false => Verdict::Refused(CoSignRefusal::OverLimit),
         }
     }
 
@@ -629,7 +622,7 @@ mod tests {
 
     use super::cosign_window_tests::clear_usage;
     use super::*;
-    use crate::cosign::{ApproveClass, CoSignPolicy, CoSignRequest};
+    use crate::cosign::{ApproveClass, CoSignDecision, CoSignPolicy, CoSignRequest, Ticket};
 
     const ASSET: Address = Address::new_from_array([3; 32]);
     const SENDER_LIMITS: AssetLimits = AssetLimits {
@@ -684,7 +677,6 @@ mod tests {
     /// A gross past `u64::MAX` signs under a zero cap and refuses under any cap, a held total past it refuses.
     #[test]
     fn a_gross_past_u64_signs_uncapped_and_an_overflowing_total_refuses() {
-        let signature = Signature::from([1; 64]);
         let withdrawal = |withdrawn| OwnerFlow {
             owner: member(7),
             flow: AssetFlow {
@@ -708,28 +700,24 @@ mod tests {
                 assets: &limits(cap),
                 held,
             }
-            .decide(signature)
+            .decide()
         };
         let past_u64 = u128::from(u64::MAX) + 1;
         let idle = held(Measure::Withdrawn, None, 0);
-        assert_eq!(
-            decide(&[withdrawal(past_u64)], 0, &idle),
-            CoSignDecision::Signed(signature)
-        );
+        assert_eq!(decide(&[withdrawal(past_u64)], 0, &idle), Verdict::Admitted);
         assert_eq!(
             decide(&[withdrawal(past_u64)], u64::MAX, &idle),
-            CoSignDecision::Refused(CoSignRefusal::OverLimit)
+            Verdict::Refused(CoSignRefusal::OverLimit)
         );
         let full = held(Measure::Withdrawn, None, past_u64);
         assert_eq!(
             decide(&[withdrawal(0)], u64::MAX, &full),
-            CoSignDecision::Refused(CoSignRefusal::OverLimit)
+            Verdict::Refused(CoSignRefusal::OverLimit)
         );
     }
 
     #[test]
     fn each_owner_of_a_mixed_transfer_answers_for_its_own_window() {
-        let signature = Signature::from([1; 64]);
         let mut usage = held(Measure::Outflow, Some(7), 60);
         usage.0.extend(held(Measure::Outflow, Some(8), 0).0);
         let decide = |flows: &[OwnerFlow]| {
@@ -738,23 +726,22 @@ mod tests {
                 assets: &sender_check(),
                 held: &usage,
             }
-            .decide(signature)
+            .decide()
         };
         assert_eq!(
             decide(&[debit(7, 40), debit(8, 100)]),
-            CoSignDecision::Signed(signature),
+            Verdict::Admitted,
             "each owner stays at its own cap"
         );
         assert_eq!(
             decide(&[debit(7, 41), debit(8, 1)]),
-            CoSignDecision::Refused(CoSignRefusal::OverLimit),
+            Verdict::Refused(CoSignRefusal::OverLimit),
             "a credit of one owner never pays for another"
         );
     }
 
     #[test]
     fn a_ring_cap_sums_every_owner_of_the_transfer() {
-        let signature = Signature::from([1; 64]);
         let check = [AssetCheck {
             asset: ASSET,
             policy: policy(AssetLimits {
@@ -770,15 +757,12 @@ mod tests {
                 assets: &check,
                 held: &usage,
             }
-            .decide(signature)
+            .decide()
         };
-        assert_eq!(
-            decide(&[debit(7, 60), debit(8, 40)]),
-            CoSignDecision::Signed(signature)
-        );
+        assert_eq!(decide(&[debit(7, 60), debit(8, 40)]), Verdict::Admitted);
         assert_eq!(
             decide(&[debit(7, 60), debit(8, 41)]),
-            CoSignDecision::Refused(CoSignRefusal::OverLimit)
+            Verdict::Refused(CoSignRefusal::OverLimit)
         );
     }
 
@@ -908,6 +892,10 @@ mod tests {
 
     fn service_key() -> Address {
         Keypair::new_from_array([5; 32]).pubkey()
+    }
+
+    fn ticket(message: &VersionedMessage) -> Ticket {
+        Ticket::of(&Keypair::new_from_array([5; 32]).pubkey(), message)
     }
 
     fn signer_over(store: Store, limits: FixedLimits) -> LimitedCoSigner<FixedLimits> {
@@ -1192,10 +1180,11 @@ mod tests {
     async fn a_failed_transfer_frees_its_usage() {
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
         let co_signer = signer_over(store, within_limits());
-        let CoSignDecision::Signed(first) = co_signer.decide(&request(1, 60)).await.expect("first")
-        else {
-            panic!("the first transfer is within the cap");
-        };
+        let first = request(1, 60);
+        assert!(matches!(
+            co_signer.decide(&first).await.expect("first"),
+            CoSignDecision::Signed(_)
+        ));
         assert_eq!(
             co_signer.decide(&request(2, 60)).await.expect("second"),
             CoSignDecision::Refused(CoSignRefusal::OverLimit)
@@ -1203,7 +1192,7 @@ mod tests {
 
         for _ in 0..2 {
             co_signer
-                .settle(CoSignSettlement::Failed(first))
+                .settle(CoSignSettlement::Failed(ticket(&first.message)))
                 .await
                 .expect("settle");
         }
@@ -1377,7 +1366,7 @@ mod tests {
         );
         assert_eq!(store_rows(&reader).await, 2, "a retry adds no row");
         co_signer
-            .settle(CoSignSettlement::Failed(signature))
+            .settle(CoSignSettlement::Failed(ticket(&mixed().message)))
             .await
             .expect("settle");
         assert_eq!(store_rows(&reader).await, 0, "every row releases together");
@@ -1388,23 +1377,22 @@ mod tests {
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
         let reader = store.clone();
         let co_signer = signer_over(store, within_limits());
-        let CoSignDecision::Signed(signature) = co_signer
-            .decide(&CoSignRequest {
-                ring: Address::new_from_array([9; 32]),
-                message: message(1),
-                flows: CoSignFlows::Published(vec![debit(7, 10), debit(8, 20)]),
-            })
-            .await
-            .expect("decision")
-        else {
-            panic!("within the cap");
+        let request = CoSignRequest {
+            ring: Address::new_from_array([9; 32]),
+            message: message(1),
+            flows: CoSignFlows::Published(vec![debit(7, 10), debit(8, 20)]),
         };
+        assert!(matches!(
+            co_signer.decide(&request).await.expect("decision"),
+            CoSignDecision::Signed(_)
+        ));
+        let ticket = ticket(&request.message);
         co_signer
-            .settle(CoSignSettlement::Confirmed(signature))
+            .settle(CoSignSettlement::Confirmed(ticket))
             .await
             .expect("confirm");
         co_signer
-            .settle(CoSignSettlement::Failed(signature))
+            .settle(CoSignSettlement::Failed(ticket))
             .await
             .expect("late failure");
         assert_eq!(store_rows(&reader).await, 2);

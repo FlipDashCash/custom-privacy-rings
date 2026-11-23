@@ -13,6 +13,7 @@ use crate::{
     assets,
     controls::ring_auditor_key,
     line,
+    submission::Operators,
     transact::{PAYER_FEE_BUDGET, SENDER_FEE_BUDGET},
     Context, DelegateMoveArgs,
 };
@@ -30,6 +31,7 @@ pub fn run_move(ctx: &Context, args: DelegateMoveArgs) -> Result<()> {
         "the operator manifest names delegate {}, the ring pins {stored}",
         delegate.address()
     );
+    // The auditor key decrypts recovery material, only the delegate signs.
     let auditor = ring_auditor_key(ctx)?;
     let chain = ctx.chain();
     let enrollment = TrackingEnrollment {
@@ -98,7 +100,11 @@ pub fn run_move(ctx: &Context, args: DelegateMoveArgs) -> Result<()> {
     )?;
     ctx.require_balance(authority.address(), SENDER_FEE_BUDGET + PAYER_FEE_BUDGET)?;
     ctx.ring_rpc().check_serves(ctx.ring.program_id())?;
-    let moved = ctx.submit_operator(transfer, authority.as_ref(), &[delegate.as_ref()])?;
+    let operators = Operators {
+        payer: authority.as_ref(),
+        signers: &[delegate.as_ref()],
+    };
+    let moved = ctx.submit_operator(transfer, operators)?;
     for to in &args.to {
         line("to", to);
     }

@@ -14,6 +14,7 @@ use crate::{
     line,
     list::{ListChange, ListUpdate, Subject},
     policy,
+    submission::Operators,
     ui::{self, icon},
     CoSignerCommand, Context, DelegateCommand, ReaderCommand,
 };
@@ -87,7 +88,13 @@ pub fn cosigner(ctx: &Context, command: CoSignerCommand) -> Result<()> {
                 *policy != current.get(member).copied().unwrap_or_default()
             });
             // Set the co-signer before applying its threshold records.
-            ctx.send_operator(&[payer.as_ref(), cosign_admin.as_ref()], &[set])?;
+            ctx.send_operator(
+                Operators {
+                    payer: payer.as_ref(),
+                    signers: &[cosign_admin.as_ref()],
+                },
+                &[set],
+            )?;
             crate::records::write_mint_policies(ctx, &desired)?;
             line("co-signer", format_args!("{} set", spec.key));
             print_cosigners(ctx, Some(spec.key.0))
@@ -108,7 +115,13 @@ pub fn cosigner(ctx: &Context, command: CoSignerCommand) -> Result<()> {
                 rent_recipient: payer.address(),
             }
             .instruction();
-            ctx.send_operator(&[payer.as_ref(), cosign_admin.as_ref()], &[clear])?;
+            ctx.send_operator(
+                Operators {
+                    payer: payer.as_ref(),
+                    signers: &[cosign_admin.as_ref()],
+                },
+                &[clear],
+            )?;
             line("co-signer", format_args!("{signer} cleared"));
             print_cosigners(ctx, None)
         }
@@ -208,7 +221,13 @@ pub fn pause(ctx: &Context, paused: bool) -> Result<()> {
                 true => ctx.ring.pause(pauser.address())?,
                 false => ctx.ring.resume(pauser.address())?,
             };
-            ctx.send_operator(&[payer.as_ref(), pauser.as_ref()], &[set])?;
+            ctx.send_operator(
+                Operators {
+                    payer: payer.as_ref(),
+                    signers: &[pauser.as_ref()],
+                },
+                &[set],
+            )?;
             ["resumed", "paused"][usize::from(paused)]
         }
     };
@@ -246,7 +265,10 @@ pub fn delegate(ctx: &Context, command: DelegateCommand) -> Result<()> {
                 delegate: delegate.address(),
             };
             ctx.send_operator(
-                &[payer.as_ref(), admin.as_ref(), delegate.as_ref()],
+                Operators {
+                    payer: payer.as_ref(),
+                    signers: &[admin.as_ref(), delegate.as_ref()],
+                },
                 &[set.instruction()],
             )?;
             line("delegate", format_args!("{} set", delegate.address()));

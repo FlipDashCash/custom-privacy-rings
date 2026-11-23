@@ -1111,17 +1111,11 @@ impl Transfer<'_> {
         .fetch(ctx)
     }
 
-    fn submit(
-        &self,
-        ctx: &Context,
-        operation: RingOperation<'_>,
-        wallet: LocalSigners<'_>,
-    ) -> Result<Signature> {
+    fn signers<'s>(&self, wallet: LocalSigners<'s>) -> MemberSigners<'s> {
         MemberSigners {
             wallet,
             cosigner: self.cosigner,
         }
-        .settle(ctx, &mut RingSubmission::new(operation))
     }
 
     fn spend(&self, ctx: &Context, inputs: Vec<WalletUtxo>) -> Result<Signature> {
@@ -1180,25 +1174,17 @@ impl Transfer<'_> {
                         transfer = transfer.with_in_proof_owner(&self.sender.signing_key);
                     }
                 }
-                if let Some(wallet) = self.spend_public {
-                    let transfer = self.named_wallet(ctx, transfer.spend_public(wallet))?;
-                    return self.submit(
-                        ctx,
-                        transfer.into(),
-                        LocalSigners {
-                            payer,
-                            signers: &[],
-                        },
-                    );
-                }
-                self.submit(
-                    ctx,
-                    transfer.into(),
-                    LocalSigners {
-                        payer,
-                        signers: &[],
-                    },
-                )
+                let operation: RingOperation<'_> = match self.spend_public {
+                    Some(wallet) => self
+                        .named_wallet(ctx, transfer.spend_public(wallet))?
+                        .into(),
+                    None => transfer.into(),
+                };
+                self.signers(LocalSigners {
+                    payer,
+                    signers: &[],
+                })
+                .submit(ctx, operation)
             }
             Payees::Anonymous {
                 ring: payees,
@@ -1239,14 +1225,12 @@ impl Transfer<'_> {
                         Some(cosigner) => transfer.with_co_signer(cosigner),
                         None => transfer,
                     };
-                    return self.submit(
-                        ctx,
-                        transfer.into(),
-                        LocalSigners {
+                    return self
+                        .signers(LocalSigners {
                             payer: self.payer,
                             signers: &[self.sender],
-                        },
-                    );
+                        })
+                        .submit(ctx, transfer);
                 }
                 // The hidden owner never signs in public, the payer funds its spend.
                 let transfer = match self.payments.sdk_selects() {
@@ -1304,14 +1288,11 @@ impl Transfer<'_> {
                         }
                     }
                 };
-                self.submit(
-                    ctx,
-                    transfer.into(),
-                    LocalSigners {
-                        payer: self.payer,
-                        signers: &[],
-                    },
-                )
+                self.signers(LocalSigners {
+                    payer: self.payer,
+                    signers: &[],
+                })
+                .submit(ctx, transfer)
             }
         }
     }

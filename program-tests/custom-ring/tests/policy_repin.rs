@@ -238,7 +238,7 @@ fn a_curated_block_list_binds_beside_the_subscribers_own_approval_list() -> Resu
     let project = init_subscriber(&rings, &block(CURATED_BLOCK_TOML, &rings))?;
     custom_ring_test_validator::policy::EnrollOwners {
         ring,
-        owners: &[&env.sender.keypair, &env.recipient.keypair],
+        owners: &custom_ring_test_validator::policy::actor_owners(env),
         env,
     }
     .submit(&project.enrollment_rpc())?;

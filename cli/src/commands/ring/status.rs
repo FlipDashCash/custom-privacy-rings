@@ -24,14 +24,8 @@ pub fn run(ctx: &Context) -> Result<()> {
     line("target", config.target);
     line("program id", config.program_id);
     for (label, key) in [
-        (
-            "policy key",
-            ctx.operator_manifest().map(|m| m.policy.address),
-        ),
-        (
-            "upgrade key",
-            ctx.operator_manifest().map(|m| m.upgrade_authority.address),
-        ),
+        ("policy key", ctx.policy_address()),
+        ("upgrade key", ctx.upgrade_authority_address()),
     ] {
         match key {
             Ok(key) => line(label, key),
@@ -100,8 +94,8 @@ fn percent_encode(text: &str) -> String {
 
 fn print_chain(ctx: &Context) -> Result<()> {
     let (ring, chain) = (ctx.ring, ctx.chain());
-    if let Ok(manifest) = ctx.operator_manifest() {
-        let lamports = ctx.rpc().get_balance(manifest.policy.address)?;
+    if let Ok(policy) = ctx.policy_address() {
+        let lamports = ctx.rpc().get_balance(policy)?;
         let sol = lamports as f64 / 1e9;
         line("balance", format_args!("{sol} SOL ({lamports} lamports)"));
     }
@@ -206,13 +200,13 @@ fn program_state(ctx: &Context) -> Result<String> {
     let Some(data) = deploy::program_data(ctx)? else {
         return Ok("deployed (not upgradeable)".to_owned());
     };
-    let configured = ctx.operator_manifest().map(|m| m.upgrade_authority.address);
+    let configured = ctx.upgrade_authority_address();
     let relation = match (data.upgrade_authority, &configured) {
         (Some(authority), Ok(configured)) if authority == *configured => "matches",
         _ => "differs from",
     };
     Ok(format!(
-        "deployed, upgrade authority {}, {relation} ring.toml {}, capacity {} bytes",
+        "deployed, upgrade authority {}, {relation} the operator manifest {}, capacity {} bytes",
         data.upgrade_authority
             .map_or_else(|| "none (immutable)".to_owned(), |key| key.to_string()),
         configured.map_or_else(

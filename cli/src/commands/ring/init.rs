@@ -1,7 +1,7 @@
 //! `init`, every step skipped when the chain already holds it, so a rerun resumes.
 
 use anyhow::{bail, ensure, Context as _, Result};
-use custom_ring_interface::{RingRole, RingRoles};
+use custom_ring_interface::RingRoles;
 use custom_ring_sdk::{
     CustomRingConfig, InitialPolicy, Initialize, ListRegistry, PolicyTable, PolicyUpdate,
     RingError, RingKind, SourceOwner, UpdatePolicy,
@@ -14,10 +14,12 @@ use zolana_ring_policy::{ListId, RuleTable};
 
 use crate::{
     catalogue,
-    config::{expand_tilde, ModeName, Target},
+    config::{ModeName, Target},
     deploy, fund, line,
     policy::{self, CompiledPolicy, PolicySpec},
-    status, Context, InitArgs, Trust,
+    status,
+    submission::Operators,
+    Context, InitArgs, Trust,
 };
 
 const PRESENT: &str = "already present";
@@ -59,7 +61,7 @@ struct PolicyPin<'a> {
 }
 
 pub fn run(ctx: &Context, args: InitArgs) -> Result<()> {
-    let key_file = ctx.path(&expand_tilde(&args.auditor_pubkey_file)?);
+    let key_file = ctx.expanded_path(&args.auditor_pubkey_file)?;
     let compile = |spec: &PolicySpec| spec.compile(ctx.config.target);
     let policy = ctx.config.policy.as_ref().map(compile).transpose()?;
     let policy_authority = ctx.funded_authority()?;
@@ -78,7 +80,7 @@ pub fn run(ctx: &Context, args: InitArgs) -> Result<()> {
         })?;
         ensure!(
             authority == deployer.address(),
-            "program {program} is upgradeable by {authority}, ring.toml names {}",
+            "program {program} is upgradeable by {authority}, the operator manifest names {}",
             deployer.address()
         );
     }
@@ -181,21 +183,13 @@ impl ConfigCreation<'_> {
             return Ok(PRESENT);
         }
         let deployer = self.deployer.context(NEEDS_UPGRADE_AUTHORITY)?;
-        let roles = RingRoles {
-            admin: ctx.role_signer(RingRole::Admin)?.address(),
-            policy: policy_key,
-            pauser: ctx.role_signer(RingRole::Pauser)?.address(),
-            cosign_admin: ctx.role_signer(RingRole::CosignAdmin)?.address(),
-            enrollment_writer: ctx.role_signer(RingRole::EnrollmentWriter)?.address(),
-        };
+        let roles = ctx.kms_checked_roles()?;
         // The ring rpc pays every enrollment batch from the writer's balance.
         if ctx.config.target == Target::Localnet {
             ctx.fund(roles.enrollment_writer, fund::MIN_AUTHORITY_BALANCE)?;
-            if ctx.operator_manifest()?.localnet_kms.is_some() {
-                if let Some(storage) = ctx.local_rpc_roles()?.and_then(|rpc| rpc.storage_authority)
-                {
-                    ctx.fund(storage.address, fund::MIN_AUTHORITY_BALANCE)?;
-                }
+            let local_rpc = ctx.local_rpc_roles()?;
+            if let Some(storage) = local_rpc.and_then(|rpc| rpc.storage_authority.as_ref()) {
+                ctx.fund(storage.address, fund::MIN_AUTHORITY_BALANCE)?;
             }
         }
         let kind = match (self.mode, self.policy.is_some()) {
@@ -261,7 +255,11 @@ impl RingInitialization<'_> {
             }
             result => result?,
         };
-        ctx.send_operator(&[self.policy_authority, self.deployer], &[initialize])?;
+        let operators = Operators {
+            payer: self.policy_authority,
+            signers: &[self.deployer],
+        };
+        ctx.send_operator(operators, &[initialize])?;
         Ok(())
     }
 }
@@ -297,7 +295,7 @@ impl PolicyPin<'_> {
                         },
                     }
                     .instruction()?;
-                    ctx.send_operator(&[authority], &[point])?;
+                    ctx.send_operator(Operators::solo(authority), &[point])?;
                     pointed = true;
                     CREATED
                 };

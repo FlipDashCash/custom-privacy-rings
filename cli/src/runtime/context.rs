@@ -1,12 +1,9 @@
 //! Loaded ring context and transaction landing.
 
-#[path = "operator.rs"]
-mod operator;
-
-use zolana_operator_custody::{signed_transaction, Kms, OperatorSigner};
 use zolana_ring_client::rpc::RECORD_UPDATE_SLOTS;
 
 use super::*;
+use crate::operator::Custody;
 
 pub struct Context {
     pub config_path: PathBuf,
@@ -18,8 +15,7 @@ pub struct Context {
     /// The `--catalogue` override, `None` for the bundled file.
     pub catalogue: Option<String>,
     ask: RefCell<Box<dyn Ask>>,
-    operators: OnceCell<config::OperatorManifest>,
-    kms: OnceCell<Kms>,
+    pub(crate) custody: Custody,
     fee_payer_keypair: Option<PathBuf>,
     fee_payer: OnceCell<Keypair>,
 }
@@ -67,8 +63,7 @@ impl ContextSetup {
             zolana,
             catalogue,
             ask: RefCell::new(ask),
-            operators: OnceCell::new(),
-            kms: OnceCell::new(),
+            custody: Custody::default(),
             fee_payer_keypair,
             fee_payer: OnceCell::new(),
         })
@@ -79,6 +74,10 @@ impl Context {
     /// Relative to the ring directory, an absolute or `~` path as given.
     pub fn path(&self, path: &Path) -> PathBuf {
         resolve(&self.root, path)
+    }
+
+    pub fn expanded_path(&self, path: &Path) -> Result<PathBuf> {
+        expanded(&self.root, path)
     }
 
     pub fn rpc(&self) -> &SolanaRpc {
@@ -107,20 +106,15 @@ impl Context {
             .context("the ring has no config, run `zolana-ring init` first")
     }
 
+    /// An anonymous ring's member operations take `--fee-payer-keypair`, apart from the hidden owner.
     pub(crate) fn member_payer(&self, mode: RingMode, owner: Address) -> Result<&Keypair> {
-        let payer = match self.fee_payer.get() {
-            Some(payer) => payer,
-            None => {
-                let payer = match &self.fee_payer_keypair {
-                    Some(path) => file::read_keypair(&config::expand_tilde(&self.path(path))?)?,
-                    None if mode == RingMode::Anonymous => {
-                        bail!("an anonymous ring requires --fee-payer-keypair")
-                    }
-                    None => self.sender()?,
-                };
-                self.fee_payer.get_or_init(|| payer)
+        let payer = cached(&self.fee_payer, || match &self.fee_payer_keypair {
+            Some(path) => file::read_keypair(&self.expanded_path(path)?),
+            None if mode == RingMode::Anonymous => {
+                bail!("an anonymous ring requires --fee-payer-keypair")
             }
-        };
+            None => self.sender(),
+        })?;
         ensure!(
             mode != RingMode::Anonymous || payer.pubkey() != owner,
             "the fee payer {owner} is the hidden owner, paying would publish it"
@@ -169,27 +163,6 @@ impl Context {
                 signers,
                 self.budget(instructions),
             )
-            .map_err(transaction_failure)
-    }
-
-    pub fn send_operator(
-        &self,
-        signers: &[&dyn OperatorSigner],
-        instructions: &[Instruction],
-    ) -> Result<Signature> {
-        let payer = signers.first().context("a transaction needs a payer")?;
-        let (blockhash, _) = self.rpc().get_latest_blockhash()?;
-        let message = spr_client::rpc::compile_message(
-            &payer.address(),
-            instructions,
-            blockhash,
-            self.budget(instructions),
-        )?;
-        let transaction = self.block(async {
-            Ok::<_, anyhow::Error>(signed_transaction(&message, signers).await?)
-        })?;
-        self.rpc()
-            .process_transaction(transaction)
             .map_err(transaction_failure)
     }
 
@@ -267,7 +240,7 @@ impl Context {
             .map_or(unpinned, |roles| Trust::Pinned(roles.service.address)))
     }
 
-    fn budget(&self, instructions: &[Instruction]) -> ComputeBudgetConfig {
+    pub(crate) fn budget(&self, instructions: &[Instruction]) -> ComputeBudgetConfig {
         let units = instructions
             .iter()
             .map(|instruction| self.compute_units(instruction))
@@ -289,7 +262,7 @@ impl Context {
     }
 }
 
-fn transaction_failure(error: ClientError) -> anyhow::Error {
+pub(crate) fn transaction_failure(error: ClientError) -> anyhow::Error {
     match hint(&error) {
         Some(hint) => anyhow::Error::new(error).context(hint),
         None => error.into(),
@@ -309,5 +282,19 @@ pub(crate) fn resolve(root: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         root.join(path)
+    }
+}
+
+pub(crate) fn expanded(root: &Path, path: &Path) -> Result<PathBuf> {
+    config::expand_tilde(&resolve(root, path))
+}
+
+pub(crate) fn cached<T>(cell: &OnceCell<T>, load: impl FnOnce() -> Result<T>) -> Result<&T> {
+    match cell.get() {
+        Some(value) => Ok(value),
+        None => {
+            let value = load()?;
+            Ok(cell.get_or_init(|| value))
+        }
     }
 }

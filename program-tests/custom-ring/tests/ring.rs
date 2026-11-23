@@ -253,7 +253,7 @@ fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
 
     let output = project.run(&[
         "--fee-payer-keypair",
-        project.member_fee_payer()?,
+        project.write_member_fee_payer()?,
         "merge",
         "--count",
         &count,

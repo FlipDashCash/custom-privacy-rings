@@ -19,11 +19,12 @@ use custom_ring_interface::{
     compute_unit_limit,
     storage_instruction::{EnrollmentChange, ENROLLMENT_BATCH},
     tracking::{TrackingEntry, TrackingRegistry, TRACKING_ROOT_HISTORY},
-    InstructionTag, RegisterKeyCheck, RingAccount, RingPolicy,
+    InstructionTag, RegisterKeyCheck,
 };
 use custom_ring_sdk::{CustomRing, EnrollBatch, ProvenEnrollBatch};
 use log::warn;
 use solana_address::Address;
+use solana_transaction::versioned::VersionedTransaction;
 use spr_client::{compile_message, ComputeBudgetConfig};
 use thiserror::Error;
 use tokio::sync::Mutex as AsyncMutex;
@@ -37,7 +38,7 @@ use crate::{
     error::{redacted, RingRpcError},
     keyed_tasks::{KeyedTasks, MAX_CONCURRENT_KEYED_TASKS},
     landing::{signature_fees, Attempt, ChainOutcome, Landing},
-    storage_chain::StorageChain,
+    storage_chain::{ring_policy, StorageChain},
 };
 
 /// Writes one ring holds ahead of its batches, a full ring refuses the next until a batch lands.
@@ -130,6 +131,11 @@ struct HeldWrite {
 struct InFlight {
     attempt: Attempt,
     writes: Vec<HeldWrite>,
+}
+
+struct SignedBatch {
+    transaction: VersionedTransaction,
+    attempt: Attempt,
 }
 
 /// One ring's roles and tracking registry as its policy pins them.
@@ -489,20 +495,14 @@ impl RingPass<'_> {
         proven: ProvenEnrollBatch,
         writes: Vec<HeldWrite>,
     ) -> Result<(), RingRpcError> {
-        let latest = self.chain.latest_blockhash().await?;
-        let message = compile_message(
-            &self.payer.address(),
-            &proven.instructions,
-            latest.blockhash,
-            ComputeBudgetConfig::new(compute_unit_limit(InstructionTag::EnrollBatch)),
-        )?;
-        let transaction = match signed_transaction(&message, &[self.payer]).await {
-            Ok(transaction) => transaction,
+        let SignedBatch {
+            transaction,
+            attempt,
+        } = match self.signed_batch(&proven).await {
+            Ok(signed) => signed,
             Err(error) => {
-                for write in writes.into_iter().rev() {
-                    self.state.queued.push_front(write);
-                }
-                return Err(error.into());
+                self.restore(writes);
+                return Err(error);
             }
         };
         if !self.budget.charge(
@@ -512,15 +512,27 @@ impl RingPass<'_> {
             self.requeue(writes);
             return Err(EnrollmentRefusal::Budget.into());
         }
-        self.chain.send(&transaction).await?;
-        self.state.in_flight = Some(InFlight {
+        // Held ahead of the send, a failed send can still land and the next pass reads its outcome.
+        self.state.in_flight = Some(InFlight { attempt, writes });
+        self.chain.send(&transaction).await
+    }
+
+    async fn signed_batch(&self, proven: &ProvenEnrollBatch) -> Result<SignedBatch, RingRpcError> {
+        let latest = self.chain.latest_blockhash().await?;
+        let message = compile_message(
+            &self.payer.address(),
+            &proven.instructions,
+            latest.blockhash,
+            ComputeBudgetConfig::new(compute_unit_limit(InstructionTag::EnrollBatch)),
+        )?;
+        let transaction = signed_transaction(&message, &[self.payer]).await?;
+        Ok(SignedBatch {
             attempt: Attempt {
                 signature: transaction.signatures[0],
                 last_valid_block_height: latest.last_valid_block_height,
             },
-            writes,
-        });
-        Ok(())
+            transaction,
+        })
     }
 
     /// The oldest writes that apply in order from the current leaves, a stale one drops as one refusal fails the batch.
@@ -555,6 +567,13 @@ impl RingPass<'_> {
         Ok(batch)
     }
 
+    /// Back to the front in their order, no attempt is counted for a batch that was never sent.
+    fn restore(&mut self, writes: Vec<HeldWrite>) {
+        for held in writes.into_iter().rev() {
+            self.state.queued.push_front(held);
+        }
+    }
+
     /// Back to the front in their order, a write past its attempts drops so it never holds the ring.
     fn requeue(&mut self, writes: Vec<HeldWrite>) {
         for mut held in writes.into_iter().rev() {
@@ -570,11 +589,7 @@ async fn ring_tracking(
     chain: &dyn StorageChain,
     ring: Address,
 ) -> Result<Option<RingTracking>, RingRpcError> {
-    let Some(policy) = chain
-        .account(CustomRing::new(ring).policy_pda())
-        .await?
-        .and_then(|account| RingPolicy::decode(&account.owner, &ring, &account.data))
-    else {
+    let Some(policy) = ring_policy(chain, ring).await? else {
         return Ok(None);
     };
     let account = chain

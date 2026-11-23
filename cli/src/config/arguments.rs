@@ -51,11 +51,17 @@ pub enum Command {
     #[command(alias = "dev")]
     Localnet(LocalnetArgs),
     /// Deploy the released program under the authority, or upgrade it in place.
-    Deploy(DeployArgs),
+    #[command(args_conflicts_with_subcommands = true)]
+    Deploy {
+        #[command(flatten)]
+        program: DeployArgs,
+        #[command(subcommand)]
+        command: Option<DeployCommand>,
+    },
     /// Create the config with the auditor key, pin the policy and register the ring with SPP.
     Init(InitArgs),
     /// Deploy, init, check the ring rpc, grant the authority and transact.
-    Pipeline(ProgramArgs),
+    Pipeline(DeployArgs),
     /// Two ring deposits and one custom-ring transfer, read back from the ring RPC.
     Transact(TransactArgs),
     /// Pay recipients inside the ring from fresh deposits or from the sender's notes.
@@ -321,19 +327,16 @@ pub struct ReplyClaimsArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct ProgramArgs {
+pub struct DeployArgs {
     /// A local binary instead of the released ring program.
     #[arg(long)]
     pub program_so: Option<PathBuf>,
 }
 
-#[derive(Debug, Args)]
-pub struct DeployArgs {
-    #[command(flatten)]
-    pub program: ProgramArgs,
-    /// Refund the upload buffer for the selected program binary.
-    #[arg(long)]
-    pub close_buffer: bool,
+#[derive(Debug, Subcommand)]
+pub enum DeployCommand {
+    /// Refund the upload buffer of the selected program binary.
+    CloseBuffer(DeployArgs),
 }
 
 #[derive(Debug, Args)]

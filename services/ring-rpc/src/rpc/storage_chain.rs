@@ -1,8 +1,10 @@
 use std::{collections::HashMap, future::Future};
 
 use async_trait::async_trait;
-use custom_ring_interface::{storage::StorageRegistry, ApplyRecordsIxData};
-use custom_ring_sdk::{EnrollBatch, ProvenEnrollBatch, RingClient, StorageApplyProof};
+use custom_ring_interface::{
+    storage::StorageRegistry, ApplyRecordsIxData, RingAccount, RingPolicy,
+};
+use custom_ring_sdk::{CustomRing, EnrollBatch, ProvenEnrollBatch, RingClient, StorageApplyProof};
 use solana_account::Account;
 use solana_address::Address;
 use solana_signature::Signature;
@@ -64,6 +66,25 @@ impl OpeningFetch for dyn StorageChain {
     ) -> impl Future<Output = Result<GetStorageMemberOpeningsResponse, RingRpcError>> + Send {
         self.member_openings(request)
     }
+}
+
+/// `None` until `Initialize` wrote the ring's policy.
+pub(crate) async fn ring_policy(
+    chain: &dyn StorageChain,
+    ring: Address,
+) -> Result<Option<RingPolicy>, RingRpcError> {
+    let account = chain.account(CustomRing::new(ring).policy_pda()).await?;
+    Ok(account.and_then(|account| RingPolicy::decode(&account.owner, &ring, &account.data)))
+}
+
+pub(crate) async fn storage_registry(
+    chain: &dyn StorageChain,
+    address: Address,
+) -> Result<Option<StorageRegistry>, RingRpcError> {
+    Ok(chain
+        .account(address)
+        .await?
+        .and_then(|account| StorageRegistry::decode(&account.owner, &account.data)))
 }
 
 pub struct LiveStorageChain {

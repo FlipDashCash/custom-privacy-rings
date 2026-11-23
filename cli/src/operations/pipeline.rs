@@ -7,21 +7,15 @@ use zolana_ring_client::ReaderKey;
 
 use crate::{
     controls, defaults, deploy, init, line, localnet, probe, ring_rpc, transact, Context,
-    DeployArgs, InitArgs, ProgramArgs, ReaderCommand, Target, TransactArgs,
+    DeployArgs, InitArgs, ReaderCommand, Target, TransactArgs,
 };
 
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Steps already on chain are skipped, a rerun resumes where it stopped.
-pub fn run(ctx: &mut Context, program: ProgramArgs) -> Result<()> {
+pub fn run(ctx: &mut Context, args: DeployArgs) -> Result<()> {
     localnet::ensure(ctx)?;
-    deploy::run(
-        ctx,
-        DeployArgs {
-            program,
-            close_buffer: false,
-        },
-    )?;
+    deploy::run(ctx, args)?;
     let hosted = !ctx.config.urls().ring_rpc_is_local();
     if hosted {
         // A hosted service that cannot serve the ring must fail before `init` pins the auditor for good.

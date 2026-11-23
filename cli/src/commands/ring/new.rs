@@ -1,6 +1,6 @@
 //! `new`, the ring directory every other command reads.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{ensure, Context as _, Result};
 use serde::Deserialize;
@@ -62,16 +62,12 @@ pub fn run(args: NewArgs, ask: &mut dyn Ask, catalogue: Option<&str>) -> Result<
     .run(args.name, preset)?;
     let ring_dir = args.dest.join(&answers.name);
     refuse_existing(&ring_dir)?;
-    let path = expand_tilde(&args.operator_manifest)?;
-    let operator_manifest = path
-        .canonicalize()
-        .with_context(|| format!("cannot resolve operator manifest {}", path.display()))?;
-    let manifest = OperatorManifest::load(&operator_manifest)?;
+    let manifest = OperatorManifest::load(&expand_tilde(&args.operator_manifest)?)?;
     let config = RingConfig {
         name: answers.name,
         target: answers.target,
         program_id: Base58Address(manifest.program.address),
-        operator_manifest,
+        operator_manifest: Some(recorded_path(args.operator_manifest)?),
         mode: answers.mode,
         policy: answers.policy,
         cosigner: None,
@@ -109,6 +105,14 @@ pub(crate) fn read_policy(path: &Path) -> Result<PolicySpec> {
     Ok(file.policy)
 }
 
+/// ring.toml resolves a relative path against the ring directory.
+fn recorded_path(given: PathBuf) -> Result<PathBuf> {
+    if given.is_absolute() || given.starts_with("~") {
+        return Ok(given);
+    }
+    std::path::absolute(&given).with_context(|| format!("cannot resolve {}", given.display()))
+}
+
 fn refuse_existing(dir: &Path) -> Result<()> {
     ensure!(
         !dir.exists(),
@@ -120,13 +124,12 @@ fn refuse_existing(dir: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use zolana_ring_policy::{ListId, Rule, RuleTable, Subject};
 
     use super::*;
     use crate::{
         config::ModeName,
+        operator_manifest::tests::document as manifest_document,
         policy::PolicyError,
         ui::{Answer, Defaults, Scripted},
     };
@@ -140,25 +143,7 @@ mod tests {
     fn args(name: Option<&str>, dest: &Path, silent: bool) -> NewArgs {
         let manifest = dest.join("operator.json");
         std::fs::create_dir_all(dest).unwrap();
-        let mut document = serde_json::json!({ "region": "us-east-1", "deployment": "sample" });
-        for (index, role) in [
-            "program",
-            "upgrade_authority",
-            "admin",
-            "policy",
-            "pauser",
-            "cosign_admin",
-            "enrollment_writer",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            document[role] = serde_json::json!({
-                "key_arn": format!("arn:aws:kms:us-east-1:123456789012:key/key-{index}"),
-                "address": solana_address::Address::new_from_array([index as u8 + 1; 32]).to_string()
-            });
-        }
-        std::fs::write(&manifest, document.to_string()).unwrap();
+        std::fs::write(&manifest, manifest_document().to_string()).unwrap();
         NewArgs {
             name: name.map(str::to_owned),
             dest: dest.to_path_buf(),
@@ -175,13 +160,11 @@ mod tests {
 
         let ring_dir = dest.join("smoke");
         let config = RingConfig::load(&ring_dir.join(RING_TOML)).expect("load");
-        let manifest = OperatorManifest::load(&config.operator_manifest).expect("manifest");
+        let recorded = config.operator_manifest.as_deref().expect("recorded");
+        let manifest = OperatorManifest::load(recorded).expect("manifest");
         assert_eq!(config.program_id.0, manifest.program.address);
         assert_eq!(config.target, Target::Localnet);
-        assert_eq!(
-            config.operator_manifest,
-            dest.join("operator.json").canonicalize().unwrap()
-        );
+        assert_eq!(recorded, dest.join("operator.json"));
         assert_eq!(config.mode, ModeName::Confidential);
         assert!(config.policy.is_none());
         assert_eq!(
@@ -210,6 +193,28 @@ mod tests {
         let unnamed = run(args(None, &dest, true), &mut Defaults, None).expect_err("no name");
         assert!(unnamed.to_string().starts_with("a name is needed"));
         std::fs::remove_dir_all(dest).expect("cleanup");
+    }
+
+    #[test]
+    fn the_manifest_path_is_recorded_as_given_or_made_absolute() {
+        let working_dir = std::env::current_dir().expect("working directory");
+        for (given, recorded) in [
+            (
+                "/etc/ring/operator.json",
+                PathBuf::from("/etc/ring/operator.json"),
+            ),
+            (
+                "~/ring/operator.json",
+                PathBuf::from("~/ring/operator.json"),
+            ),
+            ("ops/operator.json", working_dir.join("ops/operator.json")),
+            ("./operator.json", working_dir.join("operator.json")),
+        ] {
+            assert_eq!(
+                recorded_path(PathBuf::from(given)).expect("recorded"),
+                recorded
+            );
+        }
     }
 
     #[test]

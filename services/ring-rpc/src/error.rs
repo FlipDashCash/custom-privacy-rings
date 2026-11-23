@@ -228,7 +228,10 @@ impl From<RingRpcError> for ErrorObjectOwned {
                 error!("indexer returned data outside the audit bounds");
                 (ErrorCode::InternalError, "indexer response is invalid")
             }
-            Custody(_) => (ErrorCode::InternalError, "operator signing failed"),
+            Custody(inner) => {
+                error!("operator signing failed {}", redacted(inner));
+                (ErrorCode::InternalError, "operator signing failed")
+            }
             Derivation(_) | AuditorKey(_) => {
                 error!("auditor key derivation failed");
                 (ErrorCode::InternalError, "auditor key is unavailable")
@@ -284,7 +287,29 @@ impl From<RingRpcError> for ErrorObjectOwned {
 
 #[cfg(test)]
 mod tests {
+    use solana_address::Address;
+    use zolana_operator_custody::CustodyError;
+
     use super::*;
+
+    #[test]
+    fn a_custody_failure_reaches_the_client_as_a_generic_internal_error() {
+        const DETAIL: &str =
+            "AccessDeniedException for arn:aws:kms:us-east-1:123456789012:key/1a2b3c4d";
+        let failures = [
+            CustodyError::Service(std::io::Error::other(DETAIL).into()),
+            CustodyError::AddressMismatch,
+            CustodyError::UnrequiredSigner(Address::new_from_array([7; 32])),
+        ];
+        for failure in failures {
+            let detail = failure.to_string();
+            let object = ErrorObjectOwned::from(RingRpcError::Custody(failure));
+            assert_eq!(object.code(), ErrorCode::InternalError.code());
+            assert_eq!(object.message(), "operator signing failed");
+            assert!(object.data().is_none());
+            assert!(!object.message().contains(&detail), "{detail}");
+        }
+    }
 
     #[test]
     fn a_logged_upstream_error_drops_the_api_key() {

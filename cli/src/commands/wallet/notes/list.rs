@@ -18,6 +18,7 @@ use crate::{
     line,
     policy::{self, Pinned},
     records,
+    submission::Operators,
     ui::{self, icon},
     Context, EntryArgs, ListCommand,
 };
@@ -238,14 +239,12 @@ impl EntryArgs {
     /// Checked against the chain, a salted entry under any other salt is one no proof reads.
     fn checked_subjects(&self, ctx: &Context) -> Result<Vec<Subject>> {
         let list_id = self.list_id.id();
+        let authority = ctx.authority()?;
+        let writer = ctx.request_signer(authority.as_ref());
         let read_salt = |owner: &Address| -> Result<[u8; 32]> {
             let list_salt = ctx
                 .ring_rpc()
-                .list_salt(
-                    ctx.ring_rpc_target()?,
-                    *owner,
-                    &ctx.request_signer(ctx.authority()?.as_ref()),
-                )?
+                .list_salt(ctx.ring_rpc_target()?, *owner, &writer)?
                 .with_context(|| format!("{owner} has no tracking row and no private record"))?;
             ctx.zolana
                 .block_on(
@@ -404,7 +403,7 @@ fn set_source(ctx: &Context, list_id: ListId, source: SourceOwner) -> Result<()>
             update: PolicyUpdate::Source { list_id, source },
         }
         .instruction()?;
-        ctx.send_operator(&[authority.as_ref()], &[point])?;
+        ctx.send_operator(Operators::solo(authority.as_ref()), &[point])?;
         "created"
     };
     let registry = policy::pinned(ctx)?

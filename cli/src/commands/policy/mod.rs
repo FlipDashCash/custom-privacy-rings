@@ -22,6 +22,7 @@ use zolana_ring_policy::{MintPolicy, RuleTable};
 use crate::{
     catalogue::check_curator,
     line,
+    submission::Operators,
     ui::{self, icon},
     Context, PolicyCommand,
 };
@@ -226,7 +227,7 @@ fn set(ctx: &Context, yes: bool) -> Result<()> {
         }),
     }
     .instruction()?;
-    ctx.send_operator(&[authority.as_ref()], &[replace])?;
+    ctx.send_operator(Operators::solo(authority.as_ref()), &[replace])?;
     crate::records::write_mint_policies(ctx, &mint_changes)?;
     let (before, after) = (
         current.account.generation(),

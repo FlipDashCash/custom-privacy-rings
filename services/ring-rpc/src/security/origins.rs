@@ -146,11 +146,7 @@ fn parse_origin(value: &str, transport: OriginTransport) -> Result<AllowedOrigin
         .ok_or(OriginError::InvalidOrigin)?
         .trim_matches(['[', ']'])
         .to_owned();
-    let loopback = host == "localhost"
-        || host
-            .parse::<IpAddr>()
-            .is_ok_and(|address| address.is_loopback());
-    let plain_allowed = loopback || transport == OriginTransport::InsecureHttp;
+    let plain_allowed = loopback_host(&host) || transport == OriginTransport::InsecureHttp;
     if url.scheme() != "https" && !(url.scheme() == "http" && plain_allowed) {
         return Err(OriginError::InsecureOrigin);
     }
@@ -158,6 +154,20 @@ fn parse_origin(value: &str, transport: OriginTransport) -> Result<AllowedOrigin
         serialized: url.origin().ascii_serialization(),
         host,
     })
+}
+
+pub(crate) fn loopback_url(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .is_some_and(|url| url.host_str().is_some_and(loopback_host))
+}
+
+fn loopback_host(host: &str) -> bool {
+    host == "localhost"
+        || host
+            .trim_matches(['[', ']'])
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 /// Hosts a relying party ID covers only when equal, never through a subdomain.
@@ -246,5 +256,24 @@ mod tests {
                 .build(),
             Err(OriginError::MissingRelyingParty)
         ));
+    }
+
+    #[test]
+    fn only_a_url_on_a_loopback_host_is_a_loopback_url() {
+        for (url, loopback) in [
+            ("http://localhost:8899", true),
+            ("http://127.0.0.1:8899", true),
+            ("https://127.8.0.1", true),
+            ("http://[::1]:8899", true),
+            ("https://api.devnet.solana.com", false),
+            ("http://localhost.example.com", false),
+            ("http://10.0.0.1:8899", false),
+            ("http://[::2]:8899", false),
+            ("127.0.0.1:8899", false),
+            ("localhost", false),
+            ("", false),
+        ] {
+            assert_eq!(loopback_url(url), loopback, "{url}");
+        }
     }
 }

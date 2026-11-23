@@ -11,10 +11,11 @@ use custom_ring_sdk::CustomRing;
 use solana_address::Address;
 use solana_keypair::Keypair;
 use solana_loader_v3_interface::instruction as loader;
+use solana_message::Hash;
 use solana_signer::Signer;
 use spr_keypair::{ShieldedKeypair, X25519Keypair};
 use spr_test_utils::localnet::isolated_temp_path;
-use zolana_operator_custody::{Kms, SecretContext, SecretPurpose};
+use zolana_operator_custody::{KeyArn, SecretContext, SecretPurpose};
 use zolana_ring_policy::ListId;
 
 use crate::{
@@ -86,32 +87,28 @@ impl RingProject {
     pub fn create(env: &TestEnv) -> Result<Self> {
         let dir = PathBuf::from(isolated_temp_path("zolana-ring-cli"));
         std::fs::create_dir_all(&dir)?;
-        let path = PathBuf::from(std::env::var("RING_TEST_OPERATOR_MANIFEST")?);
+        let variable = |name: &str| {
+            std::env::var(name).with_context(|| format!("{name} is unset, run the suite with just"))
+        };
+        let path = PathBuf::from(variable("RING_TEST_OPERATOR_MANIFEST")?);
         let mut operator = OperatorManifest::load(&path)?;
         let program_id = operator.program.address;
-        let genesis = env.client.rpc().genesis_hash()?;
+        let genesis = Hash::new_from_array(env.client.rpc().genesis_hash()?);
         let context = || SecretContext {
             deployment: &operator.deployment,
-            genesis_hash: &genesis,
+            genesis: &genesis,
             purpose: SecretPurpose::Auditor(program_id),
         };
-        let endpoint = operator
-            .localnet_kms
-            .context("missing local KMS endpoint")?;
-        let kms = Kms::localnet_for_genesis(endpoint, &genesis)?;
-        let wrapping_key = std::env::var("RING_TEST_WRAPPING_KEY")?;
-        let wrapped = env
-            .client
-            .block_on(async { anyhow::Ok(kms.provision(&wrapping_key, context()).await?) })?;
-        let secret = env
-            .client
-            .block_on(async { anyhow::Ok(kms.open(&wrapped, context()).await?) })?;
+        let wrapping_key: KeyArn = variable("RING_TEST_WRAPPING_KEY")?.parse()?;
+        let (wrapped, secret, writer) = env.client.block_on(async {
+            let kms = operator.kms_endpoint().connect(&genesis).await?;
+            let wrapped = kms.provision(wrapping_key, context()).await?;
+            let secret = kms.open(&wrapped, context()).await?;
+            let writer = kms.signer(&operator.enrollment_writer).await?;
+            anyhow::Ok((wrapped, secret, writer))
+        })?;
         let auditor = X25519Keypair::from_bytes(&secret);
-        let writer = env
-            .client
-            .block_on(async { anyhow::Ok(kms.signer(&operator.enrollment_writer).await?) })?;
         operator.auditor = Some(wrapped);
-        operator.rpc_custody = None;
         serde_json::to_writer(std::fs::File::create(dir.join("operator.json"))?, &operator)?;
         send(
             env.client.rpc(),
@@ -141,7 +138,7 @@ impl RingProject {
         custom_ring_cli::RingRpcClient::new(&self.ring_rpc.url)
     }
 
-    pub fn member_fee_payer(&self) -> Result<&'static str> {
+    pub fn write_member_fee_payer(&self) -> Result<&'static str> {
         let path = "fee-payer.json";
         solana_keypair::write_keypair_file(&Keypair::new(), self.dir.join(path))
             .map_err(|error| anyhow!("write member fee payer {error}"))?;

@@ -7,21 +7,22 @@ use solana_signature::Signature;
 use solana_signer::{Signer, SignerError};
 use spr_indexer_api::{Base64String, Hash};
 use spr_keypair::X25519Pubkey;
-use zolana_operator_custody::OperatorSigner;
+use zolana_operator_custody::{CollectedSignature, OperatorSigner};
 use zolana_ring_client::{
     auditor_view_tag,
     rpc::{
-        unix_now, AuditorKeyStatement, CreateAuditorKeyRequest, CreateAuditorKeyResponse,
-        CreateRecordsRegistryRequest, CreateRecordsRegistryResponse, DecryptedTransaction,
-        DecryptedTransactionsPage, GetDecryptedTransactionsRequest,
-        GetDecryptedTransactionsResponse, GetListSaltResponse, GetPendingListApprovalsRequest,
-        GetPendingListApprovalsResponse, GetRecordUpdateStatusRequest, HealthResponse,
-        ListApprovalScope, ListSaltAttestation, ListSaltRequest, PendingListApproval, ReadTarget,
-        RecordUpdateStatus, RingState, RingStatusRequest, RingStatusResponse,
-        SubmitEnrollmentRequest, SubmitEnrollmentResponse, SubmitRecordUpdateRequest,
-        SubmitRecordUpdateResponse, CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY,
-        GET_DECRYPTED_TRANSACTIONS, GET_LIST_SALT, GET_PENDING_LIST_APPROVALS,
-        GET_RECORD_UPDATE_STATUS, HEALTH, RING_STATUS, SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE,
+        unix_now, AuditorKeyStatement, CoSignTransactionRequest, CoSignTransactionResponse,
+        CreateAuditorKeyRequest, CreateAuditorKeyResponse, CreateRecordsRegistryRequest,
+        CreateRecordsRegistryResponse, DecryptedTransaction, DecryptedTransactionsPage,
+        GetDecryptedTransactionsRequest, GetDecryptedTransactionsResponse, GetListSaltResponse,
+        GetPendingListApprovalsRequest, GetPendingListApprovalsResponse,
+        GetRecordUpdateStatusRequest, HealthResponse, ListApprovalScope, ListSaltAttestation,
+        ListSaltRequest, PendingListApproval, ReadTarget, RecordUpdateStatus, RingState,
+        RingStatusRequest, RingStatusResponse, SubmitEnrollmentRequest, SubmitEnrollmentResponse,
+        SubmitRecordUpdateRequest, SubmitRecordUpdateResponse, CO_SIGN_TRANSACTION,
+        CREATE_AUDITOR_KEY, CREATE_RECORDS_REGISTRY, GET_DECRYPTED_TRANSACTIONS, GET_LIST_SALT,
+        GET_PENDING_LIST_APPROVALS, GET_RECORD_UPDATE_STATUS, HEALTH, RING_STATUS,
+        SUBMIT_ENROLLMENT, SUBMIT_RECORD_UPDATE,
     },
 };
 
@@ -42,6 +43,7 @@ pub struct AttestedAuditorKey {
     pub service_pubkey: Address,
 }
 
+#[derive(Clone)]
 pub struct RingRpcClient {
     url: String,
     http: reqwest::blocking::Client,
@@ -72,7 +74,7 @@ impl Signer for RequestSigner<'_> {
     fn try_sign_message(&self, message: &[u8]) -> Result<Signature, SignerError> {
         self.context
             .block(async { anyhow::Ok(self.operator.sign(message).await?) })
-            .map_err(|error| SignerError::Custom(error.to_string()))
+            .map_err(|error| SignerError::Custom(format!("{error:#}")))
     }
 
     fn is_interactive(&self) -> bool {
@@ -244,6 +246,23 @@ impl RingRpcClient {
         Ok(response.list_salt.map(|salt| salt.0))
     }
 
+    /// The caller compares the answering signer with the ring's co-signer.
+    pub fn co_sign_transaction(
+        &self,
+        ring: Address,
+        message: Vec<u8>,
+    ) -> Result<CollectedSignature> {
+        let request = CoSignTransactionRequest {
+            ring: ring.into(),
+            message: message.into(),
+        };
+        let answer: CoSignTransactionResponse = self.call(CO_SIGN_TRANSACTION, request)?;
+        Ok(CollectedSignature {
+            signer: answer.signer.0,
+            signature: answer.signature.0,
+        })
+    }
+
     /// Held by the ring's enrollment writer on return, its next batch lands it.
     pub fn submit_enrollment(&self, request: SubmitEnrollmentRequest) -> Result<()> {
         let _held: SubmitEnrollmentResponse = self.call(SUBMIT_ENROLLMENT, request)?;
@@ -320,11 +339,7 @@ impl RingRpcClient {
         Ok(status.state)
     }
 
-    pub(crate) fn call<T: DeserializeOwned>(
-        &self,
-        method: &str,
-        params: impl Serialize,
-    ) -> Result<T> {
+    fn call<T: DeserializeOwned>(&self, method: &str, params: impl Serialize) -> Result<T> {
         let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
         let response: JsonRpcResponse<T> = self
             .http

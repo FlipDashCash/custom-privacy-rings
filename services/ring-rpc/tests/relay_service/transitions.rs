@@ -6,7 +6,7 @@ use tokio::sync::Notify;
 use zolana_ring_client::rpc::RelayId;
 use zolana_ring_rpc::{
     ChainOutcome, ChainSubmit, CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement,
-    LatestBlockhash,
+    LatestBlockhash, Ticket,
 };
 
 use super::*;
@@ -260,10 +260,12 @@ async fn duplicate_submissions_send_once_and_keep_the_co_sign_allowance() {
     let [sent] = fixture.sent().try_into().expect("one sent transaction");
     assert_eq!(landed, confirmed(&sent));
     assert_eq!(overtaken, landed);
-    let co_signature = co_signer.keypair.sign_message(&sent.message.serialize());
     assert_eq!(
         co_signer.settled(),
-        [CoSignSettlement::Confirmed(co_signature)]
+        [CoSignSettlement::Confirmed(Ticket::of(
+            &co_signer.keypair.pubkey(),
+            &sent.message
+        ))]
     );
 }
 
@@ -308,10 +310,12 @@ async fn a_stale_worker_does_not_overwrite_a_settled_relay() {
     assert_eq!(landed, confirmed(&sent));
     assert_eq!(overtaken, landed);
     assert_eq!(stored_status(&fixture, &relay_id).await, "confirmed");
-    let co_signature = co_signer.keypair.sign_message(&sent.message.serialize());
     assert_eq!(
         co_signer.settled(),
-        [CoSignSettlement::Confirmed(co_signature)]
+        [CoSignSettlement::Confirmed(Ticket::of(
+            &co_signer.keypair.pubkey(),
+            &sent.message
+        ))]
     );
 }
 
@@ -398,10 +402,12 @@ async fn a_refused_first_send_keeps_a_pending_tracker_copy_open() {
     *fixture.chain.outcome.lock().expect("outcome") = None;
     assert_eq!(status(&tracker, &relay_id).await, confirmed(&sent));
     assert_eq!(status(&tracker, &relay_id).await, confirmed(&sent));
-    let co_signature = co_signer.keypair.sign_message(&sent.message.serialize());
     assert_eq!(
         co_signer.settled(),
-        [CoSignSettlement::Confirmed(co_signature)]
+        [CoSignSettlement::Confirmed(Ticket::of(
+            &co_signer.keypair.pubkey(),
+            &sent.message
+        ))]
     );
 }
 

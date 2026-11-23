@@ -1,5 +1,5 @@
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     Mutex,
 };
 
@@ -9,7 +9,7 @@ use custom_ring_interface::{
     storage::{Revision, StorageRegistry},
     storage_instruction::{EnrollIxData, EnrollmentWrite},
     tracking::viewing_hash,
-    ApplyRecordsIxData, CustomRingProof, RingRoles, RING_POLICY, STORAGE_PROGRAM_ID,
+    ApplyRecordsIxData, CustomRingProof, RingPolicy, RingRoles, RING_POLICY, STORAGE_PROGRAM_ID,
 };
 use custom_ring_sdk::{OwnedChange, OwnerEnrollment};
 use solana_account::Account;
@@ -38,6 +38,8 @@ const RING: Address = Address::new_from_array([1; 32]);
 const REGISTRY: Address = Address::new_from_array([2; 32]);
 const UNINITIALIZED_RING: Address = Address::new_from_array([11; 32]);
 const SLOT: u64 = 1_000;
+/// Block heights a blockhash stays valid past the height it was read at.
+const BLOCKHASH_WINDOW: u64 = 100;
 
 #[derive(Default)]
 struct StubChain {
@@ -51,6 +53,10 @@ struct StubChain {
     during_proof: Mutex<Option<DuringProof>>,
     /// Owner to the viewing hash its leaf holds.
     leaves: Mutex<HashMap<[u8; 32], [u8; 32]>>,
+    height: AtomicU64,
+    blockhash_unavailable: AtomicBool,
+    /// The next send reports a failure and records nothing.
+    send_fails: AtomicBool,
 }
 
 type DuringProof = Box<dyn Fn(&StubChain) + Send + Sync>;
@@ -132,17 +138,23 @@ impl ChainSubmit for StubChain {
     }
 
     async fn latest_blockhash(&self) -> Result<LatestBlockhash, RingRpcError> {
+        if self.blockhash_unavailable.load(Ordering::Relaxed) {
+            return Err(RingRpcError::StateUnavailable);
+        }
         Ok(LatestBlockhash {
             blockhash: solana_hash::Hash::new_from_array([7; 32]),
-            last_valid_block_height: u64::MAX,
+            last_valid_block_height: self.height.load(Ordering::Relaxed) + BLOCKHASH_WINDOW,
         })
     }
 
     async fn block_height(&self) -> Result<u64, RingRpcError> {
-        Ok(0)
+        Ok(self.height.load(Ordering::Relaxed))
     }
 
     async fn send(&self, transaction: &VersionedTransaction) -> Result<(), RingRpcError> {
+        if self.send_fails.swap(false, Ordering::Relaxed) {
+            return Err(RingRpcError::StateUnavailable);
+        }
         self.sent.lock().unwrap().push(transaction.clone());
         Ok(())
     }
@@ -430,20 +442,88 @@ impl OperatorSigner for UnavailablePayer {
     }
 }
 
+#[derive(Clone, Copy)]
+enum UnsentBatch {
+    SignerUnavailable,
+    BlockhashUnavailable,
+}
+
 #[tokio::test]
-async fn an_unavailable_signer_preserves_enrollments_and_the_fee_budget() {
+async fn a_batch_that_fails_ahead_of_its_send_keeps_its_writes_attempts_and_budget() {
+    for fault in [
+        UnsentBatch::SignerUnavailable,
+        UnsentBatch::BlockhashUnavailable,
+    ] {
+        let chain = StubChain::new();
+        chain.enrolled([3]);
+        let mut applier = budgeted(&chain, signature_fees(2)).await;
+        let signer = applier.payer.clone();
+        match fault {
+            UnsentBatch::SignerUnavailable => applier.payer = Arc::new(UnavailablePayer),
+            UnsentBatch::BlockhashUnavailable => {
+                chain.blockhash_unavailable.store(true, Ordering::Relaxed)
+            }
+        }
+        applier.submit(rotation(3)).await.expect("held");
+        for _ in 0..MAX_ENROLLMENT_ATTEMPTS {
+            applier.flush().await;
+        }
+        assert!(chain.sent.lock().unwrap().is_empty());
+        {
+            let state = applier.ring_state(RING);
+            let state = state.lock().await;
+            assert!(state.in_flight.is_none());
+            assert_eq!(state.queued.front().expect("restored").attempts, 0);
+        }
+        assert_eq!(applier.budget.spent().total, 0);
+
+        applier.payer = signer;
+        chain.blockhash_unavailable.store(false, Ordering::Relaxed);
+        applier.flush().await;
+        assert_eq!(chain.sent.lock().unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn a_batch_whose_send_failed_stays_in_flight_and_its_landing_ends_it() {
+    let chain = StubChain::new();
+    chain.enrolled([3, 4]);
+    let applier = applier(&chain).await;
+    applier.submit(rotation(3)).await.expect("held");
+    chain.send_fails.store(true, Ordering::Relaxed);
+
+    applier.flush().await;
+    applier.flush().await;
+    assert_eq!(chain.proofs.load(Ordering::Relaxed), 1);
+
+    chain.landed(ChainOutcome::Confirmed { slot: SLOT });
+    applier.submit(rotation(4)).await.expect("held");
+    applier.flush().await;
+    assert_eq!(chain.proved(), [(REGISTRY, 1), (REGISTRY, 1)]);
+}
+
+#[tokio::test]
+async fn a_batch_whose_send_failed_requeues_at_expiry_with_one_attempt() {
     let chain = StubChain::new();
     chain.enrolled([3]);
-    let mut applier = budgeted(&chain, signature_fees(2)).await;
-    let signer = std::mem::replace(&mut applier.payer, Arc::new(UnavailablePayer));
+    let applier = budgeted(&chain, 2 * signature_fees(2)).await;
     applier.submit(rotation(3)).await.expect("held");
-    for _ in 0..MAX_ENROLLMENT_ATTEMPTS {
-        applier.flush().await;
-    }
-    assert!(chain.sent.lock().unwrap().is_empty());
-    applier.payer = signer;
+    chain.send_fails.store(true, Ordering::Relaxed);
     applier.flush().await;
+    assert!(chain.sent.lock().unwrap().is_empty());
+
+    chain.height.store(BLOCKHASH_WINDOW + 1, Ordering::Relaxed);
+    applier.flush().await;
+
     assert_eq!(chain.sent.lock().unwrap().len(), 1);
+    let state = applier.ring_state(RING);
+    let state = state.lock().await;
+    let resent = state
+        .in_flight
+        .as_ref()
+        .expect("the requeued write is sent again");
+    assert_eq!(resent.writes[0].attempts, 1);
+    assert_eq!(applier.budget.spent().total, 2 * signature_fees(2));
 }
 
 #[tokio::test]

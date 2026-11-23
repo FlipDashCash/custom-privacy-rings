@@ -37,7 +37,7 @@ fn cli_pays_an_anonymous_ring_address_end_to_end() -> Result<()> {
     .submit(&project.enrollment_rpc())?;
 
     // 2. The fee payer funds two deposits into the hidden balance and the payment.
-    let fee_payer = project.member_fee_payer()?;
+    let fee_payer = project.write_member_fee_payer()?;
     let paid = project.run(&[
         "--fee-payer-keypair",
         fee_payer,

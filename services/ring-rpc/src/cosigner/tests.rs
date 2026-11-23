@@ -1,10 +1,15 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
 
 use async_trait::async_trait;
 use solana_address::Address;
 use solana_keypair::Keypair;
 use solana_message::{Message, VersionedMessage};
+use solana_signature::Signature;
 use solana_signer::Signer;
+use zolana_operator_custody::{CustodyError, OperatorSigner};
 use zolana_ring_policy::Member;
 
 use super::*;
@@ -53,6 +58,41 @@ fn recorded(verdict: Verdict) -> (Recorded, Arc<Mutex<Vec<CoSignSettlement>>>) {
         settled: settled.clone(),
     };
     (rule, settled)
+}
+
+struct Counting {
+    signer: Keypair,
+    calls: AtomicUsize,
+    fails: bool,
+}
+
+impl Counting {
+    fn new(fails: bool) -> Arc<Self> {
+        Arc::new(Self {
+            signer: Keypair::new_from_array([5; 32]),
+            calls: AtomicUsize::new(0),
+            fails,
+        })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait]
+impl OperatorSigner for Counting {
+    fn address(&self) -> Address {
+        self.signer.pubkey()
+    }
+
+    async fn sign(&self, message: &[u8]) -> Result<Signature, CustodyError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        match self.fails {
+            true => Err(CustodyError::Signature),
+            false => Ok(self.signer.sign_message(message)),
+        }
+    }
 }
 
 struct Named(Parties);
@@ -119,18 +159,57 @@ async fn an_admitted_message_carries_the_signers_signature() {
 async fn a_later_refusal_releases_the_earlier_rule_and_signs_nothing() {
     let (reserving, released) = recorded(Verdict::Admitted);
     let (refusing, _) = recorded(Verdict::Refused(CoSignRefusal::Custom));
-    let signer = Keypair::new_from_array([5; 32]);
+    let signer = Counting::new(false);
     let request = request();
-    let ticket = signer.sign_message(&request.message.serialize());
-    let decision = CoSigner::new(Arc::new(signer), reserving.then(refusing))
+    let decision = CoSigner::new(signer.clone(), reserving.then(refusing))
         .decide(&request)
         .await
         .expect("decision");
     assert_eq!(decision, CoSignDecision::Refused(CoSignRefusal::Custom));
     assert_eq!(
         *released.lock().expect("released"),
-        vec![CoSignSettlement::Failed(ticket)]
+        vec![CoSignSettlement::Failed(Ticket::of(
+            &signer.address(),
+            &request.message
+        ))]
     );
+    assert_eq!(signer.calls(), 0);
+}
+
+#[tokio::test]
+async fn only_an_admitted_message_reaches_the_signer() {
+    let request = request();
+    for (verdict, calls) in [
+        (Verdict::Refused(CoSignRefusal::OverLimit), 0),
+        (Verdict::Admitted, 1),
+    ] {
+        let signer = Counting::new(false);
+        let (rule, _) = recorded(verdict);
+        let decision = CoSigner::new(signer.clone(), rule)
+            .decide(&request)
+            .await
+            .expect("decision");
+        assert_eq!(
+            matches!(decision, CoSignDecision::Signed(_)),
+            verdict == Verdict::Admitted
+        );
+        assert_eq!(signer.calls(), calls);
+    }
+}
+
+#[tokio::test]
+async fn a_failed_signature_keeps_the_reservation_for_the_repeat() {
+    let (reserving, settled) = recorded(Verdict::Admitted);
+    let signer = Counting::new(true);
+    let failed = CoSigner::new(signer.clone(), reserving)
+        .decide(&request())
+        .await;
+    assert!(matches!(
+        failed,
+        Err(RingRpcError::Custody(CustodyError::Signature))
+    ));
+    assert_eq!(signer.calls(), 1);
+    assert!(settled.lock().expect("settled").is_empty());
 }
 
 #[tokio::test]
@@ -150,12 +229,14 @@ async fn an_absent_rule_admits_and_a_settlement_reaches_every_rule() {
     let (first, first_settled) = recorded(Verdict::Admitted);
     let (last, last_settled) = recorded(Verdict::Admitted);
     let absent: Option<Arc<dyn CoSignRule>> = None;
-    let co_signer = CoSigner::new(Arc::new(Keypair::new()), first.then(absent).then(last));
-    let CoSignDecision::Signed(signature) = co_signer.decide(&request()).await.expect("decision")
-    else {
-        panic!("refused");
-    };
-    let confirmed = CoSignSettlement::Confirmed(signature);
+    let signer = Keypair::new();
+    let ticket = Ticket::of(&signer.pubkey(), &request().message);
+    let co_signer = CoSigner::new(Arc::new(signer), first.then(absent).then(last));
+    assert!(matches!(
+        co_signer.decide(&request()).await.expect("decision"),
+        CoSignDecision::Signed(_)
+    ));
+    let confirmed = CoSignSettlement::Confirmed(ticket);
     co_signer.settle(confirmed).await.expect("settle");
     for settled in [first_settled, last_settled] {
         assert_eq!(*settled.lock().expect("settled"), vec![confirmed]);
@@ -248,4 +329,17 @@ async fn the_entries_page_in_order_after_a_cursor() {
         .await
         .expect("second page");
     assert_eq!([first, rest].concat(), all);
+}
+
+#[test]
+fn a_ticket_binds_its_signer_and_its_message() {
+    let [first, second] = [5, 6].map(|seed| Keypair::new_from_array([seed; 32]).pubkey());
+    let message = request().message;
+    let later = VersionedMessage::Legacy(Message {
+        recent_blockhash: solana_hash::Hash::new_from_array([1; 32]),
+        ..Message::default()
+    });
+    assert_eq!(Ticket::of(&first, &message), Ticket::of(&first, &message));
+    assert_ne!(Ticket::of(&first, &message), Ticket::of(&second, &message));
+    assert_ne!(Ticket::of(&first, &message), Ticket::of(&first, &later));
 }

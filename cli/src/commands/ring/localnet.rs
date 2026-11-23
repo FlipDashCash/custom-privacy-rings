@@ -19,9 +19,10 @@ use zolana_cli_common::{
     process::{answers, process_scope, spawn_owned, stop_owned_listener, wait_until},
     release::{host_platform, make_executable, Asset},
 };
+use zolana_operator_custody::{KmsEndpoint, RpcCustody};
 
 use crate::{
-    config::{OperatorManifest, RingConfig, RpcSigningRoles, Target, Urls},
+    config::{parse_json, OperatorManifest, RingConfig, Target, Urls},
     context, file, line, probe,
     release::{RingKey, RingRelease, RING_KEYS},
     tool::{Tool, SOLANA_TEST_VALIDATOR, ZOLANA},
@@ -131,9 +132,9 @@ fn bring_up(config: &RingConfig, root: &Path, replace: bool) -> Result<()> {
         binary: &binary,
         config,
         port: ring_rpc,
-        root,
+        custody: &ServeCustody::resolve(config, root)?,
     }
-    .command()?;
+    .command();
     start_ring_rpc(command, config, ring_rpc, &scope()?)
 }
 
@@ -215,9 +216,9 @@ fn bring_up_workspace(
         binary: &ring_rpc_binary,
         config,
         port: ring_rpc,
-        root,
+        custody: &ServeCustody::resolve(config, root)?,
     }
-    .command()?;
+    .command();
     RING_RPC.run(&mut command)
 }
 
@@ -349,63 +350,100 @@ impl ReleaseDevStart {
     }
 }
 
+#[must_use]
 struct RingRpcServe<'a> {
     binary: &'a Path,
     config: &'a RingConfig,
     port: u16,
-    root: &'a Path,
+    custody: &'a ServeCustody,
+}
+
+struct ServeCustody {
+    path: PathBuf,
+    roles: RpcCustody,
+    deployment: String,
+    kms: KmsEndpoint,
+    /// `None` when the service needs no store or the environment names one.
+    store_url: Option<String>,
+}
+
+impl ServeCustody {
+    fn resolve(config: &RingConfig, root: &Path) -> Result<Self> {
+        let manifest_path = config.operator_manifest_path(root)?;
+        let operator = OperatorManifest::load_for(&manifest_path, config.program_id.0)?;
+        let path = operator
+            .rpc_custody_path(&manifest_path)?
+            .with_context(|| format!("{} names no rpc_custody", manifest_path.display()))?;
+        let roles: RpcCustody = parse_json(&path)?;
+        if let Some(applier) = &roles.enrollment_applier {
+            ensure!(
+                applier.address == operator.enrollment_writer.address,
+                "the RPC custody enrollment applier {} differs from the ring enrollment writer {}",
+                applier.address,
+                operator.enrollment_writer.address
+            );
+        }
+        let store_url = match roles.storage_authority {
+            Some(_) if env::var_os("RING_RPC_STORE_URL").is_none() => {
+                let genesis = SolanaRpc::new(config.urls().rpc.clone()).genesis_hash()?;
+                let data = config_dir()
+                    .join("localnet")
+                    .join(Address::new_from_array(genesis).to_string());
+                file::create_dir_all(&data)?;
+                let store = data.join(format!("{}.sqlite", config.program_id));
+                Some(sqlite_url(&store)?)
+            }
+            _ => None,
+        };
+        Ok(Self {
+            path,
+            roles,
+            kms: operator.kms_endpoint(),
+            deployment: operator.deployment,
+            store_url,
+        })
+    }
 }
 
 impl RingRpcServe<'_> {
-    fn command(self) -> Result<Command> {
-        let path = self.config.operator_manifest_path(self.root)?;
-        let operator = OperatorManifest::load(&path)?;
-        ensure!(
-            operator.program.address == self.config.program_id.0,
-            "ring program address differs from the operator manifest"
-        );
-        let custody = operator.rpc_custody_path(&path)?;
-        let roles = RpcSigningRoles::load(&custody)?;
+    fn command(self) -> Command {
         let urls = self.config.urls();
         let program_id = self.config.program_id.to_string();
+        let ServeCustody {
+            path,
+            roles,
+            deployment,
+            kms,
+            store_url,
+        } = self.custody;
         let mut command = Command::new(self.binary);
         command
             .args(["serve", "--port", &self.port.to_string()])
             .args(["--indexer-url", &urls.indexer, "--rpc-url", &urls.rpc])
             .arg("--custody")
-            .arg(custody)
-            .args(["--deployment", &operator.deployment])
+            .arg(path)
+            .args(["--deployment", deployment])
             .env_remove("RING_RPC_CUSTODY_JSON")
             .env_remove("RING_RPC_LOCALNET_KMS")
             .args(["--ring-program-id", &program_id]);
         if roles.storage_authority.is_some() || roles.enrollment_applier.is_some() {
             command.args(["--prover-url", &urls.prover]);
         }
-        if roles.storage_authority.is_some() && env::var_os("RING_RPC_STORE_URL").is_none() {
-            let genesis = SolanaRpc::new(urls.rpc.clone()).genesis_hash()?;
-            let data = config_dir()
-                .join("localnet")
-                .join(Address::new_from_array(genesis).to_string());
-            file::create_dir_all(&data)?;
-            command
-                .arg("--store-url")
-                .arg(sqlite_url(&data.join(format!("{program_id}.sqlite")))?);
+        if let Some(store_url) = store_url {
+            command.args(["--store-url", store_url]);
         }
-        if let Some(writer) = roles.enrollment_applier {
-            ensure!(
-                writer.address == operator.enrollment_writer.address,
-                "ring and RPC enrollment writer addresses differ"
-            );
+        if roles.enrollment_applier.is_some() {
             command
                 .args(["--enrollment-apply-ring", &program_id])
                 .args(["--enrollment-budget-lamports", ENROLLMENT_BUDGET_LAMPORTS]);
         }
-        if let Some(endpoint) = operator.localnet_kms {
-            command.arg("--localnet-kms").arg(endpoint.to_string());
-        } else {
-            command.arg("--kms-region").arg(&operator.region);
-        }
-        Ok(command)
+        match kms {
+            KmsEndpoint::Localnet(endpoint) => {
+                command.arg("--localnet-kms").arg(endpoint.to_string())
+            }
+            KmsEndpoint::Aws { region } => command.args(["--kms-region", region]),
+        };
+        command
     }
 }
 
@@ -483,7 +521,10 @@ fn check_prover_serves_custom_ring(prover_url: &str) -> Result<()> {
 mod tests {
     use std::net::{TcpListener, TcpStream};
 
+    use serde_json::{json, Value};
+
     use super::*;
+    use crate::operator_manifest::tests::{document, pin, pinned_address, scratch_dir};
 
     #[test]
     fn a_foreign_listener_on_the_ring_rpc_port_is_refused_and_left_running() {
@@ -510,6 +551,141 @@ mod tests {
             "the foreign listener still answers"
         );
         std::fs::remove_dir_all(scope).expect("cleanup");
+    }
+
+    const RPC: &str = "http://127.0.0.1:8899";
+    const INDEXER: &str = "http://127.0.0.1:8784";
+    const PROVER: &str = "http://127.0.0.1:3001";
+    const STORE: &str = "sqlite:///data/ring.sqlite?mode=rwc";
+    const LOCAL_KMS: &str = "127.0.0.1:4599";
+
+    fn operator_ring(manifest: &Path) -> RingConfig {
+        let program = pinned_address("program");
+        let urls = format!(
+            "rpc = \"{RPC}\"\nindexer = \"{INDEXER}\"\nprover = \"{PROVER}\"\nring_rpc = \"http://127.0.0.1:8785\"\n"
+        );
+        toml::from_str(&format!(
+            "name = \"x\"\ntarget = \"localnet\"\nprogram_id = \"{program}\"\noperator_manifest = \"{}\"\n\n[localnet]\n{urls}\n[devnet]\n{urls}",
+            manifest.display()
+        ))
+        .expect("ring.toml")
+    }
+
+    fn rpc_custody(storage_authority: bool, enrollment_applier: Option<Address>) -> Value {
+        let mut custody = json!({
+            "auditor": { "key_arn": pin(Address::default())["key_arn"], "ciphertext": "AA==" },
+            "service": pin(Address::new_from_array([20; 32])),
+        });
+        if storage_authority {
+            custody["storage_authority"] = pin(Address::new_from_array([21; 32]));
+        }
+        if let Some(applier) = enrollment_applier {
+            custody["enrollment_applier"] = pin(applier);
+        }
+        custody
+    }
+
+    #[test]
+    fn ring_rpc_serve_passes_only_the_flags_its_custody_roles_need() {
+        let config = operator_ring(Path::new("operator.json"));
+        let program = config.program_id.to_string();
+        let local_kms = KmsEndpoint::Localnet(LOCAL_KMS.parse().expect("address"));
+        let aws_kms = KmsEndpoint::Aws {
+            region: "us-east-1".to_owned(),
+        };
+        let local = ["--localnet-kms", LOCAL_KMS];
+        let aws = ["--kms-region", "us-east-1"];
+        let prover = ["--prover-url", PROVER];
+        let store = ["--store-url", STORE];
+        let enrollment = ["--enrollment-apply-ring", &program];
+        let budget = ["--enrollment-budget-lamports", ENROLLMENT_BUDGET_LAMPORTS];
+        let applier = Some(pinned_address("enrollment_writer"));
+        for (storage_authority, enrollment_applier, store_url, kms, flags) in [
+            (false, None, None, &local_kms, vec![local]),
+            (true, None, Some(STORE), &aws_kms, vec![prover, store, aws]),
+            (true, None, None, &aws_kms, vec![prover, aws]),
+            (
+                false,
+                applier,
+                None,
+                &local_kms,
+                vec![prover, enrollment, budget, local],
+            ),
+            (
+                true,
+                applier,
+                Some(STORE),
+                &aws_kms,
+                vec![prover, store, enrollment, budget, aws],
+            ),
+        ] {
+            let custody = ServeCustody {
+                path: PathBuf::from("/ops/custody.json"),
+                roles: serde_json::from_value(rpc_custody(storage_authority, enrollment_applier))
+                    .expect("custody"),
+                deployment: "sample".to_owned(),
+                kms: kms.clone(),
+                store_url: store_url.map(str::to_owned),
+            };
+            let command = RingRpcServe {
+                binary: Path::new("ring-rpc"),
+                config: &config,
+                port: 8785,
+                custody: &custody,
+            }
+            .command();
+            let args: Vec<_> = command
+                .get_args()
+                .map(|arg| arg.to_string_lossy())
+                .collect();
+            let mut expected = vec!["serve", "--port", "8785", "--indexer-url", INDEXER];
+            expected.extend(["--rpc-url", RPC, "--custody", "/ops/custody.json"]);
+            expected.extend(["--deployment", "sample", "--ring-program-id", &program]);
+            expected.extend(flags.as_flattened());
+            assert_eq!(args, expected);
+            let cleared: Vec<_> = command
+                .get_envs()
+                .filter(|(_, value)| value.is_none())
+                .map(|(name, _)| name.to_string_lossy())
+                .collect();
+            assert_eq!(cleared, ["RING_RPC_CUSTODY_JSON", "RING_RPC_LOCALNET_KMS"]);
+        }
+    }
+
+    #[test]
+    fn serve_custody_requires_the_ring_enrollment_writer_as_its_applier() {
+        let dir = scratch_dir("serve-custody");
+        let manifest_path = dir.join("operator.json");
+        let config = operator_ring(&manifest_path);
+        let resolve = |recorded: Option<&str>, applier: Address| {
+            let mut manifest = document();
+            manifest["rpc_custody"] = json!(recorded);
+            manifest["localnet_kms"] = json!(LOCAL_KMS);
+            std::fs::write(&manifest_path, manifest.to_string()).expect("manifest");
+            let custody = rpc_custody(false, Some(applier));
+            std::fs::write(dir.join("custody.json"), custody.to_string()).expect("custody");
+            ServeCustody::resolve(&config, Path::new("unused"))
+        };
+        let writer = pinned_address("enrollment_writer");
+        let served = resolve(Some("custody.json"), writer).expect("served");
+        assert_eq!(served.path, dir.join("custody.json"));
+        assert_eq!(served.deployment, "sample");
+        assert_eq!(
+            served.kms,
+            KmsEndpoint::Localnet(LOCAL_KMS.parse().expect("address"))
+        );
+        assert_eq!(served.store_url, None);
+        let foreign = pinned_address("admin");
+        let refusal = |resolved: Result<ServeCustody>| resolved.err().expect("refused").to_string();
+        assert_eq!(
+            refusal(resolve(Some("custody.json"), foreign)),
+            format!("the RPC custody enrollment applier {foreign} differs from the ring enrollment writer {writer}")
+        );
+        assert_eq!(
+            refusal(resolve(None, writer)),
+            format!("{} names no rpc_custody", manifest_path.display())
+        );
+        std::fs::remove_dir_all(dir).expect("cleanup");
     }
 
     #[test]

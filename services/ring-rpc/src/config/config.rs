@@ -1,6 +1,6 @@
 use std::{
+    borrow::Cow,
     collections::HashSet,
-    fs::File,
     net::{IpAddr, SocketAddr},
     num::{NonZeroU32, NonZeroU64, NonZeroUsize},
     path::PathBuf,
@@ -9,19 +9,23 @@ use std::{
 
 use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 use p256::elliptic_curve::subtle::ConstantTimeEq;
-use serde::Deserialize;
 use solana_address::Address;
 use solana_hash::Hash;
+use spr_keypair::X25519Keypair;
 use thiserror::Error;
 use zeroize::Zeroizing;
 use zolana_operator_custody::{
-    CustodyError, Kms, SecretContext, SecretPurpose, SignerRef, SigningIdentity, WrappedSecret,
+    CustodyError, KeyArn, Kms, KmsEndpoint, RpcCustody, SecretContext, SecretPurpose, SignerRef,
+    SigningIdentity, WrappedSecret,
 };
-use zolana_ring_client::rpc::{auditor_keypair, KeyFileError};
 
 use crate::{
-    client_rate::ClientLimitArgs, cosign::ApproveClass, keys::KeySource, origins::OriginTransport,
-    server::BindPolicy, wallet_snapshots::WalletSnapshotLimits,
+    client_rate::ClientLimitArgs,
+    cosign::ApproveClass,
+    keys::KeySource,
+    origins::{loopback_url, OriginTransport},
+    server::BindPolicy,
+    wallet_snapshots::WalletSnapshotLimits,
 };
 
 const DEFAULT_ENROLLMENT_MAX_RINGS: usize = 256;
@@ -65,9 +69,7 @@ pub struct ServeArgs {
     )]
     pub rpc_url: String,
     #[command(flatten)]
-    kms: KmsArgs,
-    #[arg(long, env = "RING_RPC_DEPLOYMENT", value_parser = clap::builder::NonEmptyStringValueParser::new())]
-    deployment: String,
+    secrets: SecretArgs,
     #[arg(long, env = "RING_RPC_CUSTODY")]
     custody: Option<PathBuf>,
     #[arg(long, env = "RING_RPC_CUSTODY_JSON")]
@@ -127,8 +129,8 @@ pub struct ServeArgs {
     #[arg(long, env = "RING_RPC_ENROLLMENT_RING_BUDGET_LAMPORTS")]
     pub enrollment_ring_budget_lamports: Option<u64>,
     /// Rings `registerEnrollmentRing` adds, the rings of `--enrollment-apply-ring` aside.
-    #[arg(long, env = "RING_RPC_ENROLLMENT_MAX_RINGS", default_value_t = DEFAULT_ENROLLMENT_MAX_RINGS)]
-    pub enrollment_max_rings: usize,
+    #[arg(long, env = "RING_RPC_ENROLLMENT_MAX_RINGS")]
+    enrollment_max_rings: Option<usize>,
     /// A ring whose pending enrollments the applier sends without a registration.
     #[arg(
         long = "enrollment-apply-ring",
@@ -163,24 +165,27 @@ pub enum ReaderGrantStore {
 
 #[derive(Debug, Args)]
 struct KmsArgs {
-    #[arg(
-        long,
-        conflicts_with = "localnet_kms",
-        help = "AWS KMS region, defaults to AWS_REGION"
-    )]
+    /// AWS KMS region, defaults to AWS_REGION.
+    #[arg(long, conflicts_with = "localnet_kms")]
     kms_region: Option<String>,
     #[arg(long, env = "RING_RPC_LOCALNET_KMS")]
     localnet_kms: Option<SocketAddr>,
 }
 
 #[derive(Debug, Args)]
-pub struct ProvisionArgs {
+struct SecretArgs {
     #[command(flatten)]
     kms: KmsArgs,
     #[arg(long, env = "RING_RPC_DEPLOYMENT", value_parser = clap::builder::NonEmptyStringValueParser::new())]
     deployment: String,
+}
+
+#[derive(Debug, Args)]
+pub struct ProvisionArgs {
+    #[command(flatten)]
+    secrets: SecretArgs,
     #[arg(long)]
-    wrapping_key_arn: String,
+    wrapping_key_arn: KeyArn,
     #[arg(long, value_enum)]
     purpose: Purpose,
     #[arg(long)]
@@ -194,7 +199,7 @@ pub struct SignerRefArgs {
     #[command(flatten)]
     kms: KmsArgs,
     #[arg(long)]
-    key_arn: String,
+    key_arn: KeyArn,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -204,18 +209,7 @@ enum Purpose {
     GrantRows,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CustodyManifest {
-    auditor: WrappedSecret,
-    service: SignerRef,
-    storage_authority: Option<SignerRef>,
-    co_signer: Option<SignerRef>,
-    grant_rows: Option<WrappedSecret>,
-    fee_payer: Option<SignerRef>,
-    enrollment_applier: Option<SignerRef>,
-}
-
+/// No two roles share a secret.
 pub struct ServeKeys {
     pub auditor: KeySource,
     pub service: SigningIdentity,
@@ -226,14 +220,15 @@ pub struct ServeKeys {
     pub enrollment_applier: Option<SigningIdentity>,
 }
 
+pub struct GrantRowsSecret(Zeroizing<[u8; 32]>);
+pub struct RootSecret(Zeroizing<[u8; 32]>);
+
 #[derive(Debug, Error)]
-pub enum ServeKeyError {
+pub enum CustodyConfigError {
     #[error("cannot read the custody manifest")]
     File(#[from] std::io::Error),
     #[error("invalid custody manifest")]
     Manifest(#[from] serde_json::Error),
-    #[error("missing custody manifest")]
-    MissingManifest,
     #[error("missing AWS region")]
     MissingRegion,
     #[error("only a single ring auditor requires a ring program ID")]
@@ -260,70 +255,42 @@ pub enum ServeKeyError {
     SharedSecret,
     #[error(transparent)]
     Kms(#[from] CustodyError),
-    #[error(transparent)]
-    Auditor(#[from] KeyFileError),
 }
-
-pub struct GrantRowsSecret(Zeroizing<[u8; 32]>);
-pub struct RootSecret(Zeroizing<[u8; 32]>);
 
 #[derive(Debug, Error)]
 #[error("root secret cannot be zero")]
 pub struct RootSecretError;
 
-impl KmsArgs {
-    async fn connect(&self, genesis_hash: &[u8; 32]) -> Result<Kms, ServeKeyError> {
-        match self.localnet_kms {
-            Some(endpoint) => Ok(Kms::localnet_for_genesis(endpoint, genesis_hash)?),
-            None => self.aws().await,
-        }
-    }
-
-    async fn aws(&self) -> Result<Kms, ServeKeyError> {
-        let region = self
-            .kms_region
-            .clone()
-            .or_else(|| std::env::var("AWS_REGION").ok())
-            .ok_or(ServeKeyError::MissingRegion)?;
-        Ok(Kms::aws(&region).await?)
-    }
-}
-
 impl ProvisionArgs {
-    pub async fn provision(&self) -> Result<WrappedSecret, ServeKeyError> {
-        let purpose = match self.purpose {
-            Purpose::Auditor => {
-                SecretPurpose::Auditor(self.ring_program_id.ok_or(ServeKeyError::AuditorRing)?)
-            }
-            _ if self.ring_program_id.is_some() => return Err(ServeKeyError::AuditorRing),
-            Purpose::AuditorRoot => SecretPurpose::AuditorRoot,
-            Purpose::GrantRows => SecretPurpose::GrantRows,
+    pub async fn provision(self) -> Result<WrappedSecret, CustodyConfigError> {
+        let purpose = self.secret_purpose()?;
+        let kms = self
+            .secrets
+            .kms
+            .endpoint()?
+            .connect(&self.genesis_hash)
+            .await?;
+        let context = SecretContext {
+            deployment: &self.secrets.deployment,
+            genesis: &self.genesis_hash,
+            purpose,
         };
-        let genesis_hash = self.genesis_hash.to_bytes();
-        let kms = self.kms.connect(&genesis_hash).await?;
-        Ok(kms
-            .provision(
-                &self.wrapping_key_arn,
-                SecretContext {
-                    deployment: &self.deployment,
-                    genesis_hash: &genesis_hash,
-                    purpose,
-                },
-            )
-            .await?)
+        Ok(kms.provision(self.wrapping_key_arn, context).await?)
+    }
+
+    fn secret_purpose(&self) -> Result<SecretPurpose, CustodyConfigError> {
+        match (self.purpose, self.ring_program_id) {
+            (Purpose::Auditor, Some(ring)) => Ok(SecretPurpose::Auditor(ring)),
+            (Purpose::AuditorRoot, None) => Ok(SecretPurpose::AuditorRoot),
+            (Purpose::GrantRows, None) => Ok(SecretPurpose::GrantRows),
+            _ => Err(CustodyConfigError::AuditorRing),
+        }
     }
 }
 
 impl SignerRefArgs {
-    pub async fn resolve(self) -> Result<SignerRef, ServeKeyError> {
-        let address = match self.kms.localnet_kms {
-            Some(endpoint) => Kms::localnet_public_key(endpoint, &self.key_arn).await?,
-            None => self.kms.aws().await?.public_key(&self.key_arn).await?,
-        };
-        Ok(SignerRef {
-            key_arn: self.key_arn,
-            address,
-        })
+    pub async fn resolve(self) -> Result<SignerRef, CustodyConfigError> {
+        Ok(self.kms.endpoint()?.signer_ref(self.key_arn).await?)
     }
 }
 
@@ -331,6 +298,11 @@ impl ServeArgs {
     pub fn enrollment_ring_budget(&self) -> u64 {
         self.enrollment_ring_budget_lamports
             .unwrap_or(self.enrollment_budget_lamports / 10)
+    }
+
+    pub fn enrollment_max_rings(&self) -> usize {
+        self.enrollment_max_rings
+            .unwrap_or(DEFAULT_ENROLLMENT_MAX_RINGS)
     }
 
     pub fn origin_transport(&self) -> OriginTransport {
@@ -357,26 +329,18 @@ impl ServeArgs {
         Duration::from_secs(self.upstream_timeout_secs.get())
     }
 
-    pub async fn read_keys(&self, genesis_hash: &[u8; 32]) -> Result<ServeKeys, ServeKeyError> {
-        let manifest: CustodyManifest = if let Some(path) = &self.custody {
-            serde_json::from_reader(File::open(path)?)?
-        } else {
-            serde_json::from_str(
-                self.custody_json
-                    .as_deref()
-                    .ok_or(ServeKeyError::MissingManifest)?,
-            )?
-        };
-        manifest.validate(self)?;
-        if self.kms.localnet_kms.is_some()
-            && (!self.bind.is_loopback() || !loopback_url(&self.rpc_url))
-        {
-            return Err(ServeKeyError::RemoteCluster);
-        }
-        let kms = self.kms.connect(genesis_hash).await?;
+    /// KMS opens each secret and pins each signer of a manifest the arguments accept.
+    pub async fn read_keys(
+        &self,
+        genesis_hash: &[u8; 32],
+    ) -> Result<ServeKeys, CustodyConfigError> {
+        let endpoint = self.secrets.kms.endpoint()?;
+        let manifest = self.checked_manifest(&self.custody_json()?, &endpoint)?;
+        let genesis = Hash::new_from_array(*genesis_hash);
+        let kms = endpoint.connect(&genesis).await?;
         let context = |purpose| SecretContext {
-            deployment: &self.deployment,
-            genesis_hash,
+            deployment: &self.secrets.deployment,
+            genesis: &genesis,
             purpose,
         };
         let purpose = self
@@ -387,7 +351,7 @@ impl ServeArgs {
             Some(wrapped) => {
                 let grant = kms.open(wrapped, context(SecretPurpose::GrantRows)).await?;
                 if bool::from(secret.as_slice().ct_eq(grant.as_slice())) {
-                    return Err(ServeKeyError::SharedSecret);
+                    return Err(CustodyConfigError::SharedSecret);
                 }
                 Some(GrantRowsSecret(grant))
             }
@@ -396,7 +360,7 @@ impl ServeArgs {
         let auditor = match self.ring_program_id {
             Some(ring) => KeySource::Local {
                 ring,
-                auditor: auditor_keypair(&secret)?,
+                auditor: X25519Keypair::from_bytes(&secret),
             },
             None => KeySource::Derived(RootSecret(secret)),
         };
@@ -417,79 +381,84 @@ impl ServeArgs {
             enrollment_applier,
         })
     }
-}
 
-impl CustodyManifest {
-    fn validate(&self, args: &ServeArgs) -> Result<(), ServeKeyError> {
-        let store = args.store_url.is_some();
-        let applier = self.enrollment_applier.is_some();
-        if store != self.storage_authority.is_some() {
-            return Err(ServeKeyError::StorageAuthority);
-        }
-        if (store || applier) != args.prover_url.is_some() {
-            return Err(ServeKeyError::Prover);
-        }
-        if !store && (self.co_signer.is_some() || self.fee_payer.is_some()) {
-            return Err(ServeKeyError::SigningStore);
-        }
-        if !args.co_signer_approve.is_empty() && self.co_signer.is_none() {
-            return Err(ServeKeyError::Approval);
-        }
-        if (args.relay_budget_lamports != 0 || args.relay_signer_budget_lamports != 0)
-            && self.fee_payer.is_none()
+    fn custody_json(&self) -> Result<Cow<'_, str>, CustodyConfigError> {
+        Ok(match &self.custody {
+            Some(path) => Cow::Owned(std::fs::read_to_string(path)?),
+            None => Cow::Borrowed(self.custody_json.as_deref().unwrap_or_default()),
+        })
+    }
+
+    fn checked_manifest(
+        &self,
+        json: &str,
+        endpoint: &KmsEndpoint,
+    ) -> Result<RpcCustody, CustodyConfigError> {
+        if matches!(endpoint, KmsEndpoint::Localnet(_))
+            && !(self.bind.is_loopback() && loopback_url(&self.rpc_url))
         {
-            return Err(ServeKeyError::RelayBudget);
+            return Err(CustodyConfigError::RemoteCluster);
+        }
+        let manifest: RpcCustody = serde_json::from_str(json)?;
+        self.validate(&manifest)?;
+        Ok(manifest)
+    }
+
+    fn validate(&self, manifest: &RpcCustody) -> Result<(), CustodyConfigError> {
+        let store = self.store_url.is_some();
+        let applier = manifest.enrollment_applier.is_some();
+        if store != manifest.storage_authority.is_some() {
+            return Err(CustodyConfigError::StorageAuthority);
+        }
+        if (store || applier) != self.prover_url.is_some() {
+            return Err(CustodyConfigError::Prover);
+        }
+        if !store && (manifest.co_signer.is_some() || manifest.fee_payer.is_some()) {
+            return Err(CustodyConfigError::SigningStore);
+        }
+        if !self.co_signer_approve.is_empty() && manifest.co_signer.is_none() {
+            return Err(CustodyConfigError::Approval);
+        }
+        if (self.relay_budget_lamports != 0 || self.relay_signer_budget_lamports != 0)
+            && manifest.fee_payer.is_none()
+        {
+            return Err(CustodyConfigError::RelayBudget);
         }
         if !applier
-            && (!args.enrollment_apply_rings.is_empty()
-                || args.enrollment_budget_lamports != 0
-                || args.enrollment_ring_budget_lamports.is_some()
-                || args.enrollment_max_rings != DEFAULT_ENROLLMENT_MAX_RINGS)
+            && (!self.enrollment_apply_rings.is_empty()
+                || self.enrollment_budget_lamports != 0
+                || self.enrollment_ring_budget_lamports.is_some()
+                || self.enrollment_max_rings.is_some())
         {
-            return Err(ServeKeyError::Enrollment);
+            return Err(CustodyConfigError::Enrollment);
         }
-        if args.reader_grants == ReaderGrantStore::Database && self.grant_rows.is_none() {
-            return Err(ServeKeyError::GrantRows);
+        if self.reader_grants == ReaderGrantStore::Database && manifest.grant_rows.is_none() {
+            return Err(CustodyConfigError::GrantRows);
         }
         let mut addresses = HashSet::new();
-        for identity in [
-            Some(&self.service),
-            self.storage_authority.as_ref(),
-            self.co_signer.as_ref(),
-            self.fee_payer.as_ref(),
-            self.enrollment_applier.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
+        if !manifest
+            .signers()
+            .all(|signer| addresses.insert(signer.address))
         {
-            if !addresses.insert(identity.address) {
-                return Err(ServeKeyError::SharedAddress);
-            }
+            return Err(CustodyConfigError::SharedAddress);
         }
         Ok(())
     }
 }
 
-async fn optional_signer(
-    kms: &Kms,
-    identity: Option<&SignerRef>,
-) -> Result<Option<SigningIdentity>, CustodyError> {
-    match identity {
-        Some(identity) => kms.signer(identity).await.map(Some),
-        None => Ok(None),
+impl KmsArgs {
+    fn endpoint(&self) -> Result<KmsEndpoint, CustodyConfigError> {
+        if let Some(endpoint) = self.localnet_kms {
+            return Ok(KmsEndpoint::Localnet(endpoint));
+        }
+        // Read by hand, a clap env value would conflict with the local KMS flag.
+        self.kms_region
+            .clone()
+            .or_else(|| std::env::var("AWS_REGION").ok())
+            .filter(|region| !region.is_empty())
+            .map(|region| KmsEndpoint::Aws { region })
+            .ok_or(CustodyConfigError::MissingRegion)
     }
-}
-
-fn loopback_url(url: &str) -> bool {
-    reqwest::Url::parse(url).ok().is_some_and(|url| {
-        url.host_str().is_some_and(|host| {
-            host == "localhost"
-                || host
-                    .trim_matches(['[', ']'])
-                    .parse::<IpAddr>()
-                    .is_ok_and(|ip| ip.is_loopback())
-        })
-    })
 }
 
 impl RootSecret {
@@ -514,5 +483,444 @@ impl GrantRowsSecret {
 
     pub(crate) fn as_bytes(&self) -> &[u8; 32] {
         &self.0
+    }
+}
+
+async fn optional_signer(
+    kms: &Kms,
+    identity: Option<&SignerRef>,
+) -> Result<Option<SigningIdentity>, CustodyError> {
+    match identity {
+        Some(identity) => kms.signer(identity).await.map(Some),
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{mem::discriminant, sync::Arc};
+
+    use serde_json::json;
+    use solana_keypair::Keypair;
+    use solana_signer::Signer;
+
+    use super::*;
+    use crate::{
+        database::Store,
+        hub::{Hub, ServiceIdentity},
+        storage_chain::LiveStorageChain,
+        upstream::{ChainSource, Upstreams},
+    };
+
+    const KEY_ARN: &str =
+        "arn:aws:kms:us-east-1:123456789012:key/1a2b3c4d-0000-4000-8000-000000000000";
+    const UNREACHABLE: &str = "http://127.0.0.1:1";
+    const AWS_KMS: [&str; 2] = ["--kms-region", "us-east-1"];
+    const LOCAL_KMS: [&str; 2] = ["--localnet-kms", "127.0.0.1:4566"];
+    const STORE: [&str; 4] = [
+        "--store-url",
+        "sqlite::memory:",
+        "--prover-url",
+        UNREACHABLE,
+    ];
+
+    fn address(seed: u8) -> String {
+        Address::new_from_array([seed; 32]).to_string()
+    }
+
+    /// The auditor secret and the service signer, then each named role under the address of its seed.
+    fn custody(roles: &[(&str, u8)]) -> String {
+        let wrapped = json!({ "key_arn": KEY_ARN, "ciphertext": "AA==" });
+        let signer = |seed: u8| json!({ "key_arn": KEY_ARN, "address": address(seed) });
+        let mut manifest = json!({ "auditor": wrapped, "service": signer(1) });
+        for (role, seed) in roles {
+            manifest[*role] = match *role {
+                "grant_rows" => wrapped.clone(),
+                _ => signer(*seed),
+            };
+        }
+        manifest.to_string()
+    }
+
+    fn serve(flags: &[&str], custody: &str) -> Result<ServeArgs, clap::Error> {
+        let fixed = [
+            "ring-rpc",
+            "serve",
+            "--deployment",
+            "test",
+            "--custody-json",
+            custody,
+        ];
+        match Cli::try_parse_from(fixed.iter().chain(flags))?.command {
+            Command::Serve(args) => Ok(*args),
+            _ => panic!("serve parses as another command"),
+        }
+    }
+
+    /// The manifest the arguments accept, no KMS call is made.
+    fn checked(flags: &[&str], custody: &str) -> Result<RpcCustody, CustodyConfigError> {
+        let args = serve(flags, custody).expect("serve flags");
+        args.checked_manifest(&args.custody_json()?, &args.secrets.kms.endpoint()?)
+    }
+
+    fn checked_on_aws(flags: &[&str], custody: &str) -> Result<RpcCustody, CustodyConfigError> {
+        checked(&[&AWS_KMS, flags].concat(), custody)
+    }
+
+    #[test]
+    fn each_role_option_without_its_counterpart_is_refused_by_name() {
+        use CustodyConfigError::*;
+        let ring = address(9);
+        let stored = |flags: &[&'static str]| [&STORE[..], flags].concat();
+        let cases: Vec<(&str, Vec<&str>, String, CustodyConfigError)> = vec![
+            (
+                "a store without a storage authority",
+                stored(&[]),
+                custody(&[]),
+                StorageAuthority,
+            ),
+            (
+                "a storage authority without a store",
+                vec![],
+                custody(&[("storage_authority", 2)]),
+                StorageAuthority,
+            ),
+            (
+                "a prover without a store or an applier",
+                vec!["--prover-url", UNREACHABLE],
+                custody(&[]),
+                Prover,
+            ),
+            (
+                "an applier without a prover",
+                vec![],
+                custody(&[("enrollment_applier", 5)]),
+                Prover,
+            ),
+            (
+                "a co-signer without a store",
+                vec![],
+                custody(&[("co_signer", 3)]),
+                SigningStore,
+            ),
+            (
+                "a fee payer without a store",
+                vec![],
+                custody(&[("fee_payer", 4)]),
+                SigningStore,
+            ),
+            (
+                "approval classes without a co-signer",
+                vec!["--co-signer-approve", "transfers"],
+                custody(&[]),
+                Approval,
+            ),
+            (
+                "a relay budget without a fee payer",
+                vec!["--relay-budget-lamports", "1"],
+                custody(&[]),
+                RelayBudget,
+            ),
+            (
+                "a relay signer budget without a fee payer",
+                vec![
+                    "--relay-budget-lamports",
+                    "0",
+                    "--relay-signer-budget-lamports",
+                    "1",
+                ],
+                custody(&[]),
+                RelayBudget,
+            ),
+            (
+                "a named ring without an applier",
+                vec!["--enrollment-apply-ring", &ring],
+                custody(&[]),
+                Enrollment,
+            ),
+            (
+                "an enrollment budget without an applier",
+                vec!["--enrollment-budget-lamports", "1"],
+                custody(&[]),
+                Enrollment,
+            ),
+            (
+                "an enrollment ring budget without an applier",
+                vec!["--enrollment-ring-budget-lamports", "0"],
+                custody(&[]),
+                Enrollment,
+            ),
+            (
+                "the default ring count stated without an applier",
+                vec!["--enrollment-max-rings", "256"],
+                custody(&[]),
+                Enrollment,
+            ),
+            (
+                "database reader grants without a grant rows secret",
+                stored(&["--reader-grants", "database"]),
+                custody(&[("storage_authority", 2)]),
+                GrantRows,
+            ),
+            (
+                "two roles pinning one address",
+                stored(&[]),
+                custody(&[("storage_authority", 2), ("co_signer", 2)]),
+                SharedAddress,
+            ),
+            (
+                "a role pinning the service address",
+                stored(&[]),
+                custody(&[("storage_authority", 1)]),
+                SharedAddress,
+            ),
+        ];
+        for (case, flags, custody, expected) in cases {
+            let refused = checked_on_aws(&flags, &custody).expect_err(case);
+            assert_eq!(
+                discriminant(&refused),
+                discriminant(&expected),
+                "{case} refused as {refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_manifest_with_every_role_and_its_options_is_accepted() {
+        let ring = address(9);
+        let flags = [
+            &STORE[..],
+            &[
+                "--replica-id",
+                "replica-a",
+                "--co-signer-approve",
+                "transfers,deposits",
+                "--relay-budget-lamports",
+                "1000",
+                "--relay-signer-budget-lamports",
+                "100",
+                "--enrollment-apply-ring",
+                &ring,
+                "--enrollment-budget-lamports",
+                "1000",
+                "--enrollment-ring-budget-lamports",
+                "7",
+                "--enrollment-max-rings",
+                "4",
+                "--reader-grants",
+                "database",
+            ],
+        ]
+        .concat();
+        let roles = [
+            ("storage_authority", 2),
+            ("co_signer", 3),
+            ("fee_payer", 4),
+            ("enrollment_applier", 5),
+            ("grant_rows", 0),
+        ];
+        let manifest = checked_on_aws(&flags, &custody(&roles)).expect("every role");
+        assert_eq!(manifest.signers().count(), 5);
+        checked_on_aws(&[], &custody(&[])).expect("the auditor and the service alone");
+    }
+
+    #[test]
+    fn an_applier_serves_without_a_store_and_its_ring_budget_defaults_to_a_tenth() {
+        let applier = custody(&[("enrollment_applier", 5)]);
+        let prover = ["--prover-url", UNREACHABLE];
+        let budgeted = [&prover[..], &["--enrollment-budget-lamports", "1000"]].concat();
+        checked_on_aws(&budgeted, &applier).expect("an applier without a store");
+        let defaults = serve(&budgeted, &applier).expect("flags");
+        assert_eq!(defaults.enrollment_ring_budget(), 100);
+        assert_eq!(
+            defaults.enrollment_max_rings(),
+            DEFAULT_ENROLLMENT_MAX_RINGS
+        );
+
+        let stated = [
+            &budgeted[..],
+            &[
+                "--enrollment-ring-budget-lamports",
+                "7",
+                "--enrollment-max-rings",
+                "3",
+            ],
+        ]
+        .concat();
+        let stated = serve(&stated, &applier).expect("flags");
+        assert_eq!(stated.enrollment_ring_budget(), 7);
+        assert_eq!(stated.enrollment_max_rings(), 3);
+    }
+
+    #[test]
+    fn a_local_kms_serves_only_a_loopback_bind_and_cluster() {
+        let cases: [(&[&str], bool); 6] = [
+            (&[], true),
+            (&["--rpc-url", "http://localhost:8899"], true),
+            (&["--bind", "::1", "--rpc-url", "http://[::1]:8899"], true),
+            (&["--bind", "0.0.0.0"], false),
+            (&["--rpc-url", "https://api.devnet.solana.com"], false),
+            (&["--rpc-url", "not a url"], false),
+        ];
+        for (flags, accepted) in cases {
+            let checked = checked(&[&LOCAL_KMS, flags].concat(), &custody(&[]));
+            match accepted {
+                true => drop(checked.expect("a loopback deployment")),
+                false => assert!(
+                    matches!(checked, Err(CustodyConfigError::RemoteCluster)),
+                    "{flags:?}"
+                ),
+            }
+        }
+        let remote = ["--bind", "0.0.0.0", "--rpc-url", "https://rpc.example"];
+        checked_on_aws(&remote, &custody(&[])).expect("AWS KMS serves a remote cluster");
+    }
+
+    #[test]
+    fn the_kms_endpoint_is_one_region_or_one_local_address() {
+        let endpoint =
+            |flags: &[&str]| serve(flags, &custody(&[])).map(|args| args.secrets.kms.endpoint());
+        assert!(matches!(
+            endpoint(&["--kms-region", "eu-west-1"]).expect("flags"),
+            Ok(KmsEndpoint::Aws { region }) if region == "eu-west-1"
+        ));
+        assert!(matches!(
+            endpoint(&LOCAL_KMS).expect("flags"),
+            Ok(KmsEndpoint::Localnet(address)) if address.port() == 4566
+        ));
+        assert!(matches!(
+            endpoint(&["--kms-region", ""]).expect("flags"),
+            Err(CustodyConfigError::MissingRegion)
+        ));
+        assert!(endpoint(&[&AWS_KMS[..], &LOCAL_KMS].concat()).is_err());
+    }
+
+    #[test]
+    fn an_invalid_manifest_is_refused_as_a_manifest_error() {
+        let mut unknown: serde_json::Value = serde_json::from_str(&custody(&[])).expect("json");
+        unknown["operator"] = unknown["service"].clone();
+        let mut alias = unknown.clone();
+        alias.as_object_mut().expect("object").remove("operator");
+        alias["service"]["key_arn"] = json!("alias/ring-rpc-service");
+        let mut no_service = alias.clone();
+        no_service
+            .as_object_mut()
+            .expect("object")
+            .remove("service");
+        for manifest in [
+            "{".to_owned(),
+            unknown.to_string(),
+            alias.to_string(),
+            no_service.to_string(),
+        ] {
+            assert!(
+                matches!(
+                    checked_on_aws(&[], &manifest),
+                    Err(CustodyConfigError::Manifest(_))
+                ),
+                "{manifest}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_manifest_comes_from_one_flag_and_a_missing_file_is_a_file_error() {
+        let parse = |flags: &[&str]| {
+            let fixed = ["ring-rpc", "serve", "--deployment", "test"];
+            Cli::try_parse_from(fixed.iter().chain(&AWS_KMS).chain(flags))
+        };
+        assert!(parse(&[]).is_err());
+        assert!(parse(&["--custody", "/custody.json", "--custody-json", "{}"]).is_err());
+        let Command::Serve(args) = parse(&["--custody", "/nonexistent/custody.json"])
+            .expect("a manifest path")
+            .command
+        else {
+            panic!("serve parses as another command");
+        };
+        assert!(matches!(
+            args.custody_json(),
+            Err(CustodyConfigError::File(_))
+        ));
+    }
+
+    fn provision(flags: &[&str]) -> Result<ProvisionArgs, clap::Error> {
+        let genesis = Hash::new_from_array([7; 32]).to_string();
+        let fixed = [
+            "ring-rpc",
+            "provision",
+            "--deployment",
+            "test",
+            "--wrapping-key-arn",
+            KEY_ARN,
+            "--genesis-hash",
+            &genesis,
+        ];
+        match Cli::try_parse_from(fixed.iter().chain(&AWS_KMS).chain(flags))?.command {
+            Command::Provision(args) => Ok(args),
+            _ => panic!("provision parses as another command"),
+        }
+    }
+
+    #[test]
+    fn only_a_single_ring_auditor_secret_binds_a_ring() {
+        let ring = Address::new_from_array([9; 32]);
+        let ring_flag = ["--ring-program-id", &ring.to_string()];
+        let purpose = |name: &'static str, flags: &[&str]| {
+            provision(&[&["--purpose", name], flags].concat()).map(|args| args.secret_purpose())
+        };
+        assert!(matches!(
+            purpose("auditor", &ring_flag).expect("flags"),
+            Ok(SecretPurpose::Auditor(bound)) if bound == ring
+        ));
+        assert!(matches!(
+            purpose("auditor-root", &[]).expect("flags"),
+            Ok(SecretPurpose::AuditorRoot)
+        ));
+        assert!(matches!(
+            purpose("grant-rows", &[]).expect("flags"),
+            Ok(SecretPurpose::GrantRows)
+        ));
+        for name in ["auditor-root", "grant-rows"] {
+            assert!(
+                matches!(
+                    purpose(name, &ring_flag).expect("flags"),
+                    Err(CustodyConfigError::AuditorRing)
+                ),
+                "{name}"
+            );
+        }
+        assert!(purpose("auditor", &[]).is_err());
+    }
+
+    #[tokio::test]
+    async fn each_role_signs_with_the_identity_the_hub_was_given() {
+        let [service, storage, co_signer] =
+            [1, 2, 3].map(|seed| Keypair::new_from_array([seed; 32]));
+        let addresses = [&service, &storage, &co_signer].map(Signer::pubkey);
+        let upstreams = Upstreams {
+            indexer_url: UNREACHABLE,
+            rpc_url: UNREACHABLE,
+            timeout: Duration::from_secs(1),
+        };
+        let chain = LiveStorageChain::connect(upstreams, UNREACHABLE).expect("chain");
+        let identity = ServiceIdentity {
+            genesis_hash: [1; 32],
+            service: Arc::new(service),
+        };
+        let hub = Hub::builder(ChainSource::connect(upstreams).expect("source"), identity)
+            .with_store(Store::open("sqlite::memory:", 1).await.expect("store"))
+            .with_storage_chain(Arc::new(chain), Arc::new(storage))
+            .with_co_signer(Arc::new(co_signer))
+            .derived(RootSecret::from_bytes([4; 32]).expect("root"))
+            .expect("hub");
+
+        assert_eq!(
+            [
+                Some(hub.service_pubkey()),
+                Some(hub.record_writer().expect("writer").authority()),
+                hub.co_signer().signer(),
+            ],
+            addresses.map(Some)
+        );
     }
 }

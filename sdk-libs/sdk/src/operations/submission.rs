@@ -314,6 +314,7 @@ pub(crate) enum Outcome {
 pub trait SubmissionSigners: Sync {
     fn payer(&self) -> Address;
     fn additional(&self) -> impl Iterator<Item = Address>;
+    /// One signature per required signer, in the message's account order.
     fn sign(
         &self,
         message: &VersionedMessage,
@@ -427,7 +428,7 @@ impl<'a> RingSubmission<'a> {
             .await
     }
 
-    async fn send_with<R: AsyncRpc + SignatureHistory, I: RingIndexerBackend>(
+    pub async fn send_with<R: AsyncRpc + SignatureHistory, I: RingIndexerBackend>(
         &mut self,
         client: &RingClient<R, I>,
         signers: &impl SubmissionSigners,
@@ -466,9 +467,15 @@ impl<'a> RingSubmission<'a> {
                         signatures,
                         message,
                     };
-                    transaction.sanitize().map_err(|_| {
-                        SignerError::TransactionError(TransactionError::SanitizeFailure)
-                    })?;
+                    // An unverified signature would broadcast and hold the inputs until expiry.
+                    if transaction.sanitize().is_err()
+                        || !transaction
+                            .verify_with_results()
+                            .into_iter()
+                            .all(|verified| verified)
+                    {
+                        return Err(RingError::SubmissionSignatures);
+                    }
                     let sent = unsent.insert(Sent {
                         transaction,
                         last_valid_block_height,

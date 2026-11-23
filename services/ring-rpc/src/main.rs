@@ -7,7 +7,7 @@ use zolana_ring_client::rpc::KeyMode;
 use zolana_ring_rpc::{
     live_ring_client, run_server, ChainSource, Cli, CoSignerApproval, Command,
     EnrollmentApplierParts, Hub, KeySource, LiveStorageChain, OriginPolicy, RelayBudget,
-    RelayServicesInit, ServeArgs, ServeKeys, ServerOptions, ServiceIdentity, Store,
+    RelayServicesInit, RolePins, ServeArgs, ServeKeys, ServerOptions, ServiceIdentity, Store,
     TransactionSource, Upstreams, WalletSnapshotLimits, MANAGED_MERGE_INTERVAL,
     RECORD_FLUSH_INTERVAL, STORE_CONNECTIONS,
 };
@@ -23,19 +23,19 @@ async fn main() -> anyhow::Result<()> {
         .init();
     match Cli::parse().command {
         Command::Serve(args) => serve(*args).await,
-        Command::Provision(args) => {
-            println!("{}", serde_json::to_string(&args.provision().await?)?);
-            Ok(())
-        }
-        Command::SignerRef(args) => {
-            println!("{}", serde_json::to_string(&args.resolve().await?)?);
-            Ok(())
-        }
+        Command::Provision(args) => print_json(&args.provision().await?),
+        Command::SignerRef(args) => print_json(&args.resolve().await?),
     }
+}
+
+fn print_json(value: &impl serde::Serialize) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string(value)?);
+    Ok(())
 }
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let enrollment_ring_budget = args.enrollment_ring_budget();
+    let enrollment_max_rings = args.enrollment_max_rings();
     let upstreams = Upstreams {
         indexer_url: &args.indexer_url,
         rpc_url: &args.rpc_url,
@@ -55,6 +55,15 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         fee_payer,
         enrollment_applier,
     } = args.read_keys(&genesis_hash).await?;
+    if let (KeySource::Local { ring, .. }, Some(prover_url)) = (&auditor, &args.prover_url) {
+        RolePins {
+            ring: *ring,
+            storage_authority: storage_authority.as_ref().map(|signer| signer.address()),
+            enrollment_writer: enrollment_applier.as_ref().map(|signer| signer.address()),
+        }
+        .check(&LiveStorageChain::connect(upstreams, prover_url)?)
+        .await?;
+    }
     let options = ServerOptions {
         bind: args.bind,
         bind_policy: args.bind_policy(),
@@ -75,21 +84,19 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
         None => None,
     };
-    let relay_services = fee_payer
-        .map(|fee_payer| {
-            let (Some(store), Some(prover_url)) = (store.clone(), &args.prover_url) else {
-                anyhow::bail!("the fee payer needs a store and a prover");
-            };
-            Ok(RelayServicesInit {
+    let relay_services = match (fee_payer, store.clone(), &args.prover_url) {
+        (Some(fee_payer), Some(store), Some(prover_url)) => Some(
+            RelayServicesInit {
                 fee_payer,
                 store,
                 rpc_url: &args.rpc_url,
                 indexer_url: &args.indexer_url,
                 prover_url,
             }
-            .build())
-        })
-        .transpose()?;
+            .build(),
+        ),
+        _ => None,
+    };
     let origin_transport = args.origin_transport();
     let mut origin_policy = OriginPolicy::new(args.allow_origins).with_transport(origin_transport);
     if let Some(relying_party_id) = args.webauthn_rp_id {
@@ -122,7 +129,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                 rings: args.enrollment_apply_rings.clone(),
                 budget_lamports: args.enrollment_budget_lamports,
                 ring_budget_lamports: enrollment_ring_budget,
-                max_rings: args.enrollment_max_rings,
+                max_rings: enrollment_max_rings,
                 store,
             }
             .applier()

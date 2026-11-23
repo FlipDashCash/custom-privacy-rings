@@ -9,11 +9,11 @@ use solana_loader_v3_interface::instruction as loader;
 use zolana_operator_custody::{OperatorSigner, SignerRef, SigningIdentity};
 
 use crate::{
-    config::expand_tilde,
+    config::parse_json,
     controls::{self, require_initialized},
     deploy::{self, ProgramBinary},
-    file,
     release::RingProgram,
+    submission::Operators,
     AuthorityCommand, Context,
 };
 
@@ -35,7 +35,7 @@ pub fn run(ctx: &Context, command: AuthorityCommand) -> Result<()> {
             set_upgrade_authority(ctx, Some(signer.as_ref()))?;
             println!(
                 "upgrade authority of {program} is now {new_authority}, update upgrade_authority in {}",
-                ctx.config.operator_manifest.display()
+                ctx.operator_manifest_path()?.display()
             );
         }
         AuthorityCommand::UpdateRole { role, new_signer } => {
@@ -49,15 +49,16 @@ pub fn run(ctx: &Context, command: AuthorityCommand) -> Result<()> {
                 role: role.role(),
             }
             .instruction()?;
-            ctx.send_operator(
-                &[payer.as_ref(), admin.as_ref(), new_authority.as_ref()],
-                &[hand_over],
-            )
-            .context("sending update_authority failed")?;
+            let operators = Operators {
+                payer: payer.as_ref(),
+                signers: &[admin.as_ref(), new_authority.as_ref()],
+            };
+            ctx.send_operator(operators, &[hand_over])
+                .context("sending update_authority failed")?;
             println!(
                 "{role} of {program} is now {}, update the role in {}",
                 new_authority.address(),
-                ctx.config.operator_manifest.display()
+                ctx.operator_manifest_path()?.display()
             );
         }
         AuthorityCommand::Pause => controls::pause(ctx, true)?,
@@ -109,19 +110,21 @@ fn set_upgrade_authority(ctx: &Context, new_authority: Option<&dyn OperatorSigne
                 &authority.address(),
                 &incoming.address(),
             );
-            ctx.send_operator(&[authority.as_ref(), incoming], &[rotate])?;
+            let operators = Operators {
+                payer: authority.as_ref(),
+                signers: &[incoming],
+            };
+            ctx.send_operator(operators, &[rotate])?;
         }
         None => {
             let renounce = loader::set_upgrade_authority(&program, &authority.address(), None);
-            ctx.send_operator(&[authority.as_ref()], &[renounce])?;
+            ctx.send_operator(Operators::solo(authority.as_ref()), &[renounce])?;
         }
     }
     Ok(())
 }
 
 fn read_signer(ctx: &Context, path: &Path) -> Result<SigningIdentity> {
-    let path = ctx.path(&expand_tilde(path)?);
-    let reference: SignerRef = serde_json::from_str(&file::read(&path)?)
-        .with_context(|| format!("invalid signer reference {}", path.display()))?;
+    let reference: SignerRef = parse_json(&ctx.expanded_path(path)?)?;
     ctx.signer(&reference)
 }

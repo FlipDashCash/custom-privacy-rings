@@ -40,7 +40,7 @@ pub use self::{
     rule::{Chain, CoSignRule, Operation, Verdict},
 };
 use crate::{
-    cosign::{CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement},
+    cosign::{CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement, Ticket},
     error::RingRpcError,
 };
 
@@ -72,15 +72,17 @@ impl<R: CoSignRule> CoSignPolicy for CoSigner<R> {
     }
 
     async fn decide(&self, request: &CoSignRequest) -> Result<CoSignDecision, RingRpcError> {
-        let ticket = self.signer.sign(&request.message.serialize()).await?;
         let operation = Operation {
             ring: request.ring,
             message: &request.message,
             flows: &request.flows,
-            ticket,
+            ticket: Ticket::of(&self.signer.address(), &request.message),
         };
         Ok(match self.rule.admit(&operation).await? {
-            Verdict::Admitted => CoSignDecision::Signed(ticket),
+            // A failed signature keeps the reservation, a repeat of the message signs under it.
+            Verdict::Admitted => {
+                CoSignDecision::Signed(self.signer.sign(&request.message.serialize()).await?)
+            }
             Verdict::Refused(refusal) => CoSignDecision::Refused(refusal),
         })
     }
