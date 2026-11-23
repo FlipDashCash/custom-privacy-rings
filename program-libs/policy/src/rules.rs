@@ -28,6 +28,19 @@ pub struct RecordLists {
     pub salted: u64,
 }
 
+impl RecordLists {
+    /// The subject's lists with the voucher's allow bits beside its own, mirror `subjectView.cover` in `prover/circuits/policy/voucher.go`.
+    #[must_use]
+    pub const fn vouched_by(self, voucher: &Self) -> Self {
+        let cover = ListSet::VOUCHED.record_bits();
+        Self {
+            own: self.own | voucher.own & cover,
+            curator: self.curator | voucher.curator & cover,
+            salted: self.salted | voucher.salted & cover,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OutputSubjects {
     /// Set on a same-ring output, clear on an exit or a withdrawal.

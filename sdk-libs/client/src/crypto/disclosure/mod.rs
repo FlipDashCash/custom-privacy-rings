@@ -5,8 +5,8 @@
 //! auditor holding the viewing secret and the key derives that secret and opens it.
 
 use custom_ring_interface::{
-    decode_recipient_keys, domain::AUDIT_STREAM_LABEL, encode_recipient_keys, AuditEvidence,
-    AuditStreamLayout, StreamRegion, STREAM_FIRST_COUNTER,
+    decode_recipient_keys, disclosure::AuditLayout, domain::AUDIT_STREAM_LABEL,
+    encode_recipient_keys, AuditEvidence, AuditStreamLayout, StreamRegion, STREAM_FIRST_COUNTER,
 };
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
 use spr_keypair::{ViewingKey, X25519Keypair, X25519Pubkey};
@@ -28,6 +28,8 @@ pub struct AuditStreamSeal<'a> {
     pub evidence: AuditEvidence,
     /// `V_i` of every published slot.
     pub recipient_keys: Vec<[u8; 32]>,
+    /// The voucher's Ed25519 key, set exactly on a vouched layout.
+    pub voucher: Option<[u8; 32]>,
 }
 
 pub struct SealedAuditStream {
@@ -35,6 +37,7 @@ pub struct SealedAuditStream {
     pub eph_u: [u8; 32],
     pub envelope: Vec<u8>,
     /// `32 m` bytes, key `i` at its own counter.
+    /// A vouched stream appends the voucher's sealed key.
     pub keys: Vec<u8>,
 }
 
@@ -48,9 +51,10 @@ impl AuditStreamSeal<'_> {
             real_inputs,
             evidence,
             recipient_keys,
+            voucher,
         } = self;
         let layout = layout.checked().map_err(|_| AuditError::DisclosureLayout)?;
-        if recipient_keys.len() != layout.outputs {
+        if recipient_keys.len() != layout.outputs || voucher.is_some() != layout.vouched {
             return Err(AuditError::DisclosureLayout);
         }
         let key = X25519Keypair::from_bytes(&tx_viewing_key.secret_bytes());
@@ -75,6 +79,10 @@ impl AuditStreamSeal<'_> {
         let mut keys = encode_recipient_keys(&recipient_keys);
         for (slot, key) in keys.as_chunks_mut::<32>().0.iter_mut().enumerate() {
             stream.apply_at(layout.recipient_key(slot).start_counter, key);
+        }
+        if let Some(mut voucher) = voucher {
+            stream.apply_at(layout.voucher().start_counter, &mut voucher);
+            keys.extend_from_slice(&voucher);
         }
         Ok(SealedAuditStream {
             eph_u: tx_viewing_key.pubkey().u(),
@@ -155,10 +163,8 @@ impl AuditEnvelope<'_> {
 impl OpenedAudit {
     /// `ciphertext` is the message's key region, key `i` names slot `i`'s recipient.
     pub fn recipient_keys(&self, ciphertext: &[u8]) -> Result<Vec<X25519Pubkey>, AuditError> {
-        if ciphertext.len() != self.layout.keys_len() {
-            return Err(AuditError::DisclosureLayout);
-        }
-        let mut plaintext = Zeroizing::new(ciphertext.to_vec());
+        let (keys, _) = self.split_keys(ciphertext)?;
+        let mut plaintext = Zeroizing::new(keys.to_vec());
         for (slot, key) in plaintext.as_chunks_mut::<32>().0.iter_mut().enumerate() {
             self.open_region(self.layout.recipient_key(slot), key)?;
         }
@@ -167,6 +173,34 @@ impl OpenedAudit {
             .into_iter()
             .map(|key| X25519Pubkey::from_u(key).map_err(|_| AuditError::DisclosureField))
             .collect()
+    }
+
+    /// The Ed25519 key the proof verified the vouch under, `None` off a vouched frame.
+    pub fn voucher(&self, ciphertext: &[u8]) -> Result<Option<[u8; 32]>, AuditError> {
+        let (_, voucher) = self.split_keys(ciphertext)?;
+        voucher
+            .copied()
+            .map(|mut key| {
+                self.open_region(self.layout.voucher(), &mut key)?;
+                Ok(key)
+            })
+            .transpose()
+    }
+
+    fn split_keys<'a>(
+        &self,
+        ciphertext: &'a [u8],
+    ) -> Result<(&'a [u8], Option<&'a [u8; 32]>), AuditError> {
+        let layout = AuditLayout {
+            entry: self.layout.key.entry,
+            vouched: self.layout.vouched,
+        };
+        match ciphertext.len() == self.layout.keys_len() {
+            true => layout
+                .split_keys(ciphertext)
+                .ok_or(AuditError::DisclosureLayout),
+            false => Err(AuditError::DisclosureLayout),
+        }
     }
 
     fn open_region(&self, region: StreamRegion, bytes: &mut [u8]) -> Result<(), AuditError> {

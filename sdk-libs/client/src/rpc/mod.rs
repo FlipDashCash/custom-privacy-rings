@@ -424,6 +424,9 @@ pub struct DecryptedTransaction {
     pub signers: Vec<SerializablePubkey>,
     /// Public settlement legs, where value left the ring.
     pub withdrawals: Vec<DecryptedWithdrawal>,
+    /// The key that vouched for the transfer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vouched_by: Option<SerializablePubkey>,
 }
 
 /// The public legs and nullifiers come from the confirmed transaction.
@@ -728,6 +731,7 @@ impl From<ConfirmedAudit> for DecryptedTransaction {
                 })
                 .collect(),
             real_inputs: audited.real_inputs,
+            vouched_by: audited.voucher.map(Into::into),
             default_inputs: audited.entries.into_iter().map(Into::into).collect(),
             nullifiers: nullifiers.into_iter().map(Into::into).collect(),
             spenders: spenders

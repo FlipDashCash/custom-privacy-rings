@@ -102,6 +102,7 @@ impl Fixture {
             sender: None,
             envelope: &[],
             recipient_keys: &[],
+            vouched: false,
             private_tx_hash: &self.fields[0],
             anonymous: None,
             in_proof_owner: None,

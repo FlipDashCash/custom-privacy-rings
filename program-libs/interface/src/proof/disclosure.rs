@@ -4,6 +4,8 @@
 
 use spr_hasher::primitives::{pack_be_chunks, PACK_BE_CHUNK_BYTES};
 
+use crate::audit_stream::SEALED_KEY_LEN;
+
 pub const TRANSFER_OUTPUT_CAPACITIES: [usize; 4] = [2, 4, 8, 16];
 
 /// The transfer statement's layout element, mirror `prover/circuits/audit/layout.go`.
@@ -11,12 +13,24 @@ pub const TRANSFER_OUTPUT_CAPACITIES: [usize; 4] = [2, 4, 8, 16];
 pub struct AuditLayout {
     /// The key carries default bits and one evidence entry per published input.
     pub entry: bool,
+    /// The frame publishes the voucher's sealed key after the slot keys.
+    pub vouched: bool,
 }
 
 impl AuditLayout {
-    /// Bit 1, bit 0 stays clear in the circuit.
+    /// Bit 0 vouched, bit 1 entry.
     pub const fn value(self) -> u8 {
-        (self.entry as u8) << 1
+        self.vouched as u8 | (self.entry as u8) << 1
+    }
+
+    /// The slot keys and the voucher's key of a sealed key region, `None` on a vouched region shorter than one key.
+    pub fn split_keys(self, sealed: &[u8]) -> Option<(&[u8], Option<&[u8; SEALED_KEY_LEN]>)> {
+        match self.vouched {
+            false => Some((sealed, None)),
+            true => sealed
+                .split_last_chunk()
+                .map(|(keys, voucher)| (keys, Some(voucher))),
+        }
     }
 }
 
@@ -55,8 +69,11 @@ mod tests {
 
     #[test]
     fn the_layout_value_is_the_circuit_flag() {
-        assert_eq!(AuditLayout { entry: false }.value(), 0);
-        assert_eq!(AuditLayout { entry: true }.value(), 2);
+        let layout = |entry, vouched| AuditLayout { entry, vouched }.value();
+        assert_eq!(layout(false, false), 0);
+        assert_eq!(layout(false, true), 1);
+        assert_eq!(layout(true, false), 2);
+        assert_eq!(layout(true, true), 3);
     }
 
     #[test]

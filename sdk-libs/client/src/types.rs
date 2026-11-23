@@ -34,6 +34,8 @@ pub struct AuditedTransaction {
     pub nullifiers: Vec<[u8; 32]>,
     /// The default-ring notes among the `R`, in note order.
     pub entries: Vec<AuditedEntryInput>,
+    /// The Ed25519 key that vouched for the transfer, `None` off a vouched frame.
+    pub voucher: Option<[u8; 32]>,
 }
 
 /// One opened slot, its note rebuilt to the published commitment.

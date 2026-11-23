@@ -43,6 +43,8 @@ pub const RECORD_UPDATE: u32 = 0x4352_5255;
 pub use zolana_ring_policy::WALLET_GRANT_DOMAIN as WALLET_GRANT;
 /// `"CRPT"`
 pub const LIST_TAG: u32 = 0x4352_5054;
+/// `"CRVC"`
+pub const VOUCH: u32 = 0x4352_5643;
 
 /// `"CRTX"`
 pub const TRANSFER_STATEMENT: u32 = 0x4352_5458;
@@ -60,6 +62,20 @@ pub const MERGE_OUTPUT_LABEL: &[u8; 9] = b"CRING/mro";
 
 pub fn field(domain: u32) -> [u8; 32] {
     right_align(&domain.to_be_bytes())
+}
+
+/// The transfer a voucher signs for, mirror `VouchDigest` in `prover/circuits/shared/derivation.go`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VouchMessage<'a> {
+    pub private_tx_hash: &'a [u8; 32],
+    pub withdrawal_hash: &'a [u8; 32],
+}
+
+impl VouchMessage<'_> {
+    /// `Poseidon(CRVC, private_tx_hash, withdrawal_hash)`, the tag keeps the signed bytes apart from SPP's owner authorization digest.
+    pub fn digest(&self) -> Result<[u8; 32], HasherError> {
+        Poseidon::hashv(&[&field(VOUCH), self.private_tx_hash, self.withdrawal_hash])
+    }
 }
 
 /// `Poseidon(CRPT, list_salt)`, final in the tracking leaf.

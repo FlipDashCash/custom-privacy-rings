@@ -147,6 +147,7 @@ impl Fixture {
             }),
             envelope: &[],
             recipient_keys: &[],
+            vouched: false,
             private_tx_hash: &self.fields[0],
             anonymous: hidden_sender.then(|| AnonymousProofData {
                 commitment: &self.keys[3],

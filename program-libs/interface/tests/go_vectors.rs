@@ -185,6 +185,7 @@ fn transfer_statements_reach_the_go_public_inputs() {
                 salt: &array(&case.salt),
                 layout: AuditLayout {
                     entry: case.layout & 2 != 0,
+                    vouched: case.layout & 1 != 0,
                 },
             },
             family,

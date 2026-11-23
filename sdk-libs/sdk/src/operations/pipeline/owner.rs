@@ -30,6 +30,7 @@ pub struct Owner<'a> {
     pub(super) token_account_setup: Vec<TokenAccountSetup>,
     /// The other owners of a signer rail spend, each signs the transaction.
     pub(super) co_owners: Vec<CoOwner<'a>>,
+    pub(super) voucher: Option<OwnerAuthorization<'a>>,
 }
 
 pub struct CustomRingTransferInput<'a> {
@@ -66,6 +67,7 @@ impl<'a> RingTransfer<Owner<'a>> {
                 in_proof_owner: None,
                 token_account_setup: Vec::new(),
                 co_owners: Vec::new(),
+                voucher: None,
             },
             list_salts: Vec::new(),
             approval: ApprovalDisclosure::None,
@@ -84,6 +86,13 @@ impl<'a> RingTransfer<Owner<'a>> {
     #[must_use = "use the updated transfer"]
     pub fn with_in_proof_owner(mut self, signer: &'a SigningKey) -> Self {
         self.rail.in_proof_owner = Some(signer);
+        self
+    }
+
+    /// A listed wallet signs `VouchMessage::digest` of the transfer, its Allow and PrivateAllow entries admit every sender and payment owner and the auditor reads its key.
+    #[must_use = "use the updated transfer"]
+    pub fn with_voucher(mut self, voucher: OwnerAuthorization<'a>) -> Self {
+        self.rail.voucher = Some(voucher);
         self
     }
 

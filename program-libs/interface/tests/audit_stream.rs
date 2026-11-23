@@ -2,11 +2,11 @@
 
 use custom_ring_interface::tracking::ZERO_NULLIFIER_PUBKEY;
 use custom_ring_interface::{
-    ciphertext_digest, decode_recipient_keys, encode_recipient_keys, key_catalog::TRANSFER_SHAPES,
-    AuditEnvelope, AuditEvidence, AuditKey, AuditStreamLayout, AuditorMessage, CustomRingError,
-    EntryRecord, OutputRecord, RecipientPayload, RecordKey, RecordKind, SenderBundle,
-    ENTRY_RECORD_LEN, EXIT_RECORD_LEN, RECORD_ZERO_KEY_BIT, RING_RECORD_LEN, SEALED_KEY_LEN,
-    SENDER_BUNDLE_LEN, STREAM_BLOCK_LEN,
+    ciphertext_digest, decode_recipient_keys, disclosure::AuditLayout, encode_recipient_keys,
+    key_catalog::TRANSFER_SHAPES, AuditEnvelope, AuditEvidence, AuditKey, AuditStreamLayout,
+    AuditorMessage, CustomRingError, EntryRecord, OutputRecord, RecipientPayload, RecordKey,
+    RecordKind, SenderBundle, ENTRY_RECORD_LEN, EXIT_RECORD_LEN, RECORD_ZERO_KEY_BIT,
+    RING_RECORD_LEN, SEALED_KEY_LEN, SENDER_BUNDLE_LEN, STREAM_BLOCK_LEN,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -25,6 +25,14 @@ fn layout(key: AuditKey, inputs: usize, outputs: usize, capacity: usize) -> Audi
         inputs,
         outputs,
         capacity,
+        vouched: false,
+    }
+}
+
+fn vouched(layout: AuditStreamLayout) -> AuditStreamLayout {
+    AuditStreamLayout {
+        vouched: true,
+        ..layout
     }
 }
 
@@ -113,6 +121,10 @@ fn no_counter_serves_two_regions_and_every_region_holds_its_bytes() {
             assert!(region.len <= region.max_blocks * STREAM_BLOCK_LEN);
             next += region.max_blocks as u32;
         }
+        let voucher = vouched(full).voucher();
+        assert_eq!(voucher.start_counter, next, "{shape:?}");
+        assert_eq!(voucher.len, voucher.max_blocks * STREAM_BLOCK_LEN);
+        next += voucher.max_blocks as u32;
         assert_eq!(
             next as usize - envelope.start_counter as usize,
             full.capacity_blocks()
@@ -150,6 +162,30 @@ fn a_compact_frame_keeps_every_key_counter() {
     }
     assert_eq!(compact.recipient_key(2).len, 0);
     assert_eq!(compact.sealed_len(), 33 + 2 * SEALED_KEY_LEN);
+}
+
+#[test]
+fn a_vouched_frame_adds_one_key_and_moves_no_counter() {
+    let key = AuditKey {
+        class: 24,
+        entry: false,
+    };
+    let (plain, compact) = (layout(key, 2, 4, 4), layout(key, 2, 2, 4));
+    assert_eq!(plain.voucher().len, 0);
+    assert_eq!(plain.keys_len(), 4 * SEALED_KEY_LEN);
+    for unvouched in [plain, compact] {
+        let frame = vouched(unvouched);
+        assert_eq!(frame.keys_len(), unvouched.keys_len() + SEALED_KEY_LEN);
+        assert_eq!(frame.envelope(), unvouched.envelope());
+        assert_eq!(frame.capacity_blocks(), unvouched.capacity_blocks());
+        for slot in 0..4 {
+            assert_eq!(frame.recipient_key(slot), unvouched.recipient_key(slot));
+        }
+        assert_eq!(
+            frame.voucher().start_counter,
+            plain.recipient_key(3).start_counter + 2
+        );
+    }
 }
 
 fn record() -> OutputRecord {
@@ -387,6 +423,35 @@ fn the_auditor_message_cuts_by_the_layout_and_the_exits() {
     assert!(AuditorMessage::parse(&data, stream, 1).is_none());
 }
 
+#[test]
+fn the_auditor_message_holds_the_voucher_key_only_on_a_vouched_layout() {
+    let key = AuditKey {
+        class: 24,
+        entry: false,
+    };
+    let stream = layout(key, 2, 2, 2);
+    let mut data = vec![4; 33];
+    data.extend([0x11; 33]);
+    data.extend([0x22; 2 * SEALED_KEY_LEN]);
+    let split = |data: &[u8], stream: AuditStreamLayout| {
+        let message = AuditorMessage::parse(data, stream, 0)?;
+        let layout = AuditLayout {
+            entry: false,
+            vouched: stream.vouched,
+        };
+        let (keys, voucher) = layout.split_keys(message.recipient_keys)?;
+        Some((keys.to_vec(), voucher.copied()))
+    };
+    assert_eq!(split(&data, stream), Some((vec![0x22; 64], None)));
+    assert_eq!(split(&data, vouched(stream)), None);
+    data.extend([0x44; SEALED_KEY_LEN]);
+    assert_eq!(split(&data, stream), None);
+    assert_eq!(
+        split(&data, vouched(stream)),
+        Some((vec![0x22; 64], Some([0x44; SEALED_KEY_LEN])))
+    );
+}
+
 /// The payload carries both data hashes outside every proof, its padding stays zero.
 #[test]
 fn the_recipient_payload_reads_back_at_one_width() {
@@ -475,18 +540,22 @@ fn the_solved_go_stream_reads_back_under_the_rust_layout() {
             "entry",
             "no_spend",
             "entry_default_first",
+            "vouched",
         ]
     );
     for case in &vector.cases {
-        let layout = layout(
-            AuditKey {
-                class: case.input_class,
-                entry: case.layout & 2 != 0,
-            },
-            case.input_count,
-            case.output_count,
-            case.outputs,
-        )
+        let layout = AuditStreamLayout {
+            vouched: case.layout & 1 != 0,
+            ..layout(
+                AuditKey {
+                    class: case.input_class,
+                    entry: case.layout & 2 != 0,
+                },
+                case.input_count,
+                case.output_count,
+                case.outputs,
+            )
+        }
         .checked()
         .unwrap();
         let plaintext = unhex(&case.envelope_plaintext);
@@ -513,9 +582,17 @@ fn the_solved_go_stream_reads_back_under_the_rust_layout() {
             case.name
         );
         assert_eq!(sealed_keys.len(), layout.keys_len(), "{}", case.name);
+        let (slot_keys, voucher) = AuditLayout {
+            entry: layout.key.entry,
+            vouched: layout.vouched,
+        }
+        .split_keys(&sealed_keys)
+        .unwrap();
+        assert_eq!(voucher.is_some(), case.name == "vouched");
         let digest = Poseidon::hashv(&[
             &ciphertext_digest(&sealed_envelope).unwrap(),
-            &ciphertext_digest(&sealed_keys).unwrap(),
+            &ciphertext_digest(slot_keys).unwrap(),
+            &voucher.map_or([0; 32], |voucher| hash_bytes(voucher).unwrap()),
         ])
         .unwrap();
         assert_eq!(hex::encode(digest), case.envelope_digest, "{}", case.name);

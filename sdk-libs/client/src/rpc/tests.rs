@@ -263,6 +263,7 @@ fn delivered_audited() -> AuditedTransaction {
         real_inputs: 0,
         nullifiers: vec![[12; 32]],
         entries: Vec::new(),
+        voucher: None,
     }
 }
 
@@ -277,6 +278,21 @@ fn a_decrypted_page_keeps_its_wire_json() {
         serde_json::from_str::<GetDecryptedTransactionsResponse>(&json).expect("parses"),
         page
     );
+}
+
+#[test]
+fn a_vouched_transaction_names_its_voucher_on_the_wire() {
+    let voucher = [0xc9; 32];
+    let vouched = AuditedTransaction {
+        voucher: Some(voucher),
+        ..delivered_audited()
+    };
+    let item = |audited| serde_json::to_value(&page(audited, Vec::new()).value.items[0]).unwrap();
+    assert_eq!(
+        item(vouched)["vouchedBy"],
+        Address::new_from_array(voucher).to_string()
+    );
+    assert!(item(delivered_audited()).get("vouchedBy").is_none());
 }
 
 /// The TypeScript decoder reads the same page, a spender sees its own nullifier alone.
@@ -440,6 +456,7 @@ fn anonymous_audited() -> AuditedTransaction {
         real_inputs: 3,
         nullifiers: vec![[12; 32], [11; 32], [10; 32], [9; 32]],
         entries: vec![entry_input(0x60), entry_input(0x70)],
+        voucher: None,
     }
 }
 

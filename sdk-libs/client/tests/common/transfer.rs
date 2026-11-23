@@ -192,6 +192,8 @@ pub struct Disclosure {
     pub recipient_keys: Vec<[u8; 32]>,
     /// One per slot under the frame's data flag.
     pub payloads: Option<Vec<RecipientPayload>>,
+    /// Set with the layout's vouched flag.
+    pub voucher: Option<[u8; 32]>,
 }
 
 impl Disclosure {
@@ -374,6 +376,7 @@ impl Transfer {
             real_inputs: disclosure.real_inputs,
             evidence: disclosure.evidence.clone(),
             recipient_keys: disclosure.recipient_keys.clone(),
+            voucher: disclosure.voucher,
         }
         .seal(auditor)
         .unwrap()
@@ -502,6 +505,7 @@ impl Transfer {
                 inputs: self.nullifiers.len(),
                 outputs: outputs.len(),
                 capacity: usize::from(shape.outputs),
+                vouched: false,
             },
             in_proof: false,
             real_inputs: self.nullifiers.len() as u8,
@@ -515,6 +519,7 @@ impl Transfer {
                 .map(|(index, output)| output.recipient_key(index))
                 .collect(),
             payloads: None,
+            voucher: None,
         };
         match carries_data {
             true => Self::with_data(disclosure, outputs),
@@ -606,6 +611,7 @@ impl Transfer {
             }),
             envelope: message.envelope,
             recipient_keys: message.recipient_keys,
+            vouched: layout.vouched,
             private_tx_hash: &zero,
             anonymous: anonymous.then_some(AnonymousProofData {
                 commitment: &zero,

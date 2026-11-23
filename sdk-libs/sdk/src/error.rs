@@ -250,6 +250,10 @@ pub enum RingError {
     AnonymousSignerMismatch,
     #[error("the in-proof owner does not match the sender")]
     InProofOwnerMismatch,
+    #[error("the voucher's signature does not verify over the transfer's vouch digest")]
+    VoucherSignatureMismatch,
+    #[error("a relayed transfer takes no voucher")]
+    VouchedRelay,
     #[error("input {index} is a default-ring note the in-proof owner rail cannot spend")]
     InProofDefaultRingInput { index: usize },
     #[error("the confidential relay carries no owner signature")]

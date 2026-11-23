@@ -60,6 +60,7 @@ pub(super) struct PolicyInputs {
     own_pool: Option<RecordPoolRead>,
     curator_pool: Option<RecordPoolRead>,
     sender_entries: Vec<OwnerEntry>,
+    voucher_entry: OwnerEntry,
     owner_entries: Vec<OwnerEntry>,
     asset_entries: Vec<PoolEntry>,
     /// One per input slot of the key, past every payment in the request.
@@ -79,11 +80,14 @@ pub(super) struct PolicyRead<'a> {
     pub planner: TransferPlanner<'a>,
     /// The plan a relayed owner sealed under, `None` on a frame sealed after its read.
     pub sealed: Option<PlannedTransfer>,
+    /// The voucher's owner identity.
+    pub voucher: Option<[u8; 32]>,
 }
 
 #[derive(Default)]
 struct PlannedEntries {
     senders: Vec<OwnerEntry>,
+    voucher: OwnerEntry,
     output_owners: Vec<OwnerEntry>,
     output_assets: Vec<PoolEntry>,
     withdrawal_owners: Vec<OwnerEntry>,
@@ -149,6 +153,7 @@ impl PolicyRead<'_> {
                     .iter()
                     .flatten()
                     .chain(withdrawals.iter().map(|w| &w.owner))
+                    .chain(&self.voucher)
                 {
                     tracked.index(Some(*owner));
                 }
@@ -169,6 +174,7 @@ impl PolicyRead<'_> {
         let mut planned = EntryPlan {
             read,
             rows: &live_rows,
+            voucher: self.voucher,
             owners: &live_owners,
             assets: &live_assets,
             input_assets: &input_assets,
@@ -215,6 +221,7 @@ impl PolicyRead<'_> {
         self.check_output_keys(&tracking_pool, &ring_owners)?;
         let mut sender_entries = core::mem::take(&mut planned.senders);
         sender_entries.resize(capacity, OwnerEntry::default());
+        let voucher_entry = core::mem::take(&mut planned.voucher);
         let public_asset_entries = core::mem::take(&mut planned.public_assets);
         let mut input_asset_entries = core::mem::take(&mut planned.input_assets);
         input_asset_entries.resize(usize::from(input_slots), PoolEntry::default());
@@ -239,6 +246,7 @@ impl PolicyRead<'_> {
             own_pool: None,
             curator_pool: None,
             sender_entries,
+            voucher_entry,
             owner_entries,
             asset_entries,
             input_asset_entries,
@@ -403,6 +411,7 @@ pub(super) fn owner_rows(
 struct EntryPlan<'a> {
     read: RootRead,
     rows: &'a [[u8; 32]],
+    voucher: Option<[u8; 32]>,
     owners: &'a [Option<[u8; 32]>],
     assets: &'a [Option<[u8; 32]>],
     /// By published input slot.
@@ -445,8 +454,13 @@ impl EntryPlan<'_> {
             .filter(|_| screened)
             .map(|row| owner(plan, *row))
             .collect::<Result<_, _>>()?;
+        let voucher = match self.voucher.filter(|_| screened) {
+            Some(voucher) => owner(plan, voucher)?,
+            None => OwnerEntry::default(),
+        };
         let mut planned = PlannedEntries {
             senders,
+            voucher,
             ..PlannedEntries::default()
         };
         for (member, asset) in self.owners.iter().zip(self.assets) {
@@ -566,13 +580,19 @@ impl ScreenedRecords<'_> {
                     |member| curator_pool.as_ref().map_or(0, |pool| on(pool, member)),
                 )
             };
+            let voucher = spend.voucher.map(lists);
+            // Mirror `subjectView.cover`, an asset reads its own lists alone.
+            let covered = |member: [u8; 32]| match &voucher {
+                Some(voucher) => lists(member).vouched_by(voucher),
+                None => lists(member),
+            };
             let subject =
                 |ring: bool, owner: [u8; 32], asset: [u8; 32], amount: u64| OutputSubjects {
                     ring,
                     owner,
                     asset,
                     amount,
-                    owner_lists: lists(owner),
+                    owner_lists: covered(owner),
                     asset_lists: lists(asset),
                     mint_policy: mint_policy(&asset),
                 };
@@ -602,7 +622,9 @@ impl ScreenedRecords<'_> {
                 .rows
                 .iter()
                 .filter(|sender| **sender != [0; 32])
-                .map(|sender| lists(*sender))
+                .map(|sender| covered(*sender))
+                // The voucher is one more sender over its own lists.
+                .chain(voucher)
                 .collect();
             pinned.table.evaluate_senders(&pinned.sources, &senders)?;
             pinned.table.evaluate_payments(
@@ -739,6 +761,7 @@ impl PolicyInputs {
                 curator: pool_at_width(self.curator_pool.as_ref(), self.widths.curator)?,
             },
             sender_entries: self.sender_entries.clone(),
+            voucher_entry: self.voucher_entry.clone(),
             owner_entries,
             asset_entries,
             public_asset_entries: self.public_asset_entries.clone(),
