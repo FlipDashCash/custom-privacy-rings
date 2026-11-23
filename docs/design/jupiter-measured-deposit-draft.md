@@ -73,18 +73,44 @@ that the account keys, state or executables are valid.
 
 ## Runtime integration, not implemented
 
+The program-local `jupiter_legacy_spl_output_draft.rs` now binds the actual
+Pinocchio views for the readonly depositor, legacy mint, staging ATA, SPP vault,
+and SPL Token program (V1 outer slots 1, 5, 3, 14, and 13). It derives the
+canonical addresses and SPP bump from the bound mint and depositor, enforces
+initialized non-native classic SPL account layout and owners, and reads the
+two exact balances from account data with no retained data borrow. The
+[guard's original staging rules](https://github.com/FlipDashCash/yardex-markets/blob/8c158858ce45b28becfcdf9d7c8e9318d0516a62/integrations/jupiter-dynamic-value-guard/src/lib.rs#L69-L97)
+and the
+[stock SPP SPL settlement checks](https://github.com/FlipDashCash/privacy-rings/blob/0616075910dca92a33394ef149611cf9d9e963d2/programs/shielded-pool/src/instructions/settlement/validate.rs#L93-L152)
+remain in force. It is not linked into the Custom
+program and has no guard, proof, or custody authority. A checked account
+view is not an authenticated instruction or an amount attributable to Jupiter.
+
 Before wiring an owned Custom handler, independently select and pin the exact
 guard and executable profile, Jupiter-specific descriptor transcript and
 matching verifier identity. They are **unprovisioned**. Reuse the checked
 same-operation prefix and live Ring policy, accepted exact tracking root, and
 original payer/depositor authorization. Bind all fixed roles and the actual
 current instruction. A successful exact pre-guard establishes an empty stage;
-the subsequent dedicated processor must read the live staging and canonical
-SPP vault immediately after the matching post-guard, not accept a balance or
-quote in this envelope. Only after verifying the descriptor can it build the
-stock one-SPL deposit under the existing authorities. Verify full backing
-increase and restored staging before success. Qualify the complete message,
+the subsequent dedicated processor must take one observation from these exact
+views immediately after the matching post-guard, not accept a balance or
+quote in this envelope. The still-unimplemented processor will derive the
+amount from that observation and the authenticated zero and floor, verify the
+descriptor using the chosen transcript, and use the derived SPP bump in
+the one-SPL deposit. The ephemeral depositor stays the same readonly signer;
+only the checked stock RingAuth signs at SPP RingConfig slot 2. The processor
+must reread the same staging/vault views and require restored staging and
+exact custody increase before success. Actual credit accounting is not added
+here without the authenticated instruction. Qualify the complete message,
 runtime, and independently recoverable output separately before any release.
+
+The account reader is only compiled by a host integration test. It uses an
+in-memory `AccountView` with the pinned layout, not a crafted transaction or
+real state. It checks ordinary owned balances and stock PDA derivations.
+
+```sh
+cargo test --offline --locked -p custom-ring-program --test jupiter_legacy_spl_output_draft
+```
 
 For the host codec checks on the complete pinned source (Rust 1.98.1 through
 the nested Privacy toolchain):

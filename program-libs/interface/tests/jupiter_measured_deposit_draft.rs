@@ -38,18 +38,13 @@ fn fixed_wire_matches_the_inert_v1_vector() {
         auditor_ciphertext: &[0x77; 64],
         descriptor_proof_bytes: &[0; 192],
     };
-    let mut expected = [0; 524];
-    expected[..18].copy_from_slice(&[
-        0x44, 0x01, 0xef, 0xcd, 0xab, 0x89, 0x67, 0x45, 0x23, 0x01, 0x80, 0x70, 0x60, 0x50,
-        0x40, 0x30, 0x20, 0x10,
-    ]);
-    expected[18..50].fill(0x11);
-    expected[50..82].fill(0x22);
-    expected[82..84].copy_from_slice(&[4, 9]);
-    expected[115..131].fill(0x44);
-    expected[155..163].fill(0x55);
-    expected[163..268].fill(0x66);
-    expected[268..332].fill(0x77);
+    let fixture = include_str!("fixtures/jupiter_measured_deposit_draft_v1.hex").trim();
+    assert_eq!(fixture.len(), FRAME_LEN * 2);
+    let mut expected = [0; FRAME_LEN];
+    for (index, byte) in expected.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&fixture[index * 2..index * 2 + 2], 16)
+            .expect("inert v1 draft fixture hex");
+    }
 
     assert_eq!(frame.encode(), expected);
     let parsed = DraftFrame::decode(&expected).expect("inert v1 draft bytes");
