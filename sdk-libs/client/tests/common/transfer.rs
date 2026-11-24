@@ -9,8 +9,8 @@ use custom_ring_interface::{
     stream::{DeliveredSlot, SlotSecret},
     tag as ring_tag, tagged_x25519, AnonymousProofData, AuditEvidence, AuditKey, AuditStreamLayout,
     AuditorMessage, CustomRingProof, EntryRecord, FrameExtensions, FramedSenderBundle,
-    InProofOwner, InputTrees, OutputRecord, PlainGroth16Proof, RecipientPayload, RecordKind,
-    RingOutput, RingRail, RingTransactData, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN,
+    InProofOwner, InputTrees, OutputRecord, PlainGroth16Proof, RecipientPayload, RecordForm,
+    RecordKind, RingOutput, RingRail, RingTransactData, SlotBody, CONFIDENTIAL_DATA_FREE_BODY_LEN,
     EXIT_RECORD_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
 };
 use solana_address::Address;
@@ -34,10 +34,10 @@ use spr_transaction::{
     OutputContext, OutputSlot, ShieldedTransaction,
 };
 use zolana_ring_client::{
-    AuditStreamSeal, AuditedUtxo, ClaimedData, KnownUtxo, OutputOpening, RingOwnerTag,
-    SealedAuditStream, UtxoOwner,
+    AuditStreamSeal, AuditedUtxo, KnownUtxo, OutputOpening, RingOwnerTag, SealedAuditStream,
+    UtxoOwner,
 };
-use zolana_ring_transaction::{record_key, seal_recipient_body};
+use zolana_ring_transaction::{record_key, RecipientBody};
 
 /// Byte `i` is `seed ^ i` under a `0x01` lead byte, the Go `ringaudit.Scalar`.
 pub fn scalar(seed: u8) -> [u8; 32] {
@@ -125,25 +125,17 @@ pub enum Output {
 }
 
 impl Output {
-    /// The data hashes a ring body carries past its record, none on an exit or a dummy.
-    pub fn payload(&self) -> RecipientPayload {
-        match self {
-            Self::Ring { utxo, .. } => RecipientPayload {
-                ring_data_hash: Some(utxo.ring_data_hash).filter(|hash| *hash != [0; 32]),
-                data: Some(utxo.data_hash)
-                    .filter(|hash| *hash != [0; 32])
-                    .map_or_else(Vec::new, |hash| hash.to_vec()),
-            },
-            Self::Exit(_) | Self::Dummy => RecipientPayload::default(),
-        }
-    }
-
-    pub fn carries_data(&self) -> bool {
-        match self {
-            Self::Ring { utxo, .. } | Self::Exit(utxo) => {
-                utxo.data_hash != [0; 32] || utxo.ring_data_hash != [0; 32]
-            }
-            Self::Dummy => false,
+    /// The form a frame of `outputs` needs, a bit per hash any of them holds.
+    pub fn record_form(outputs: &[Self]) -> RecordForm {
+        let holds = |hash: fn(&UtxoFields) -> [u8; 32]| {
+            outputs.iter().any(|output| match output {
+                Self::Ring { utxo, .. } | Self::Exit(utxo) => hash(utxo) != [0; 32],
+                Self::Dummy => false,
+            })
+        };
+        RecordForm {
+            data: holds(|utxo| utxo.data_hash),
+            ring_data: holds(|utxo| utxo.ring_data_hash),
         }
     }
 
@@ -155,6 +147,8 @@ impl Output {
             mint: utxo.asset_address.to_bytes(),
             blinding,
             key: record_key(kind, utxo.nullifier_pk),
+            data_hash: utxo.data_hash,
+            ring_data_hash: utxo.ring_data_hash,
         };
         match self {
             Self::Ring { utxo, .. } => of(RecordKind::Ring, utxo),
@@ -190,7 +184,7 @@ pub struct Disclosure {
     /// One per slot, sealed into its body or the auditor message at publish.
     pub records: Vec<OutputRecord>,
     pub recipient_keys: Vec<[u8; 32]>,
-    /// One per slot under the frame's data flag.
+    /// One per slot under the frame's data bit, no fixture note holds application data.
     pub payloads: Option<Vec<RecipientPayload>>,
     /// Set with the layout's vouched flag.
     pub voucher: Option<[u8; 32]>,
@@ -285,6 +279,8 @@ impl Transfer {
     pub fn slot(&self, index: u32, output: &Output) -> Slot {
         let blinding = self.blinding(index);
         let record = [0; EXIT_RECORD_LEN];
+        // The expansion reads no record, publish seals the true one over the body.
+        let form = RecordForm::default();
         let published = |hash: [u8; 32], owner_tag: [u8; 32], body: SlotBody<'_>| {
             indexed(
                 RingOutput {
@@ -294,7 +290,7 @@ impl Transfer {
                         SlotBody::Recipient(_) => slot_tag(owner_tag),
                     },
                     body,
-                    record: &record[..body.record_len()],
+                    record: &record[..body.record_len(form)],
                 },
                 self.tree_id,
                 u64::from(index),
@@ -390,11 +386,12 @@ impl Transfer {
             .zip(disclosure.payload_width())
             .filter(|_| disclosure.records[index].kind != RecordKind::Exit)
             .map(|(payloads, width)| (&payloads[index], width));
-        seal_recipient_body(
-            &disclosure.records[index],
+        RecipientBody {
+            record: &disclosure.records[index],
+            form: disclosure.layout.records,
             payload,
-            &self.delivered_secret(&disclosure.recipient_keys[index], index as u32),
-        )
+        }
+        .seal(&self.delivered_secret(&disclosure.recipient_keys[index], index as u32))
         .unwrap()
     }
 
@@ -474,8 +471,10 @@ impl Transfer {
         })
     }
 
+    /// Sets the data bit, valid over zero hashes.
     pub fn with_data(mut disclosure: Disclosure, outputs: &[Output]) -> Disclosure {
-        disclosure.payloads = Some(outputs.iter().map(Output::payload).collect());
+        disclosure.layout.records.data = true;
+        disclosure.payloads = Some(vec![RecipientPayload::default(); outputs.len()]);
         disclosure
     }
 
@@ -495,7 +494,7 @@ impl Transfer {
         }
         .shape()
         .expect("a key serves the outputs");
-        let carries_data = outputs.iter().any(Output::carries_data);
+        let records = Output::record_form(outputs);
         let disclosure = Disclosure {
             layout: AuditStreamLayout {
                 key: AuditKey {
@@ -506,6 +505,7 @@ impl Transfer {
                 outputs: outputs.len(),
                 capacity: usize::from(shape.outputs),
                 vouched: false,
+                records,
             },
             in_proof: false,
             real_inputs: self.nullifiers.len() as u8,
@@ -521,7 +521,7 @@ impl Transfer {
             payloads: None,
             voucher: None,
         };
-        match carries_data {
+        match records.data {
             true => Self::with_data(disclosure, outputs),
             false => disclosure,
         }
@@ -581,7 +581,8 @@ impl Transfer {
             salt: &self.salt,
             extensions: FrameExtensions::default(),
             interface_transfers: Vec::new(),
-            has_data: disclosure.payloads.is_some(),
+            has_data: layout.records.data,
+            ring_data: layout.records.ring_data,
             entry: layout.key.entry,
             wide_owners: false,
             outputs: {
@@ -590,7 +591,9 @@ impl Transfer {
                     .iter()
                     .map(|output| {
                         let record: &[u8] = match ring_body_output(&output.payload) {
-                            Some((body, _)) => &body[..RING_RECORD_LEN],
+                            Some((body, _)) => {
+                                &body[..layout.records.published_len(RecordKind::Ring)]
+                            }
                             None => {
                                 exit += 1;
                                 message.exit_record(exit - 1).unwrap()
@@ -682,14 +685,7 @@ pub fn audited_opening(output: &Output, slot: &Slot) -> OutputOpening {
             utxo: match utxo.nullifier_pk == ZERO_NULLIFIER_PUBKEY {
                 true => audited(utxo),
                 false => AuditedUtxo {
-                    owner: UtxoOwner::Unresolved {
-                        claimed: Some(ClaimedData {
-                            data_hash: utxo.data_hash,
-                            ring_data_hash: slot.ring_data_hash,
-                        }),
-                    },
-                    data_hash: None,
-                    ring_data_hash: None,
+                    owner: UtxoOwner::Unresolved,
                     ..audited(utxo)
                 },
             },

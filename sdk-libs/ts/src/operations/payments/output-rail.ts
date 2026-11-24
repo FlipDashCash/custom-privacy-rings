@@ -1,11 +1,5 @@
 /** The ring output rails, mirrors Rust `zolana-ring-transaction` over the ring program's expansion. */
-import {
-  concatBytes,
-  encryptConfidential,
-  equalBytes,
-  isZero,
-  ZERO_32,
-} from "@heliuslabs/spr/internal";
+import { encryptConfidential, equalBytes, isZero, ZERO_32 } from "@heliuslabs/spr/internal";
 import type { Address } from "@heliuslabs/spr/interface";
 import type { Bytes16, Bytes32, MessageData, TransactOutput } from "@heliuslabs/spr/interface";
 import { randomSalt, ViewingKey } from "@heliuslabs/spr/keypair";
@@ -30,7 +24,11 @@ import {
   RingScheme,
   senderBundleOutputBody,
 } from "../../protocol/transaction/output.js";
-import { RING_RECORD_LEN } from "../../protocol/codec/ring-disclosure-layout.js";
+import {
+  PAYLOAD_LENGTH_LEN,
+  publishedRecordLen,
+  type RecordForm,
+} from "../../protocol/codec/ring-disclosure-layout.js";
 import {
   replyLength,
   sealReply,
@@ -39,7 +37,6 @@ import {
 } from "../../protocol/codec/anonymous-delivery.js";
 import {
   DUMMY_RECORD,
-  EMPTY_PAYLOAD,
   RecordKind,
   sealedRecordKey,
   encodeRecipientPayload,
@@ -241,16 +238,9 @@ export function carriesData(output: ProofOutputUtxo): boolean {
   );
 }
 
-/** The bytes past `output`'s record, `data` leads with the hash the commitment reads, Rust `recipient_payload`. */
+/** The application data `output` sends beside its record, Rust `recipient_payload`. */
 export function recipientPayload(output: ProofOutputUtxo): RecipientPayload {
-  const { dataHash, ringDataHash } = output;
-  return Object.freeze({
-    ...(ringDataHash === undefined || isZero(ringDataHash) ? {} : { ringDataHash }),
-    data:
-      dataHash === undefined || isZero(dataHash)
-        ? new Uint8Array()
-        : concatBytes(dataHash, output.data.utxoData() ?? new Uint8Array()),
-  });
+  return Object.freeze({ data: output.data.utxoData() ?? new Uint8Array() });
 }
 
 /** The circuit derives the kind and the zero-key bit from the slot's opening, a dummy's plaintext is zero, Rust `RingOutputRail::output_record`. */
@@ -265,6 +255,8 @@ export function outputRecord(output: ProofOutputUtxo): OutputRecord {
     mint: output.asset as Address,
     blinding: output.blinding,
     key: sealedRecordKey(kind, owner.nullifierPublicKey),
+    dataHash: output.dataHash ?? ZERO_32,
+    ringDataHash: output.ringDataHash ?? ZERO_32,
   });
 }
 
@@ -290,11 +282,43 @@ function withPaymentData(
   });
 }
 
-/** The frame's `HAS_DATA`, every non-exit slot then carries a payload of one length, Rust `payload_width`. */
-export function framesData(outputs: readonly ProofOutputUtxo[]): boolean {
-  return outputs.some(
-    (output) => !output.isDummy() && (output.data.utxoData() !== undefined || carriesData(output)),
+/** What every slot of one frame shares, a length of its own would mark a data note, Rust `BodyForm`. */
+export interface BodyForm {
+  readonly records: RecordForm;
+  /** Every recipient payload's length, set exactly under `records.data`. */
+  readonly payloadLength: number | undefined;
+}
+
+/**
+ * `data` under a nonzero `dataHash` or application data, `ringData` under a nonzero `ringDataHash`,
+ * an exit under a ring data hash refused, Rust `BodyForm::of`.
+ */
+export function bodyForm(outputs: readonly ProofOutputUtxo[]): BodyForm {
+  const published = publishedOutputs(outputs);
+  const nonzero = (hash: Bytes32 | undefined): boolean => hash !== undefined && !isZero(hash);
+  const exitRingData = published.findIndex(
+    (output) =>
+      !output.isDummy() && output.ringProgramId === undefined && nonzero(output.ringDataHash),
   );
+  if (exitRingData >= 0)
+    throw new RingError("RING_EXIT_RING_DATA", { details: { slotIndex: exitRingData } });
+  const live = published.filter((output) => !output.isDummy());
+  const records: RecordForm = Object.freeze({
+    data: live.some((output) => nonzero(output.dataHash) || output.data.utxoData() !== undefined),
+    ringData: live.some((output) => nonzero(output.ringDataHash)),
+  });
+  return Object.freeze({
+    records,
+    payloadLength: records.data
+      ? published.reduce(
+          (width, output) =>
+            output.ringProgramId === undefined && !output.isDummy()
+              ? width
+              : Math.max(width, encodeRecipientPayload(recipientPayload(output)).length),
+          PAYLOAD_LENGTH_LEN,
+        )
+      : undefined,
+  });
 }
 
 export type SlotWire = RingOutput;
@@ -313,13 +337,12 @@ export interface PublishedSlot {
   readonly anonymous?: AnonymousSlot;
 }
 
-/** The frame-wide lengths every slot of one transfer shares. */
-type FrameLengths = Readonly<{
-  /** `undefined` off a data frame. */
-  payloadLength: number | undefined;
-  /** `undefined` when no payment names a reply. */
-  replyLength: number | undefined;
-}>;
+/** The frame-wide form and lengths every slot of one transfer shares. */
+type FrameLengths = BodyForm &
+  Readonly<{
+    /** `undefined` when no payment names a reply. */
+    replyLength: number | undefined;
+  }>;
 
 /** One slot before framing, its key and tag fixed by the delivery and the slot index alone. */
 type PlannedSlot = Readonly<{
@@ -464,7 +487,7 @@ export class RingOutputRail {
     if (published.length !== outputs.length)
       throw framingError(Math.min(outputs.length, published.length));
     const slots = this.#plannedSlots(outputs, sender, auditor);
-    const lengths = framedLengths(published, slots);
+    const lengths: FrameLengths = Object.freeze({ ...bodyForm(outputs), replyLength: undefined });
     return Object.freeze(
       slots.map((slot, slotIndex) => {
         const expected = published[slotIndex];
@@ -472,7 +495,7 @@ export class RingOutputRail {
         // The exit body is scheme 3 under a random ephemeral, the published bytes are the wire's.
         const wire =
           slot.tag === undefined
-            ? this.#exitWire(slot, slotIndex, expected)
+            ? this.#exitWire(slot, slotIndex, expected, lengths.records)
             : this.#wire(slot, slotIndex, proofInputs.outputTreeId, undefined, lengths);
         const reply = replyOf(slot, expected, slotIndex);
         if (!sameOutput(ringTransactOutput(wire, reply), expected)) throw framingError(slotIndex);
@@ -575,29 +598,29 @@ export class RingOutputRail {
     const secret = this.slotSecret(slot.recipientKey, slotIndex);
     try {
       const record = outputRecord(output);
+      const form = lengths.records;
       if (slot.tag === undefined) {
         if (assets === undefined) throw framingError(slotIndex);
         return {
           hash,
           ownerTag: exitTag(output, slotIndex),
-          record: sealOutputSlot(secret, { record }),
+          record: sealOutputSlot(secret, { record, form }),
           body: { kind: "exit", payload: this.#exitBody(output, slotIndex, assets) },
         };
       }
       const sealed = sealOutputSlot(secret, {
         record,
+        form,
         ...(lengths.payloadLength === undefined
           ? {}
-          : {
-              payload: record.kind === RecordKind.ring ? recipientPayload(output) : EMPTY_PAYLOAD,
-              payloadLength: lengths.payloadLength,
-            }),
+          : { payload: recipientPayload(output), payloadLength: lengths.payloadLength }),
       });
+      const recordLength = publishedRecordLen(form, RecordKind.ring);
       return {
         hash,
         ownerTag: slot.tag,
-        record: sealed.slice(0, RING_RECORD_LEN),
-        body: { kind: "recipient", payload: sealed.slice(RING_RECORD_LEN) },
+        record: sealed.slice(0, recordLength),
+        body: { kind: "recipient", payload: sealed.slice(recordLength) },
       };
     } finally {
       secret.fill(0);
@@ -605,7 +628,12 @@ export class RingOutputRail {
   }
 
   /** The exit's scheme 3 body as published, its record resealed to check the frame. */
-  #exitWire(slot: PlannedSlot, slotIndex: number, published: TransactOutput): SlotWire {
+  #exitWire(
+    slot: PlannedSlot,
+    slotIndex: number,
+    published: TransactOutput,
+    form: RecordForm,
+  ): SlotWire {
     const { hash, ownerTag } = inline(published, slotIndex);
     if (!equalBytes(ownerTag, exitTag(slot.output, slotIndex))) throw framingError(slotIndex);
     const secret = this.slotSecret(slot.recipientKey, slotIndex);
@@ -613,7 +641,7 @@ export class RingOutputRail {
       return {
         hash,
         ownerTag,
-        record: sealOutputSlot(secret, { record: outputRecord(slot.output) }),
+        record: sealOutputSlot(secret, { record: outputRecord(slot.output), form }),
         body: {
           kind: "exit",
           payload: schemeBody(
@@ -760,32 +788,8 @@ function frameLengths(delivery: RingDelivery, outputs: readonly ProofOutputUtxo[
       ? delivery.plan.payments.flatMap((payment) => (payment.reply === null ? [] : [payment.reply]))
       : [];
   return Object.freeze({
-    payloadLength: framesData(outputs)
-      ? outputs.reduce(
-          (width, output) =>
-            output.ringProgramId === undefined || output.isDummy()
-              ? width
-              : Math.max(width, encodeRecipientPayload(recipientPayload(output)).length),
-          encodeRecipientPayload(EMPTY_PAYLOAD).length,
-        )
-      : undefined,
+    ...bodyForm(outputs),
     replyLength: replies.length === 0 ? undefined : replyLength(replies),
-  });
-}
-
-/** The payload length the published frame carries, read back from its first non-exit body. */
-function framedLengths(
-  published: readonly TransactOutput[],
-  slots: readonly PlannedSlot[],
-): FrameLengths {
-  const index = slots.findIndex((slot) => slot.tag !== undefined);
-  const framedBody =
-    index < 0 ? undefined : ringBodyOutput(published[index]?.data ?? new Uint8Array());
-  if (index >= 0 && framedBody === undefined) throw framingError(index);
-  const payload = (framedBody?.body.length ?? RING_RECORD_LEN) - RING_RECORD_LEN;
-  return Object.freeze({
-    payloadLength: payload === 0 ? undefined : payload,
-    replyLength: undefined,
   });
 }
 

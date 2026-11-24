@@ -26,9 +26,13 @@ import {
   MERGE_RECORD_LEN,
   PAYLOAD_LENGTH_LEN,
   RING_RECORD_LEN,
+  RecordKind,
+  TRANSFER_RECORD_LEN,
   checkedStreamLayout,
   envelopeRegion,
+  publishedRecordLen,
   type AuditStreamLayout,
+  type RecordForm,
 } from "./ring-disclosure-layout.js";
 import { RingError } from "../error.js";
 
@@ -38,9 +42,7 @@ const ZERO = new Uint8Array(FIELD_LEN) as Bytes32;
 const ZERO_MINT = encodeBase58(ZERO);
 const NO_EVIDENCE: AuditEvidence = Object.freeze({ kind: "none" });
 
-/** A record's kind without its zero-key bit, the circuit derives it from the slot's domain and ring id, Rust `RecordKind`. */
-export const RecordKind = Object.freeze({ dummy: 0, ring: 1, exit: 2 } as const);
-export type RecordKind = (typeof RecordKind)[keyof typeof RecordKind];
+export { RecordKind };
 /** Proven in the kind byte of a live record whose key is `ZERO_NULLIFIER_PK`. */
 export const RECORD_ZERO_KEY_BIT = 4;
 
@@ -69,19 +71,24 @@ export interface OutputRecord {
   readonly mint: Address;
   readonly blinding: Bytes32;
   readonly key: RecordKey;
+  /** The proof holds both hashes to the opened note, zero under a clear form bit. */
+  readonly dataHash: Bytes32;
+  /** Zero on an exit. */
+  readonly ringDataHash: Bytes32;
 }
+
+/** The record without its hashes, a merge output seals none. */
+export type MergeOutputRecord = Omit<OutputRecord, "dataHash" | "ringDataHash">;
 
 /** A merge's output record and the seed its blinding derives from, Rust `MergeRecord`. */
 export interface MergeRecord {
-  readonly record: OutputRecord;
+  readonly record: MergeOutputRecord;
   readonly seed: Bytes32;
 }
 
 /** The unproven bytes past a record, Rust `RecipientPayload`. */
 export interface RecipientPayload {
-  /** The commitment covers it, a nonzero value travels with the note. */
-  readonly ringDataHash?: Bytes32;
-  /** The `data_hash` then the application data under it, empty on a plain note. */
+  /** The application data, the record carries the hash the commitment reads. */
   readonly data: Uint8Array;
 }
 
@@ -129,6 +136,8 @@ export const DUMMY_RECORD: OutputRecord = Object.freeze({
   mint: ZERO_MINT,
   blinding: ZERO,
   key: UNPUBLISHED_RECORD_KEY,
+  dataHash: ZERO,
+  ringDataHash: ZERO,
 });
 
 export const EMPTY_ENTRY_RECORD: EntryRecord = Object.freeze({
@@ -165,39 +174,56 @@ export function namedNullifierPk(key: RecordKey): Bytes32 | undefined {
   }
 }
 
-/** Rust `RecordKind::published_len`, an exit alone publishes the key. */
-export function publishedRecordLen(kind: RecordKind): number {
-  return kind === RecordKind.exit ? EXIT_RECORD_LEN : RING_RECORD_LEN;
-}
-
-/** The sealed plaintext through `publishedRecordLen`, an unpublished key encodes as zero past it. */
-export function encodeOutputRecord(record: OutputRecord): Uint8Array {
-  const out = new Uint8Array(EXIT_RECORD_LEN);
+/** The sealed plaintext, a slot publishes its first `publishedRecordLen` bytes, Rust `OutputRecord::encode`. */
+export function encodeOutputRecord(record: OutputRecord, form: RecordForm): Uint8Array {
+  const out = new Uint8Array(TRANSFER_RECORD_LEN);
   if (record.kind === RecordKind.dummy) return out;
-  const key = sealedKeyBytes(record.key);
-  out[0] = record.kind | (equalBytes(key, ZERO_NULLIFIER_PK) ? RECORD_ZERO_KEY_BIT : 0);
-  out.set(u64be(checkedCounter(record.amount, "amount")), 1);
-  out.set(checkedBytes<Bytes32>(record.ownerKey, FIELD_LEN, "owner key"), 9);
-  out.set(addressBytes(record.mint, "mint"), 41);
-  out.set(checkedBytes<Bytes32>(record.blinding, FIELD_LEN, "blinding"), 73);
-  out.set(key, RING_RECORD_LEN);
+  out.set(encodeRecordHead(record));
+  const dataHash = checkedBytes<Bytes32>(record.dataHash, FIELD_LEN, "data hash");
+  const ringDataHash = checkedBytes<Bytes32>(record.ringDataHash, FIELD_LEN, "ring data hash");
+  // A clear data bit leaves the first hash cell to the ring data hash.
+  const [first, second] =
+    record.kind === RecordKind.exit
+      ? [sealedKeyBytes(record.key), dataHash]
+      : [form.data ? dataHash : ringDataHash, ringDataHash];
+  out.set(first, RING_RECORD_LEN);
+  out.set(second, EXIT_RECORD_LEN);
   return out;
 }
 
-/** Refuses bytes off the kind's published length, Rust `OutputRecord::decode`. */
-export function decodeOutputRecord(published: Uint8Array): OutputRecord {
+/** The bytes a slot publishes before encryption, Rust `OutputRecord::published`. */
+export function publishedOutputRecord(record: OutputRecord, form: RecordForm): Uint8Array {
+  const sealed = encodeOutputRecord(record, form);
+  try {
+    return sealed.slice(0, publishedRecordLen(form, record.kind));
+  } finally {
+    sealed.fill(0);
+  }
+}
+
+/** Refuses bytes off the published length of the kind under `form`, Rust `OutputRecord::decode`. */
+export function decodeOutputRecord(published: Uint8Array, form: RecordForm): OutputRecord {
   const head = recordHead(published);
-  const carried = head.record.kind === RecordKind.exit;
-  if (published.length !== publishedRecordLen(head.record.kind)) throw refused();
-  return withKey(
-    head,
-    carried ? (published.slice(RING_RECORD_LEN, EXIT_RECORD_LEN) as Bytes32) : undefined,
-  );
+  const exit = head.record.kind === RecordKind.exit;
+  if (published.length !== publishedRecordLen(form, head.record.kind)) throw refused();
+  let at = RING_RECORD_LEN;
+  const field = (present: boolean): Bytes32 =>
+    present ? (published.slice(at, (at += FIELD_LEN)) as Bytes32) : ZERO;
+  const carried = exit ? field(true) : undefined;
+  const dataHash = field(form.data);
+  const ringDataHash = field(form.ringData && !exit);
+  const record = withKey(head, carried);
+  if (record.kind === RecordKind.dummy && !(isZero(dataHash) && isZero(ringDataHash)))
+    throw refused();
+  return Object.freeze({ ...record, dataHash, ringDataHash });
 }
 
 export function encodeMergeRecord(merge: MergeRecord): Uint8Array {
+  const { record } = merge;
+  const live = record.kind !== RecordKind.dummy;
   return concatBytes(
-    encodeOutputRecord(merge.record),
+    live ? encodeRecordHead(record) : new Uint8Array(RING_RECORD_LEN),
+    live ? sealedKeyBytes(record.key) : ZERO,
     checkedBytes<Bytes32>(merge.seed, FIELD_LEN, "seed"),
   );
 }
@@ -212,47 +238,28 @@ export function decodeMergeRecord(plaintext: Uint8Array): MergeRecord {
   return Object.freeze({ record, seed: plaintext.slice(EXIT_RECORD_LEN) as Bytes32 });
 }
 
-/** `u16be(len) ‖ u8(has_ring_data) ‖ ring_data_hash? ‖ data ‖ zero padding`, `paddedLength` counts the prefix, Rust `RecipientPayload::encode_padded`. */
+/** `u16be(len) ‖ data ‖ zero padding`, `paddedLength` counts the prefix, Rust `RecipientPayload::encode_padded`. */
 export function encodeRecipientPayload(
   payload: RecipientPayload,
   paddedLength?: number,
 ): Uint8Array {
-  const { ringDataHash, data } = payload;
-  const content = concatBytes(
-    Uint8Array.of(ringDataHash === undefined ? 0 : 1),
-    ...(ringDataHash === undefined
-      ? []
-      : [checkedBytes<Bytes32>(ringDataHash, FIELD_LEN, "ring data hash")]),
-    data,
-  );
-  const length = paddedLength ?? PAYLOAD_LENGTH_LEN + content.length;
-  if (
-    !Number.isSafeInteger(length) ||
-    length > 0xffff ||
-    length < PAYLOAD_LENGTH_LEN + content.length
-  )
+  const { data } = payload;
+  const length = paddedLength ?? PAYLOAD_LENGTH_LEN + data.length;
+  if (!Number.isSafeInteger(length) || length > 0xffff || length < PAYLOAD_LENGTH_LEN + data.length)
     throw refused();
   const encoded = new Uint8Array(length);
-  new DataView(encoded.buffer).setUint16(0, content.length, false);
-  encoded.set(content, PAYLOAD_LENGTH_LEN);
+  new DataView(encoded.buffer).setUint16(0, data.length, false);
+  encoded.set(data, PAYLOAD_LENGTH_LEN);
   return encoded;
 }
 
-/** Refuses a short prefix, a length past the bytes, nonzero padding and a presence byte off 0 or 1, Rust `RecipientPayload::decode`. */
+/** Refuses a short prefix, a length past the bytes and nonzero padding, Rust `RecipientPayload::decode`. */
 export function decodeRecipientPayload(plaintext: Uint8Array): RecipientPayload {
   if (plaintext.length < PAYLOAD_LENGTH_LEN) throw refused();
   const length = new DataView(plaintext.buffer, plaintext.byteOffset, 2).getUint16(0, false);
   const end = PAYLOAD_LENGTH_LEN + length;
-  if (length === 0 || end > plaintext.length || plaintext.subarray(end).some((byte) => byte !== 0))
-    throw refused();
-  const presence = plaintext[PAYLOAD_LENGTH_LEN];
-  const rest = plaintext.subarray(PAYLOAD_LENGTH_LEN + 1, end);
-  if (presence === 0) return Object.freeze({ data: rest.slice() });
-  if (presence !== 1 || rest.length < FIELD_LEN) throw refused();
-  return Object.freeze({
-    ringDataHash: rest.slice(0, FIELD_LEN) as Bytes32,
-    data: rest.slice(FIELD_LEN),
-  });
+  if (end > plaintext.length || plaintext.subarray(end).some((byte) => byte !== 0)) throw refused();
+  return Object.freeze({ data: plaintext.slice(PAYLOAD_LENGTH_LEN, end) });
 }
 
 export const EMPTY_PAYLOAD: RecipientPayload = Object.freeze({ data: new Uint8Array() });
@@ -340,7 +347,7 @@ function decodeEntryRecord(bytes: Uint8Array): EntryRecord {
 
 /** The published prefix before its key, Rust `RecordHead`. */
 interface RecordHead {
-  readonly record: OutputRecord;
+  readonly record: MergeOutputRecord;
   readonly zeroKey: boolean;
 }
 
@@ -364,7 +371,7 @@ function recordHead(bytes: Uint8Array): RecordHead {
 }
 
 /** A dummy carries no byte and no key, every other key follows the zero-key bit. */
-function withKey(head: RecordHead, carried: Bytes32 | undefined): OutputRecord {
+function withKey(head: RecordHead, carried: Bytes32 | undefined): MergeOutputRecord {
   const { record, zeroKey } = head;
   if (record.kind === RecordKind.dummy) {
     const empty =
@@ -382,6 +389,18 @@ function readKey(zeroKey: boolean, carried: Bytes32 | undefined): RecordKey {
   if (carried === undefined) return zeroKey ? ZERO_RECORD_KEY : UNPUBLISHED_RECORD_KEY;
   if (zeroKey !== equalBytes(carried, ZERO_NULLIFIER_PK)) throw refused();
   return zeroKey ? ZERO_RECORD_KEY : Object.freeze({ kind: "carried", nullifierPk: carried });
+}
+
+function encodeRecordHead(record: MergeOutputRecord): Uint8Array {
+  const out = new Uint8Array(RING_RECORD_LEN);
+  out[0] =
+    record.kind |
+    (equalBytes(sealedKeyBytes(record.key), ZERO_NULLIFIER_PK) ? RECORD_ZERO_KEY_BIT : 0);
+  out.set(u64be(checkedCounter(record.amount, "amount")), 1);
+  out.set(checkedBytes<Bytes32>(record.ownerKey, FIELD_LEN, "owner key"), 9);
+  out.set(addressBytes(record.mint, "mint"), 41);
+  out.set(checkedBytes<Bytes32>(record.blinding, FIELD_LEN, "blinding"), 73);
+  return out;
 }
 
 function sealedKeyBytes(key: RecordKey): Bytes32 {

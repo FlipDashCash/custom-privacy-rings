@@ -59,7 +59,7 @@ import {
   RecordKind,
   ZERO_RECORD_KEY,
 } from "../../../src/protocol/codec/audit-stream.js";
-import { vectorRecord } from "../../helpers/vector-records.js";
+import { vectorLayout, vectorRecord } from "../../helpers/vector-records.js";
 import { clampedSecret } from "../../helpers/ring-frame.js";
 import {
   EXIT_RECORD_LEN,
@@ -105,12 +105,14 @@ const caseNamed = (name: string): Case => {
 };
 
 function layoutOf(entry: Case): AuditStreamLayout {
+  const { entry: entryKey, vouched, records } = vectorLayout(entry.layout);
   return {
-    key: { class: entry.input_class, entry: (entry.layout & 2) !== 0 },
+    key: { class: entry.input_class, entry: entryKey },
     inputs: entry.input_count,
     outputs: entry.output_count,
     capacity: entry.outputs,
-    vouched: (entry.layout & 1) !== 0,
+    vouched,
+    records,
   };
 }
 
@@ -156,11 +158,11 @@ function audited(entry: Case, edits: StreamEdits = {}, rest: Partial<Transaction
         outputIndex: slot,
         firstNullifier,
       }),
-      { record: vectorRecord(edited).record },
+      { record: vectorRecord(edited, layout.records).record, form: layout.records },
     );
   });
   const exit = entry.records.map(
-    (record) => vectorRecord(hex(record)).record.kind === RecordKind.exit,
+    (record) => vectorRecord(hex(record), layout.records).record.kind === RecordKind.exit,
   );
   const message = concatBytes(
     txViewingKey.toBytes(),
@@ -227,20 +229,36 @@ beforeAll(async () => {
 describe("the transfer reader", () => {
   it("rebuilds every slot of every vector from its record with no registry", () => {
     expect(equalBytes(ringIdField(ring), field(auditVector.ring_id))).toBe(true);
-    // The data case holds its data hashes in a payload the vector omits.
-    for (const entry of cases.filter(({ name }) => name !== "data")) {
+    for (const entry of cases) {
       const { audited: row } = audited(entry);
       expect(row.payloadErrors).toEqual([]);
       expect(row.outputs).toHaveLength(entry.output_count);
       row.outputs.forEach((output, slot) => {
-        const { record } = vectorRecord(hex(entry.records[slot] as string));
+        const { record } = vectorRecord(
+          hex(entry.records[slot] as string),
+          layoutOf(entry).records,
+        );
         expect(output.opening.kind).toBe(["dummy", "ring", "exit"][record.kind]);
         if (output.opening.kind === "ring" || output.opening.kind === "exit") {
           expect(output.opening.utxo.mint).toBe(record.mint);
           expect(output.opening.utxo.blinding).toEqual(record.blinding);
+          expect(output.opening.utxo.dataHash).toEqual(record.dataHash);
+          expect(output.opening.utxo.ringDataHash).toEqual(record.ringDataHash);
         }
       });
     }
+  });
+
+  it("rebuilds a data note and a data exit from the hashes their records publish", () => {
+    const { audited: row } = audited(caseNamed("data"));
+    const hashed = row.outputs.flatMap(({ opening }) =>
+      (opening.kind === "ring" || opening.kind === "exit") &&
+      !equalBytes(opening.utxo.dataHash ?? ZERO_32, ZERO_32)
+        ? [opening.kind]
+        : [],
+    );
+    expect(hashed).toContain("ring");
+    expect(hashed).toContain("exit");
   });
 
   it("keeps a record at another slot without its data hashes as Rust does", () => {
@@ -271,7 +289,8 @@ describe("the transfer reader", () => {
     const blinding = hex(entry.records[0] as string);
     blinding.fill(0xff, 73, RING_RECORD_LEN);
     const exitSlot = entry.records.findIndex(
-      (record) => vectorRecord(hex(record)).record.kind === RecordKind.exit,
+      (record) =>
+        vectorRecord(hex(record), layoutOf(entry).records).record.kind === RecordKind.exit,
     );
     const exitKey = hex(entry.records[exitSlot] as string);
     exitKey.fill(0xff, RING_RECORD_LEN, EXIT_RECORD_LEN);

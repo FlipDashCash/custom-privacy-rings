@@ -27,7 +27,11 @@ import {
 } from "@heliuslabs/spr/keypair";
 import { AssetRegistry, SOL_MINT, ownerUtxoHash } from "@heliuslabs/spr/transaction";
 import type { IndexedShieldedTransaction, OutputSlot } from "@heliuslabs/spr/transaction";
-import { STREAM_FIRST_COUNTER } from "../../../src/protocol/codec/ring-disclosure-layout.js";
+import {
+  CLEAR_RECORD_FORM,
+  STREAM_FIRST_COUNTER,
+  type RecordForm,
+} from "../../../src/protocol/codec/ring-disclosure-layout.js";
 import {
   auditSharedSecret,
   auditorMessageData,
@@ -181,11 +185,19 @@ const OTHER_NULLIFIER = field(`${"00".repeat(31)}71`);
 const OTHER_OWNER = new Uint8Array(32).fill(0xb2) as Bytes32;
 const OTHER_NULLIFIER_PK = field(`${"00".repeat(31)}21`);
 
-type RecordFields = Omit<OutputRecord, "blinding" | "key"> & { readonly nullifierPk: Bytes32 };
+type RecordFields = Omit<OutputRecord, "blinding" | "key" | "dataHash" | "ringDataHash"> & {
+  readonly nullifierPk: Bytes32;
+};
 
-function fullRecord(record: RecordFields, blinding: Bytes32): OutputRecord {
+function fullRecord(record: RecordFields, blinding: Bytes32, ringDataHash = ZERO_32): OutputRecord {
   const { nullifierPk, ...fields } = record;
-  return { ...fields, blinding, key: sealedRecordKey(record.kind, nullifierPk) };
+  return {
+    ...fields,
+    blinding,
+    key: sealedRecordKey(record.kind, nullifierPk),
+    dataHash: ZERO_32,
+    ringDataHash,
+  };
 }
 
 const TRACKING = encodeBase58(new Uint8Array(32).fill(0x0c));
@@ -256,7 +268,11 @@ const otherRecords: readonly RecordFields[] = [
   },
 ];
 
-function streamLayout(inputs: number, outputs: number): StreamLayout {
+function streamLayout(
+  inputs: number,
+  outputs: number,
+  records: RecordForm = CLEAR_RECORD_FORM,
+): StreamLayout {
   const shape = frameKeyShape({
     rail: "confidential",
     inputs,
@@ -271,6 +287,7 @@ function streamLayout(inputs: number, outputs: number): StreamLayout {
     outputs,
     capacity: shape.outputs,
     vouched: false,
+    records,
   };
 }
 
@@ -311,8 +328,9 @@ function sealedTransfer(
     addresses?: number;
     txSignature?: Signature;
     disclosed?: (keys: readonly X25519PublicKey[]) => readonly X25519PublicKey[];
-    /** A ring data hash every published commitment binds, no payload carries it. */
+    /** A ring data hash every published commitment binds, the records seal it under `sealed` alone. */
     ringDataHash?: Bytes32;
+    sealed?: RecordForm;
     voucher?: Bytes32;
   }>,
 ) {
@@ -338,13 +356,20 @@ function sealedTransfer(
         outputIndex: slot,
         firstNullifier,
       }),
-      { record: fullRecord(record, blindings[slot]!) },
+      {
+        record: fullRecord(
+          record,
+          blindings[slot]!,
+          input.sealed?.ringData === true ? input.ringDataHash : undefined,
+        ),
+        form: input.sealed ?? CLEAR_RECORD_FORM,
+      },
     ),
   );
   txKey.destroy();
   const stream = sealStream({
     layout: {
-      ...streamLayout(nullifiers.length, records.length),
+      ...streamLayout(nullifiers.length, records.length, input.sealed),
       vouched: input.voucher !== undefined,
     },
     auditorPublicKey: input.auditor,
@@ -417,13 +442,17 @@ function sealedMerge(
   }).sealed;
 }
 
-const transferRows = (rail: RingRail, vouched = false): TransactionOrigin => ({
+const transferRows = (
+  rail: RingRail,
+  vouched = false,
+  records: RecordForm = CLEAR_RECORD_FORM,
+): TransactionOrigin => ({
   confirmedTransaction: async (transaction) => ({
     kind: "transfer",
     transaction,
     inputTreeIds: transaction.nullifiers.map(() => undefined),
     layout: {
-      ...streamLayout(transaction.nullifiers.length, transaction.outputSlots.length),
+      ...streamLayout(transaction.nullifiers.length, transaction.outputSlots.length, records),
       vouched,
     },
     rail,
@@ -569,7 +598,31 @@ describe("auditRing", () => {
     expect(unvouched.transactions[0]).not.toHaveProperty("voucher");
   });
 
-  it("keeps each proven record when no payload rebuilds its commitment and reports the payload", async () => {
+  it("rebuilds a ring data note from the hash its record publishes", async () => {
+    const auditor = X25519Keypair.generate();
+    const ringDataHash = field(`${"00".repeat(31)}77`);
+    const sealed = { data: false, ringData: true };
+    const { transaction } = sealedTransfer({
+      auditor: auditor.publicKey(),
+      records: [otherRecords[0]!],
+      ringDataHash,
+      sealed,
+    });
+    const page = await scan([transaction], transferRows("confidential", false, sealed), {
+      auditor,
+    });
+    const [audited] = page.transactions;
+    expect(audited?.payloadErrors).toEqual([]);
+    expect(audited?.outputs[0]?.opening).toMatchObject({
+      kind: "ring",
+      utxo: { nullifierPk: OTHER_NULLIFIER_PK, dataHash: ZERO_32, ringDataHash },
+    });
+    // Under the clear form the hash reads as a payload, the record rebuilds another commitment.
+    const clear = await scan([transaction], TRANSFERS, { auditor });
+    expect(clear.transactions[0]?.payloadErrors).toEqual([{ slotIndex: 0, kind: "payload" }]);
+  });
+
+  it("keeps each proven record that rebuilds another commitment and reports the payload", async () => {
     const auditor = X25519Keypair.generate();
     const ringDataHash = field("0000000000000000000000000000000000000000000000000000000000000077");
     const { transaction, blindings } = sealedTransfer({
@@ -578,7 +631,7 @@ describe("auditRing", () => {
     });
     const opened = await scan([transaction], TRANSFERS, { auditor });
     const [audited] = opened.transactions;
-    // The proof binds the record to the commitment, the lost data hashes stop no read of it.
+    // The proof binds the record to the commitment, a record off it still reads.
     expect(audited?.outputs.map((output) => output.opening.kind)).toEqual(["ring", "exit"]);
     expect(audited?.payloadErrors).toEqual([
       { slotIndex: 0, kind: "payload" },
@@ -590,7 +643,7 @@ describe("auditRing", () => {
     expect(ringOutput.opening.utxo.blinding).toEqual(blindings[0]);
     expect(ringOutput.opening.utxo.dataHash).toBeUndefined();
     expect(ringOutput.opening.utxo.ringDataHash).toBeUndefined();
-    // A ring output whose payload rebuilds no commitment stays unkeyed, its spend untraced.
+    // A ring output that rebuilds no commitment stays unkeyed, its spend untraced.
     expect(ringOutput.opening.utxo).not.toHaveProperty("nullifierPk");
     // An exit carries its key, its spend traces from the commitment, the blinding and the secret.
     const secret = field("0000000000000000000000000000000000000000000000000000000000000009");
@@ -681,7 +734,7 @@ describe("auditRing", () => {
       secrets: ownerSecrets,
     });
     const [audited, spent] = page.transactions;
-    // The ring data hash binds every slot, the exit's empty payload misses it too.
+    // The ring data hash binds every slot, the exit's record misses it too.
     expect(audited?.payloadErrors).toEqual([
       { slotIndex: 0, kind: "payload" },
       { slotIndex: 1, kind: "payload" },
@@ -779,7 +832,6 @@ describe("auditRing", () => {
     const [ringOutput] = audited.outputs;
     if (ringOutput?.opening.kind !== "ring") throw new Error("ring output");
     expect(ringOutput.opening.utxo).not.toHaveProperty("nullifierPk");
-    expect(ringOutput.opening.utxo).not.toHaveProperty("claimed");
     expect(ringOutput.opening.utxo).not.toHaveProperty("dataHash");
   });
 

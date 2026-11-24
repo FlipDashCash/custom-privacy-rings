@@ -78,7 +78,9 @@ import { buildRingDelegateTransferTransaction } from "../../../src/operations/ma
 import { buildRingTransferTransaction } from "../../../src/operations/payments/transfer.js";
 import { RingProgramError, createRingTransferSubmission } from "../../../src/index.js";
 import { signingKeySpendSigner } from "../../../src/operations/payments/anonymous.js";
-import { RingOutputRail } from "../../../src/operations/payments/output-rail.js";
+import { RingOutputRail, bodyForm } from "../../../src/operations/payments/output-rail.js";
+import { CLEAR_RECORD_FORM } from "../../../src/protocol/codec/ring-disclosure-layout.js";
+import { withOutputFields } from "../../../src/protocol/proof/proof-output.js";
 import {
   CustomRingTransfer,
   DelegateTransfer,
@@ -535,6 +537,48 @@ describe("confidential rail", () => {
     }
   });
 
+  it("fixes one record form per frame and refuses an exit under a ring data hash", () => {
+    const owner = ShieldedKeypair.generate().shieldedAddress();
+    const ring = randomAddress();
+    const note = (ringProgramId?: Address) =>
+      createProofOutput({
+        ownerAddress: owner,
+        asset: SOL_MINT,
+        amount: 1n,
+        ...(ringProgramId === undefined ? {} : { ringProgramId }),
+      });
+    const hash = small(0x33);
+    expect(bodyForm([note(ring), note()])).toEqual({
+      records: CLEAR_RECORD_FORM,
+      payloadLength: undefined,
+    });
+    expect(bodyForm([withOutputFields(note(ring), { ringDataHash: hash }), note()])).toEqual({
+      records: { data: false, ringData: true },
+      payloadLength: undefined,
+    });
+    // One data note widens every recipient payload to its own, a bare hash sends the prefix alone.
+    expect(bodyForm([withOutputFields(note(ring), { dataHash: hash }), note(ring)])).toEqual({
+      records: { data: true, ringData: false },
+      payloadLength: 2,
+    });
+    const application = Uint8Array.of(1, 2, 3);
+    expect(bodyForm([note(ring).withUtxoData(application, hash), note(ring)])).toEqual({
+      records: { data: true, ringData: false },
+      payloadLength: 2 + application.length,
+    });
+    // An exit's data hash sets the form, its bytes travel in its own scheme 3 body.
+    expect(bodyForm([note(ring), note().withUtxoData(application, hash)])).toEqual({
+      records: { data: true, ringData: false },
+      payloadLength: 2,
+    });
+    expect(() => bodyForm([note(ring), withOutputFields(note(), { ringDataHash: hash })])).toThrow(
+      ringError("RING_EXIT_RING_DATA", { slotIndex: 1 }),
+    );
+    expect(
+      bodyForm([note(ring), withOutputFields(note(), { ringDataHash: small(0) })]).records,
+    ).toEqual(CLEAR_RECORD_FORM);
+  });
+
   it("refuses an anonymous ring, a paused ring and a ring SPP never activated", async () => {
     const sender = ShieldedKeypair.generate();
     for (const [options, code] of [
@@ -721,7 +765,7 @@ describe("policy ring", () => {
 
     expect(data.vouched).toBe(true);
     const request = checkTransferProof(fixture, data);
-    expect(request.layout).toEqual({ entry: false, vouched: true });
+    expect(request.layout).toEqual({ entry: false, vouched: true, records: CLEAR_RECORD_FORM });
     const key = vouching.publicKey().ed25519();
     expect(request.voucher.publicKey).toEqual(key);
     const digest = vouchDigest({
@@ -777,7 +821,7 @@ describe("policy ring", () => {
     const { data, call } = await expanded(fixture, proven, "confidential");
     expect(data.vouched).toBe(false);
     const request = checkTransferProof(fixture, data);
-    expect(request.layout).toEqual({ entry: false, vouched: false });
+    expect(request.layout).toEqual({ entry: false, vouched: false, records: CLEAR_RECORD_FORM });
     expect(request.voucherEntry).toEqual({
       own: 0,
       curator: 0,

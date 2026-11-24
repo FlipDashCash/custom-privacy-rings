@@ -27,8 +27,8 @@ use custom_ring_interface::{
     key_catalog::{RecordPools, RingCircuit, RowAuthorization, TransferAddresses, TransferSpend},
     AnonymousParties, CheckedAuthorization, CustomRingError, CustomRingProof, FramedSenderBundle,
     InputTrees, InstructionTag, ParsedTransact, PlainGroth16Proof, PolicyProof, PublicLeg,
-    PublicSlots, RingPolicy, RingRail, RootRead, Settlement, SignerSet, TransferBinding,
-    ANONYMOUS_PARTIES, TRANSFER_OUTPUT_CAPACITIES,
+    PublicSlots, RecordForm, RingPolicy, RingRail, RootRead, Settlement, SignerSet,
+    TransferBinding, ANONYMOUS_PARTIES, TRANSFER_OUTPUT_CAPACITIES,
 };
 use solana_address::Address;
 use solana_instruction::Instruction;
@@ -57,7 +57,7 @@ use zolana_ring_client::{
 };
 use zolana_ring_policy::{ApprovalTotals, Member, OwnerDebit};
 use zolana_ring_transaction::{
-    payload_width, published_outputs, PublishedSlot, RingDelivery, RingOutputRail,
+    published_outputs, BodyForm, PublishedSlot, RingDelivery, RingOutputRail,
 };
 use zolana_ring_transaction::{random_field_element, ClassifiedInput};
 
@@ -674,6 +674,7 @@ impl Preview {
             wide_owners: key.wide,
             inputs,
             published: &rail.published_slots(inputs, sender)?,
+            records: BodyForm::of(&inputs.output_utxos)?.records,
             sender_bundle: rail.published_sender(inputs, &sender.viewing_pubkey)?,
             tx_viewing_u: rail.tx_viewing_key().pubkey().u(),
         }))
@@ -1475,6 +1476,7 @@ struct PreviewParts<'a> {
     wide_owners: bool,
     inputs: &'a SppProofInputs,
     published: &'a [PublishedSlot<'a>],
+    records: RecordForm,
     sender_bundle: Option<FramedSenderBundle<'a>>,
     tx_viewing_u: [u8; 32],
 }
@@ -1526,7 +1528,8 @@ fn preview_parts(parts: PreviewParts<'_>) -> TransactParts {
             .iter()
             .map(|transfer| transfer.interface_transfer())
             .collect(),
-        has_data: payload_width(&parts.inputs.output_utxos).is_some(),
+        has_data: parts.records.data,
+        ring_data: parts.records.ring_data,
         entry: spends_default_ring(&parts.inputs.input_utxos),
         wide_owners: parts.wide_owners,
         vouched: preview.vouched,

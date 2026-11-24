@@ -20,7 +20,7 @@ use custom_ring_interface::{
     AnonymousProofData, CustomRingError, InProofOwner, PolicyProof, PublicLeg, PublicSlots,
     Replies, RingRail, RingTransactData, SlotBody, MAX_CPI_DATA_LEN, MIN_REPLY_LEN,
 };
-use frames::Fixture;
+use frames::{Fixture, DATA_RING_RECORD_LEN};
 use ring_policy::config;
 use spr_interface::instruction::{InterfaceTransfer, TransactProof};
 use spr_interface::shape::SPP_SUPPORTED_SHAPES;
@@ -364,9 +364,15 @@ fn frame<'a>(fixture: &'a Fixture, pool: &'a Pool, case: Widest) -> Option<RingT
     if case.payload != Payload::Base {
         data.has_data = true;
         for (slot, output) in data.outputs.iter_mut().enumerate() {
-            output.body = match output.body {
-                SlotBody::Recipient(_) => SlotBody::Recipient(&fixture.extended_bodies[slot]),
-                SlotBody::Exit(_) => SlotBody::Exit(&fixture.extended_bodies[slot]),
+            (output.body, output.record) = match output.body {
+                SlotBody::Recipient(_) => (
+                    SlotBody::Recipient(&fixture.extended_bodies[slot]),
+                    &fixture.records[slot][..DATA_RING_RECORD_LEN],
+                ),
+                SlotBody::Exit(_) => (
+                    SlotBody::Exit(&fixture.extended_bodies[slot]),
+                    &fixture.records[slot][..],
+                ),
             };
         }
         data = fixture.with_audit_stream(data);

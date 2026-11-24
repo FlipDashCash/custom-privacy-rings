@@ -226,7 +226,7 @@ Ring RPC signs through separate AWS KMS Ed25519 keys for service attestations, s
 | 33 | **Tracking registry** | Storage tree | One ring's tree of enrollments. Any applier moves pending enrollments into it, and no authority writes it. |
 | 34 | **Tracking floor** | Registry field | The highest tracking revision a private write proved a row or an absence under. A frame that reads a salted list through the registry names no lower tracking revision. |
 | 35 | **Note count** | Envelope field | The sealed count `R` of spent notes among the published inputs. The proof names no note position. |
-| 36 | **Payload** | Ciphertext | A non-exit slot's data hashes and application data past its record, under the frame's `HAS_DATA`. No proof constrains it. |
+| 36 | **Payload** | Ciphertext | A non-exit slot's application data past its record, under the frame's `HAS_DATA`. No proof constrains it. |
 
 ## Flows
 
@@ -497,7 +497,7 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 27. `Initialize` creates the ring account, binds the records and registers the ring with SPP in one instruction. No half-created ring exists.
 28. Ring RPC creates the ring's records tree under its storage authority, and `Initialize` binds it. The program accepts any storage registry of this ring as the records, so whoever binds them picks the records writer. A tree written outside Ring RPC skips its checks.
 29. One Poseidon schedule under a 9-byte label keys every ring stream, the merge record included.
-30. Every published slot has one record in its own output data, an exit's in the auditor message, and the statement chains the records. The data hashes have no proven copy, so a malformed payload loses them for the recipient and the auditor. The auditor stream holds the envelope and one recipient key per slot, and no counter serves two regions.
+30. Every published slot has one record in its own output data, an exit's in the auditor message, and the statement chains the records. The record proves `data_hash` and `ring_data_hash`, and a clear frame bit proves that hash zero on every slot. Each chain cell is tagged with the slot's exit claim. The payload holds application data only, so a lost payload loses the data and not the commitment. The auditor stream holds the envelope and one recipient key per slot, and no counter serves two regions.
 31. The key catalog fixes one input class per family and output count. A wider class costs a key, so no class grows without a verdict behind it.
 32. A nullifier key enters a tracking row only through an owner-signed `Enroll`, never through instruction data of another party. A wallet and a PDA share one path, and no authority can delay or change an enrollment. `ApplyEnrollments` computes every entry from an authorization, so a row under a root proves a verified enrollment.
 33. Enrollment lives in a tracking tree apart from the policy registry, because one tree would make enrollment and revocation race on one revision. A curator source reads list bits only, so any registry other than the ring's records can serve as a curator.

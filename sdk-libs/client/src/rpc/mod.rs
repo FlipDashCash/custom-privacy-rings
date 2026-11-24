@@ -486,7 +486,7 @@ pub struct DecryptedUtxo {
     pub mint: Option<SerializablePubkey>,
     pub amount: u64,
     pub blinding: Hash,
-    /// Absent with `ring_data_hash` while no payload rebuilt the published commitment.
+    /// The record's proven hash, absent with `ring_data_hash` on a record that rebuilt no commitment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_hash: Option<Hash>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -531,7 +531,7 @@ pub struct DecryptedKnownUtxo {
     pub mint: Option<SerializablePubkey>,
     pub amount: u64,
     pub blinding: Hash,
-    /// Absent with `ring_data_hash` while no payload rebuilt the published commitment.
+    /// The record's proven hash, absent with `ring_data_hash` on a record that rebuilt no commitment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_hash: Option<Hash>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -816,16 +816,12 @@ impl From<KnownUtxo> for DecryptedKnownUtxo {
 impl TryFrom<&DecryptedKnownUtxo> for KnownUtxo {
     type Error = AuditError;
 
-    /// An unresolved note carries no data hashes, they bind only under a key.
     fn try_from(utxo: &DecryptedKnownUtxo) -> Result<Self, AuditError> {
         let owner = match &utxo.nullifier_pk {
             Some(nullifier_pk) => UtxoOwner::Keyed {
                 nullifier_pk: nullifier_pk.0,
             },
-            None if utxo.data_hash.is_some() || utxo.ring_data_hash.is_some() => {
-                return Err(AuditError::DisclosureField)
-            }
-            None => UtxoOwner::Unresolved { claimed: None },
+            None => UtxoOwner::Unresolved,
         };
         Ok(Self {
             owner_key: utxo.owner_key.0.to_bytes(),

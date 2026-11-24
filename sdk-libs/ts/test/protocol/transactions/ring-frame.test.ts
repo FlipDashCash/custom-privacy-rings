@@ -21,6 +21,7 @@ import {
   EXIT_RECORD_LEN,
   RECIPIENT_KEY_LEN,
   RING_RECORD_LEN,
+  CLEAR_RECORD_FORM,
 } from "../../../src/protocol/codec/ring-disclosure-layout.js";
 import {
   CONFIDENTIAL_DATA_FREE_BODY_LEN,
@@ -104,6 +105,20 @@ const roundTrips: readonly Readonly<{ name: string; frame: Frame }>[] = [
       wideOwners: true,
     }),
   },
+  {
+    name: "ring data alone",
+    frame: ringFrame({ rail: "confidential", inputs: 2, outputs: 2, ringData: true }),
+  },
+  {
+    name: "data and ring data on the anonymous rail",
+    frame: ringFrame({
+      rail: "anonymous",
+      inputs: 2,
+      outputs: 2,
+      hasData: true,
+      ringData: true,
+    }),
+  },
 ];
 
 describe("the ring frame", () => {
@@ -123,6 +138,37 @@ describe("the ring frame", () => {
     expect(RingTransactData.parse(bytes, "confidential").approval).toBe(frame.approval);
   });
 
+  it("puts the ring data flag at bit 5 of the output count and sizes each record by the frame's form", () => {
+    const plain = ringFrame({ rail: "confidential", inputs: 1, outputs: 2 });
+    const ringData = ringFrame({ rail: "confidential", inputs: 1, outputs: 2, ringData: true });
+    const bytes = RingTransactData.encode(ringData);
+    expect(bytes[3]).toBe(2 | (1 << 5));
+    expect(bytes.length).toBe(RingTransactData.encode(plain).length + 2 * 32);
+    const parsed = RingTransactData.parse(bytes, "confidential");
+    expect(parsed.outputs.map((output) => output.record.length)).toEqual([137, 137]);
+    expect(RingTransactData.recordForm(parsed)).toEqual({ data: false, ringData: true });
+    expect(RingTransactData.auditLayout(parsed).records).toEqual({ data: false, ringData: true });
+    // An exit publishes no ring data hash, its record keeps the clear length.
+    const exit = {
+      kind: "exit" as const,
+      payload: new Uint8Array(CONFIDENTIAL_DATA_FREE_BODY_LEN),
+    };
+    const withExit = {
+      ...ringData,
+      outputs: [ringData.outputs[0]!, { ...ringData.outputs[1]!, body: exit }],
+    };
+    expect(
+      RingTransactData.parse(RingTransactData.encode(withExit), "confidential").outputs,
+    ).toEqual(withExit.outputs);
+    // The flag and the record length move together, either alone is refused.
+    expect(reason(() => RingTransactData.encode({ ...plain, ringData: true }))).toBe(
+      "RingTransactLength",
+    );
+    expect(reason(() => RingTransactData.encode({ ...ringData, ringData: false }))).toBe(
+      "RingTransactLength",
+    );
+  });
+
   it("puts the vouched flag at bit 6 of the output count and the voucher's sealed key past the slot keys", () => {
     const plain = ringFrame({ rail: "confidential", inputs: 1, outputs: 2 });
     const vouched = ringFrame({ rail: "confidential", inputs: 1, outputs: 2, vouched: true });
@@ -134,7 +180,11 @@ describe("the ring frame", () => {
     expect(parsed).toEqual(vouched);
     expect(parsed.outputs).toHaveLength(2);
     expect(parsed.recipientKeys).toHaveLength(3 * RECIPIENT_KEY_LEN);
-    expect(RingTransactData.auditLayout(parsed)).toEqual({ entry: false, vouched: true });
+    expect(RingTransactData.auditLayout(parsed)).toEqual({
+      entry: false,
+      vouched: true,
+      records: CLEAR_RECORD_FORM,
+    });
     expect(RingTransactData.streamLayout(parsed).vouched).toBe(true);
     expect(RingTransactData.streamLayout(plain).vouched).toBe(false);
     expect(RingTransactData.auditorMessage(parsed)).toHaveLength(
@@ -485,8 +535,11 @@ describe("the transfer statement", () => {
     expect(bigint(elements[14])).toBe(0n);
     expect(bigint(elements[15])).toBe(1n);
     expect(bigint(elements[16])).toBe(2n);
+    // Each cell binds the frame's exit claim, clear on a recipient slot.
     expect(elements[17]).toEqual(
-      hashChain4(frame.outputs.map((output) => hashBytes(output.record) as Bytes32)) as Bytes32,
+      hashChain4(
+        frame.outputs.map((output) => poseidon([field(0), hashBytes(output.record)]) as Bytes32),
+      ) as Bytes32,
     );
     expect(bigint(elements[18])).toBe(2n);
     expect(elements[19]).toEqual(frame.privateTxHash);

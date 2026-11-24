@@ -1,13 +1,14 @@
 //! Reads `test-vectors/audit/anonymous_bodies.json`, the ciphertexts of a witness the anonymous key solves.
 
 use custom_ring_interface::{
-    stream::SlotSecret, OutputRecord, RecordKey, RecordKind, SenderBundle, RING_RECORD_LEN,
+    stream::SlotSecret, OutputRecord, RecordForm, RecordKey, RecordKind, SenderBundle,
+    RING_RECORD_LEN,
 };
 use serde::Deserialize;
 use spr_keypair::{ViewingKey, X25519Pubkey};
 use zolana_ring_transaction::{
-    open_recipient_body, open_sender_bundle, seal_recipient_body, seal_sender_bundle,
-    AnonymousPlan, AnonymousSlot, PayloadRead, RingDelivery, RingOutputRail,
+    open_recipient_body, open_sender_bundle, seal_sender_bundle, AnonymousPlan, AnonymousSlot,
+    PayloadRead, RecipientBody, RingDelivery, RingOutputRail,
 };
 
 #[derive(Deserialize)]
@@ -51,12 +52,19 @@ fn sealers_and_readers_agree_with_the_proven_ciphertexts() {
         mint: array(&vector.body_mint),
         blinding: array(&vector.body_blinding),
         key: RecordKey::Unpublished,
+        ..OutputRecord::default()
     };
     let secret = SlotSecret::new(array(&vector.body_slot_secret)).unwrap();
-    let sealed = seal_recipient_body(&record, None, &secret).unwrap();
+    let sealed = RecipientBody {
+        record: &record,
+        form: RecordForm::default(),
+        payload: None,
+    }
+    .seal(&secret)
+    .unwrap();
     assert_eq!(hex::encode(sealed), vector.body);
     let ciphertext: [u8; RING_RECORD_LEN] = array(&vector.body);
-    let opened = open_recipient_body(&ciphertext, &secret).unwrap();
+    let opened = open_recipient_body(&ciphertext, &secret, RecordForm::default()).unwrap();
     assert_eq!(
         (opened.record, opened.payload),
         (record, PayloadRead::Absent)

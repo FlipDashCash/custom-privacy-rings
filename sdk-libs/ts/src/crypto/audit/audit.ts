@@ -14,10 +14,11 @@ import {
   ENVELOPE_KEY_LEN,
   STREAM_FIRST_COUNTER,
   TAGGED_KEY_LEN,
-  EXIT_RECORD_LEN,
   RECIPIENT_KEY_LEN,
+  RecordKind,
   auditorMessageLen,
   envelopeRegion,
+  publishedRecordLen,
   recipientKeysLen,
   voucherRegion,
   type AuditStreamLayout,
@@ -318,7 +319,7 @@ export function parseAuditorMessage(
     envelope: bytes.subarray(TAGGED_KEY_LEN, keysAt),
     recipientKeys: cut(keysAt, RECIPIENT_KEY_LEN, layout.outputs),
     ...(layout.vouched ? { voucher: bytes.subarray(voucherAt, recordsAt) } : {}),
-    exitRecords: cut(recordsAt, EXIT_RECORD_LEN, exits),
+    exitRecords: cut(recordsAt, publishedRecordLen(layout.records, RecordKind.exit), exits),
   });
 }
 

@@ -361,10 +361,11 @@ describe("relay message check", () => {
           outputIndex: slot,
           firstNullifier: RingTransactData.firstNullifier(frame),
         });
-        const { record } = openOutputSlot(secret, output.record);
+        const form = RingTransactData.recordForm(frame);
+        const { record } = openOutputSlot(secret, output.record, form);
         if (!equalBytes(record.ownerKey, paid)) return output;
         const changed = change(record);
-        const resealed = { ...output, record: sealOutputSlot(secret, { record: changed }) };
+        const resealed = { ...output, record: sealOutputSlot(secret, { record: changed, form }) };
         // An exit publishes its full record under its owner's tag and a scheme 3 body.
         return changed.kind === RecordKind.exit
           ? {
@@ -431,14 +432,17 @@ describe("relay message check", () => {
         await verdictOf({
           ...frame,
           hasData: true,
-          outputs: frame.outputs.map((output) =>
-            output.body.kind === "recipient"
+          // Every record of a data frame publishes a data hash.
+          outputs: frame.outputs.map((output) => {
+            const record = Uint8Array.of(...output.record, ...new Uint8Array(32));
+            return output.body.kind === "recipient"
               ? {
                   ...output,
+                  record,
                   body: { kind: "recipient" as const, payload: new Uint8Array(PAYLOAD_LENGTH_LEN) },
                 }
-              : output,
-          ),
+              : { ...output, record };
+          }),
         }),
       ).toBe("Data");
     });

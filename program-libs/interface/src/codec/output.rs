@@ -109,11 +109,6 @@ pub fn ring_body_output(data: &[u8]) -> Option<(&[u8], &[u8])> {
         .filter(|(body, _)| body.len() >= RING_RECORD_LEN)
 }
 
-/// The published record ciphertext a ring body opens with, the bytes the statement's record chain binds.
-pub fn ring_body_record(body: &[u8]) -> Option<&[u8; RING_RECORD_LEN]> {
-    body.first_chunk()
-}
-
 pub fn ring_sender_bundle_output_body(data: &[u8]) -> Option<&[u8]> {
     encrypted_output_body(data, RING_SENDER_BUNDLE_SCHEME_TAG)
 }

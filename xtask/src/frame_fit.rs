@@ -13,10 +13,10 @@ use custom_ring_interface::{
     stream::slot_tag,
     tag, AnonymousProofData, AppMessage, CustomRingError, CustomRingMergeIxData, CustomRingProof,
     FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof,
-    RecipientPayload, Replies, RingOutput, RingPolicy, RingRail, RingTransactData, RootRead,
-    SealedMergeRecord, SlotBody, EXIT_RECORD_LEN, MAX_CPI_DATA_LEN, MERGE_ENVELOPE_LEN,
-    MERGE_RECORD_LEN, MIN_REPLY_LEN, RECIPIENT_KEY_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
-    TAGGED_X25519_KEY_LEN,
+    RecipientPayload, RecordForm, RecordKind, Replies, RingOutput, RingPolicy, RingRail,
+    RingTransactData, RootRead, SealedMergeRecord, SlotBody, MAX_CPI_DATA_LEN, MERGE_ENVELOPE_LEN,
+    MERGE_RECORD_LEN, MIN_REPLY_LEN, RECIPIENT_KEY_LEN, SENDER_BUNDLE_LEN, TAGGED_X25519_KEY_LEN,
+    TRANSFER_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -153,6 +153,7 @@ struct Load {
     priority_fee: bool,
     /// The last slot exits.
     every_body: bool,
+    /// A data hash in every record and an empty payload on every recipient body.
     has_data: bool,
     replies: bool,
     reply_len: usize,
@@ -351,16 +352,16 @@ impl Transfer {
         };
         let spp_proof = proof.groth16;
         let field = [6u8; 32];
-        let record = [7u8; EXIT_RECORD_LEN];
+        let record = [7u8; TRANSFER_RECORD_LEN];
         let salt = [9u8; 16];
-        let ring_data = load.has_data.then_some([10u8; 32]);
-        // A recipient body is the record, then under `has_data` one padded payload.
-        let mut recipient_body = record[..RING_RECORD_LEN].to_vec();
+        // Under `has_data` every record publishes a data hash and a recipient body ends in one empty payload.
+        let form = RecordForm {
+            data: load.has_data,
+            ring_data: false,
+        };
+        let mut recipient_body = record[..form.published_len(RecordKind::Ring)].to_vec();
         if load.has_data {
-            let payload = RecipientPayload {
-                ring_data_hash: ring_data,
-                data: Vec::new(),
-            };
+            let payload = RecipientPayload::default();
             recipient_body.extend(payload.encode_padded(payload.encoded_len())?);
         }
         let exit_body = vec![
@@ -371,9 +372,9 @@ impl Transfer {
                     amount: 1,
                     blinding: [11; 32],
                     ring_program_id: None,
-                    data: match ring_data {
-                        Some(hash) => Data::new(vec![DataRecord::RingData(hash.to_vec())]),
-                        None => Data::default(),
+                    data: match load.has_data {
+                        true => Data::new(vec![DataRecord::UtxoData(vec![10; 32])]),
+                        false => Data::default(),
                     },
                 }
                 .serialize()?
@@ -403,7 +404,7 @@ impl Transfer {
                     hash: &field,
                     owner_tag: slot_tag(field),
                     body,
-                    record: &record[..body.record_len()],
+                    record: &record[..body.record_len(form)],
                 }
             })
             .collect();
@@ -458,6 +459,7 @@ impl Transfer {
             extensions,
             interface_transfers,
             has_data: load.has_data,
+            ring_data: form.ring_data,
             entry: frame.entry(),
             wide_owners: TransferSpend {
                 rail,

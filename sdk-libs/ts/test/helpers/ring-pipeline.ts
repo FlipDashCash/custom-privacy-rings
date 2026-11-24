@@ -119,7 +119,7 @@ import {
 } from "./ring-accounts.js";
 import { settlementAccounts } from "../../src/protocol/transaction/spp.js";
 import { checkTransactionFits } from "../../src/operations/workflow/compile.js";
-import { openRecipientNote, ringOutputBlinding } from "../../src/crypto/derivation/blinding.js";
+import { openRecipientBody, ringOutputBlinding } from "../../src/crypto/derivation/blinding.js";
 import { LocalRingKeys, ringWalletKeys, type RingKeys } from "../../src/state/ring-keys.js";
 import { x25519FromU } from "../../src/crypto/keys/x25519.js";
 
@@ -721,6 +721,7 @@ export function checkDisclosure(
   expect(txKey.publicKey().u()).toEqual(data.txViewingU);
   const published = call.proofInputs.outputs.filter((output) => !output.isCompact());
   expect(disclosure.recipientKeys).toHaveLength(published.length);
+  const form = RingTransactData.recordForm(data);
   data.outputs.forEach((wire, index) => {
     const secret = txKeySlotSecret({
       txViewingKey: txKey,
@@ -731,8 +732,8 @@ export function checkDisclosure(
     });
     const record =
       wire.body.kind === "exit"
-        ? openExitRecord(secret, wire.record)
-        : openOutputSlot(secret, wire.record).record;
+        ? openExitRecord(secret, wire.record, form)
+        : openOutputSlot(secret, wire.record, form).record;
     const output = itemAt(published, index);
     const owner = output.ownerAddress;
     if (owner === undefined || output.isDummy()) {
@@ -747,6 +748,8 @@ export function checkDisclosure(
       mint: output.asset,
       blinding: output.blinding,
       key: sealedRecordKey(kind, owner.nullifierPublicKey),
+      dataHash: output.dataHash ?? ZERO_32,
+      ringDataHash: output.ringDataHash ?? ZERO_32,
     });
   });
   txKey.destroy();
@@ -779,13 +782,7 @@ export async function openDelivered(
     throw new Error("no recipient slot");
   const owner = input.keys.address();
   // Another key's secret decrypts noise the record codec refuses, as a reader skips the slot.
-  let opened: ReturnType<typeof openOutputSlot>;
-  try {
-    opened = openOutputSlot(slotSecret, concatBytes(wire.record, wire.body.payload));
-  } catch {
-    return undefined;
-  }
-  return openRecipientNote(
+  return openRecipientBody(
     {
       owner: {
         signingPublicKey: owner.signingPublicKey,
@@ -796,7 +793,8 @@ export async function openDelivered(
       commitment: wire.hash,
       assets: new AssetRegistry(),
     },
-    opened,
+    slotSecret,
+    concatBytes(wire.record, wire.body.payload),
   );
 }
 

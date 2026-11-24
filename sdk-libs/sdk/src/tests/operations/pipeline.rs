@@ -365,7 +365,10 @@ fn payment_at(
     position: usize,
 ) -> zolana_ring_transaction::OpenedRecipientBody {
     let body = published(staged)[position].1.expect("a recipient body");
-    open_recipient_body(body, &slot_secret(staged, reader, position)).unwrap()
+    let form = zolana_ring_transaction::BodyForm::of(&staged.proof_inputs.output_utxos)
+        .unwrap()
+        .records;
+    open_recipient_body(body, &slot_secret(staged, reader, position), form).unwrap()
 }
 
 /// The sender bundle, the first message, opened under the sender's own viewing key.
@@ -4136,7 +4139,7 @@ async fn a_hidden_sender_pays_a_note_carrying_data() {
             zolana_ring_transaction::PayloadRead::Opened(payload) => payload.data,
             other => panic!("an opened payload, got {other:?}"),
         },
-        [&[4; 32][..], b"app"].concat()
+        b"app"
     );
     let assembled = signed
         .assemble(&enrolled(&[&sender, &reader]).client())

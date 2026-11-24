@@ -13,9 +13,7 @@ use spr_transaction::{
     WalletUtxo,
 };
 use zolana_ring_keys::{RingDeliveryRequest, RingKeys, RingTagFrame, RingTagKind, RingTagProbe};
-use zolana_ring_transaction::{
-    is_contributory, open_recipient_body, AnonymousOutput, OpenedBody, RingAssets,
-};
+use zolana_ring_transaction::{is_contributory, AnonymousOutput, OpenedBody, RingAssets};
 
 use crate::{exactly_one_each, is_zero_key, AnonymousError};
 
@@ -233,9 +231,6 @@ fn open_recipient_candidate(
     else {
         return Ok(None);
     };
-    let Ok(body) = open_recipient_body(ciphertext, &candidate.slot_secret) else {
-        return Ok(None);
-    };
     Ok(AnonymousOutput {
         ring: context.ring,
         owner: address,
@@ -243,6 +238,6 @@ fn open_recipient_candidate(
         tree_id: slot.output_context.tree_id,
         assets,
     }
-    .open_body(&body)
+    .open(ciphertext, &candidate.slot_secret)
     .unwrap_or(None))
 }

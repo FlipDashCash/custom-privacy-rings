@@ -1247,6 +1247,7 @@ fn origin_of_frame(
         spp_proof: &groth16,
         nullifiers: &nullifiers,
         input_trees: InputTrees::One(context),
+        ring_data: false,
     };
     data.envelope = &envelope[..data.audit_stream().unwrap().envelope().len];
     let frame = [vec![ring_tag::TRANSFER], data.encode().unwrap()].concat();

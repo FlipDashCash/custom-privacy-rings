@@ -472,7 +472,7 @@ fn open_records(
             }
             .secret()
             .map_err(|_| MessageMismatch::Data)?;
-            let record = open_recipient_body(output.record, &secret)
+            let record = open_recipient_body(output.record, &secret, data.record_form())
                 .map_err(|_| MessageMismatch::Data)?
                 .record;
             Ok((record, key))
@@ -592,7 +592,7 @@ impl ExpectedDelegate {
         let data = parsed.data();
         // 1. The stream opens under the requested keys, and the legs are the requested withdrawals.
         let opened = open_stream(parsed, &self.tx_viewing_key, &self.auditor)?;
-        if data.has_data {
+        if data.has_data || data.ring_data {
             return Err(MessageMismatch::Data);
         }
         self.check_withdrawals(data, accounts)?;

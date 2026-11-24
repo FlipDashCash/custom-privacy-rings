@@ -28,7 +28,9 @@ import { sealAudit } from "../../src/proof/audit-proof.js";
 import { auditorMessageData } from "../../src/crypto/audit/audit.js";
 import { frameKeyShape } from "../../src/protocol/proof/transfer-shapes.js";
 import { sealOutputSlot } from "../../src/crypto/audit/ring-disclosure.js";
+import { ZERO_32 } from "@heliuslabs/spr/internal";
 import { RecordKind, sealedRecordKey } from "../../src/protocol/codec/audit-stream.js";
+import { CLEAR_RECORD_FORM } from "../../src/protocol/codec/ring-disclosure-layout.js";
 import type { ReplyMetadata } from "../../src/protocol/codec/anonymous-delivery.js";
 import {
   AnonymousSync,
@@ -292,6 +294,7 @@ export class ScanWallet {
         outputs: outputs.length,
         capacity: shape.outputs,
         vouched: false,
+        records: CLEAR_RECORD_FORM,
       },
       published: rail.publishedSlots(proof, this.address, SCAN_AUDITOR.publicKey()),
       inputs: spent,
@@ -366,6 +369,7 @@ export function sealedNote(
   }>,
 ): Uint8Array {
   return sealOutputSlot(slotSecret, {
+    form: CLEAR_RECORD_FORM,
     record: {
       kind: RecordKind.ring,
       amount: note.amount,
@@ -373,6 +377,8 @@ export function sealedNote(
       mint: note.mint,
       blinding: note.blinding,
       key: sealedRecordKey(RecordKind.ring, note.nullifierPk ?? note.owner.nullifierPublicKey),
+      dataHash: ZERO_32,
+      ringDataHash: ZERO_32,
     },
   });
 }

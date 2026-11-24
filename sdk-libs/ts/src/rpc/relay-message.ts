@@ -853,7 +853,7 @@ function checkMoved(
 ): void {
   // Owner tags alone, the message holds no blinding, a hidden frame's tags bind nothing.
   checkTransactionKey(expected.txViewingKey, frame);
-  if (frame.hasData) throw mismatch("Data");
+  if (frame.hasData || frame.ringData) throw mismatch("Data");
   checkWithdrawals(expected, frame, accounts);
   const { envelope, recipientKeys } = openStream(expected.txViewingKey, expected.auditor, frame);
   const records = frameRecords(expected.txViewingKey, frame, recipientKeys);
@@ -1044,9 +1044,10 @@ function frameRecords(
           firstNullifier: RingTransactData.firstNullifier(frame),
         });
         try {
+          const form = RingTransactData.recordForm(frame);
           return output.body.kind === "exit"
-            ? openExitRecord(secret, output.record)
-            : openOutputSlot(secret, output.record).record;
+            ? openExitRecord(secret, output.record, form)
+            : openOutputSlot(secret, output.record, form).record;
         } finally {
           secret.fill(0);
         }

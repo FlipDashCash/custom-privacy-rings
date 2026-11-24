@@ -80,12 +80,12 @@ func walkTransferFrame(t *testing.T, line []byte, rail frameRail) {
 		curatorFlag, ownerInProof, ownRoot, secondTree, replyFlag, extensionsFlag = 2, 8, 16, 32, 64, 128
 		defaultOwnerTag, publicOwners                                             = 64, 128
 		hasData, entry                                                            = 64, 128
-		wideOwners, lowBits                                                       = 128, 63
+		ringData, slotCount, lowBits                                              = 32, 31, 63
 	)
 	anonymousFrame := rail == frameAnonymous || rail == frameAnonymousDelegate
 	c := frameCursor{t: t, rest: line}
 	head := c.take(5)
-	flags, shape, inputByte, m := head[0], head[1], head[2], int(head[3]&^wideOwners)
+	flags, shape, inputByte, m := head[0], head[1], head[2], int(head[3]&slotCount)
 	n := int(inputByte & lowBits)
 	if m < 1 || m > 16 {
 		t.Fatalf("output count %d", m)
@@ -128,12 +128,13 @@ func walkTransferFrame(t *testing.T, line []byte, rail frameRail) {
 		case exit:
 			extra = frameExitBodyLen
 		}
-		tag, record := frameSlotTagLen, audit.RingRecordLen
+		tag := frameSlotTagLen
 		if exit {
-			tag, record = 32, audit.RecordLen
+			tag = 32
 		} else {
 			bodies++
 		}
+		record := audit.PublishedRecordLen(exit, inputByte&hasData != 0, head[3]&ringData != 0)
 		c.take(32 + tag + record + extra)
 	}
 	if flags&replyFlag != 0 {

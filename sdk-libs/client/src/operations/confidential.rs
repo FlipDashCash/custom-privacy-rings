@@ -414,7 +414,7 @@ mod tests {
     use custom_ring_interface::{
         encode_ring_body_output,
         stream::{DeliveredSlot, SlotSecret},
-        OutputRecord, RecordKind,
+        OutputRecord, RecordForm, RecordKind,
     };
     use spr_client::{
         rpc::{Context, GetShieldedTransactionsByNullifiersResponse, HistoryFilters, Page},
@@ -431,7 +431,7 @@ mod tests {
         DecryptRequest, DeriveRequest, Mint, TransactionError, TransactionKeyRequest,
     };
     use zolana_ring_keys::{RingDeliveryRequest, RingKeyError, RingTagFrame, ViewTagRequest};
-    use zolana_ring_transaction::seal_recipient_body;
+    use zolana_ring_transaction::RecipientBody;
 
     use std::sync::Mutex;
 
@@ -780,8 +780,8 @@ mod tests {
             }
             .hash(&address.nullifier_pubkey, &[0; 32], &[0; 32], TREE)
             .unwrap();
-            let body = seal_recipient_body(
-                &OutputRecord {
+            let body = RecipientBody {
+                record: &OutputRecord {
                     kind: RecordKind::Ring,
                     amount: AMOUNT,
                     owner_key: address.signing_pubkey.confidential_view_tag().unwrap(),
@@ -791,10 +791,12 @@ mod tests {
                         RecordKind::Ring,
                         address.nullifier_pubkey,
                     ),
+                    ..OutputRecord::default()
                 },
-                None,
-                &secret,
-            )
+                form: RecordForm::default(),
+                payload: None,
+            }
+            .seal(&secret)
             .unwrap();
             ShieldedTransaction {
                 slot: self.slot,

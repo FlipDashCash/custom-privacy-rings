@@ -14,11 +14,15 @@
 // inputs, or they select another keystream.
 //
 // Each output record is its own stream under its slot secret, so no counter of the auditor stream serves it.
+// Every slot seals TransferRecordLen bytes and publishes a prefix. The frame's data flags and the slot's
+// class fix the prefix, so one length serves every ring slot and dummy of a frame and no length names a data note.
 //
 // The file proves the following.
-//  1. The layout value holds the vouched flag and the entry flag, a value past them fails its decomposition.
+//  1. The layout value holds the vouched, entry, data and ring data flags, a value past them fails its decomposition.
 //  2. The entry flag equals the key's entry capacity.
 //  3. Range construction rejects an input capacity outside the entry bitmap.
+//  4. A clear data flag holds every slot's data hash to zero, a clear ring data flag every ring data hash,
+//     and an exit carries no ring data hash.
 //
 // Read after shared/envelope.go. Read before audit/audit.go, audit/record.go.
 
@@ -26,8 +30,10 @@ package audit
 
 import (
 	"github.com/consensys/gnark/frontend"
+	"github.com/reilabs/gnark-lean-extractor/v3/abstractor"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
+	"github.com/helius-labs/zolana/prover/server/circuits/gadget"
 )
 
 // The flags of the audit statement's layout value, mirrored by AuditLayout::value in program-libs/interface/src/proof/disclosure.rs.
@@ -35,25 +41,53 @@ const (
 	// LayoutVouched is set when the frame publishes the voucher region.
 	LayoutVouched = 1 << 0
 	LayoutEntry   = 1 << 1
+	// LayoutData is set when the frame's records publish a data hash.
+	LayoutData = 1 << 2
+	// LayoutRingData is set when the frame's records publish a ring data hash.
+	LayoutRingData = 1 << 3
 )
 
-const layoutBits = 2
+const layoutBits = 4
+
+// LayoutFlags are the layout bits a frame chooses.
+type LayoutFlags struct {
+	Vouched, Data, RingData frontend.Variable
+}
 
 type StreamShape struct {
 	InputClass, Outputs int
 	Entry               bool
 }
 
-// AssertLayout pins the layout to the key's entry flag and returns the vouched flag, the one bit a frame chooses.
-func (s StreamShape) AssertLayout(api frontend.API, layout frontend.Variable) frontend.Variable {
-	// The decomposition bounds the layout to its two bits.
+// AssertLayout pins the layout to the key's entry flag and returns the flags a frame chooses.
+func (s StreamShape) AssertLayout(api frontend.API, layout frontend.Variable) LayoutFlags {
+	// The decomposition bounds the layout to its four bits.
 	bits := api.ToBinary(layout, layoutBits)
 	entry := 0
 	if s.Entry {
 		entry = 1
 	}
 	api.AssertIsEqual(bits[1], entry)
-	return bits[0]
+	return LayoutFlags{Vouched: bits[0], Data: bits[2], RingData: bits[3]}
+}
+
+// assertHashes holds a hash under a clear flag to zero, the reader rebuilds the commitment with zero there.
+func (l LayoutFlags) assertHashes(api frontend.API, slot shared.Output) {
+	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: api.Sub(1, l.Data), V: slot.DataHash})
+	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: api.Sub(1, l.RingData), V: slot.RingDataHash})
+	// An exit publishes its nullifier key where a ring slot publishes ring data.
+	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: slot.Exit, V: slot.RingDataHash})
+}
+
+// PublishedRecordLen is the prefix of TransferRecordLen a slot publishes.
+func PublishedRecordLen(exit, data, ringData bool) int {
+	fields := 0
+	for _, published := range []bool{data, exit || ringData} {
+		if published {
+			fields++
+		}
+	}
+	return RingRecordLen + fields*fieldLen
 }
 
 // StreamRanges mirrors AuditStreamLayout in program-libs/interface/src/proof/audit_stream.rs.
@@ -73,9 +107,11 @@ const (
 	fieldLen            = 32
 	amountLen           = 8
 	kindLen             = 1
-	// RecordLen is the plaintext every slot seals and an exit publishes, mirrored by EXIT_RECORD_LEN.
+	// TransferRecordLen is the plaintext every transfer slot seals, mirrored by TRANSFER_RECORD_LEN.
+	TransferRecordLen = RecordLen + fieldLen
+	// RecordLen is the head and the nullifier key, the prefix an exit publishes with no data hash and the record a merge seals before its seed.
 	RecordLen = RingRecordLen + fieldLen
-	// RingRecordLen is the prefix a non-exit slot publishes without the nullifier key, mirrored by RING_RECORD_LEN.
+	// RingRecordLen is the head every slot publishes, kind to blinding.
 	RingRecordLen = kindLen + amountLen + 3*fieldLen
 	// KeyLen is one sealed recipient key, its region holds no padding.
 	KeyLen    = fieldLen

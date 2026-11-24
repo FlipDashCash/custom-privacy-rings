@@ -4,7 +4,7 @@ use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, tag, AnonymousProofData, AppMessage, CustomRingError,
     CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
     PlainGroth16Proof, PolicyProof, Replies, RingOutput, RingPolicy, RingRail, RingTransactData,
-    RootRead, SlotBody, TransferApproval, EXIT_RECORD_LEN, MAX_SPP_CPI_ACCOUNTS,
+    RootRead, SlotBody, TransferApproval, MAX_SPP_CPI_ACCOUNTS,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -165,6 +165,7 @@ pub(crate) struct TransactParts {
     pub extensions: OwnedExtensions,
     pub interface_transfers: Vec<InterfaceTransfer>,
     pub has_data: bool,
+    pub ring_data: bool,
     pub entry: bool,
     pub wide_owners: bool,
     pub vouched: bool,
@@ -189,13 +190,13 @@ impl TransactParts {
         &mut self,
         envelope: Vec<u8>,
         recipient_keys: Vec<u8>,
-        exit_records: &[[u8; EXIT_RECORD_LEN]],
+        exit_records: &[Vec<u8>],
     ) {
         self.envelope = envelope;
         self.recipient_keys = recipient_keys;
         let exits = self.outputs.iter_mut().filter(|output| output.is_exit());
         for (output, record) in exits.zip(exit_records) {
-            output.record = record.to_vec();
+            output.record.clone_from(record);
         }
     }
 
@@ -219,6 +220,7 @@ impl TransactParts {
             extensions: self.extensions.view(),
             interface_transfers: self.interface_transfers.clone(),
             has_data: self.has_data,
+            ring_data: self.ring_data,
             entry: self.entry,
             wide_owners: self.wide_owners,
             outputs: self.outputs.iter().map(OwnedOutput::view).collect(),

@@ -333,6 +333,7 @@ impl Fixture {
             mint: utxo.asset.asset.to_bytes(),
             blinding: utxo.blinding,
             key: record_key(RecordKind::Ring, self.address.nullifier_pubkey),
+            ..OutputRecord::default()
         }
     }
 

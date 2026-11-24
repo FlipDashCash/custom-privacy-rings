@@ -17,7 +17,7 @@ use custom_ring_interface::{
     encode_ring_body_output, encode_ring_sender_bundle_output,
     stream::{DeliveredSlot, SlotSecret},
     AuditEvidence, AuditKey, AuditStreamLayout, AuditorMessage, OutputRecord, RecipientPayload,
-    RecordKind, SenderBundle, MIN_REPLY_LEN, RING_RECORD_LEN,
+    RecordForm, RecordKind, SenderBundle, MIN_REPLY_LEN, RING_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -50,8 +50,8 @@ use zolana_ring_keys::{
     RingDeliveryRequest, RingKeyError, RingKeys, RingTagFrame, RotatingRingKeys, ViewTagRequest,
 };
 use zolana_ring_transaction::{
-    published_outputs, record_key, seal_recipient_body, seal_reply, seal_sender_bundle,
-    AnonymousPlan, ReplyMetadata, RingAssets, RingDelivery, RingOutputRail,
+    published_outputs, record_key, seal_reply, seal_sender_bundle, AnonymousPlan, BodyForm,
+    ExitSlot, RecipientBody, ReplyMetadata, RingAssets, RingDelivery, RingOutputRail,
 };
 
 use history_page::EventsPage;
@@ -449,6 +449,7 @@ fn test_layout(inputs: usize, outputs: usize) -> AuditStreamLayout {
         outputs,
         capacity: outputs,
         vouched: false,
+        records: Default::default(),
     }
 }
 
@@ -481,9 +482,9 @@ fn auditor_message(
         .enumerate()
         .filter(|(_, output)| output.ring_program_id.is_none() && !output.is_dummy())
         .map(|(index, output)| {
-            rail.exit_record(output, &first_nullifier, index)
+            let form = BodyForm::of(outputs).unwrap().records;
+            rail.exit_record(output, &first_nullifier, ExitSlot { index, form })
                 .unwrap()
-                .to_vec()
         })
         .collect();
     let ciphertexts = [&sealed.envelope[..], &sealed.keys[..]]
@@ -511,28 +512,52 @@ impl SenderAuditFrames for TestFrames {
     }
 }
 
-/// A ring record naming `owner`, sealed under `secret` with `payload` at its own width.
+/// A data note's proven hashes and its application data.
+struct NoteData {
+    data_hash: [u8; 32],
+    ring_data_hash: [u8; 32],
+    application: Vec<u8>,
+}
+
+/// A ring record naming `owner`, sealed under `secret`, a data note's with both hashes and its payload at its own width.
 fn ring_body(
     owner: &ShieldedAddress,
     note: (u64, [u8; 32], [u8; 32]),
-    payload: Option<RecipientPayload>,
+    data: Option<NoteData>,
     secret: &SlotSecret,
 ) -> Vec<u8> {
     let (amount, mint, blinding) = note;
-    seal_recipient_body(
-        &OutputRecord {
+    let form = RecordForm {
+        data: data.is_some(),
+        ring_data: data.is_some(),
+    };
+    let (data_hash, ring_data_hash, payload) = match data {
+        Some(data) => (
+            data.data_hash,
+            data.ring_data_hash,
+            Some(RecipientPayload {
+                data: data.application,
+            }),
+        ),
+        None => ([0; 32], [0; 32], None),
+    };
+    RecipientBody {
+        record: &OutputRecord {
             kind: RecordKind::Ring,
             amount,
             owner_key: owner.signing_pubkey.confidential_view_tag().unwrap(),
             mint,
             blinding,
             key: record_key(RecordKind::Ring, owner.nullifier_pubkey),
+            data_hash,
+            ring_data_hash,
         },
-        payload
+        form,
+        payload: payload
             .as_ref()
             .map(|payload| (payload, payload.encoded_len())),
-        secret,
-    )
+    }
+    .seal(secret)
     .unwrap()
 }
 
@@ -2233,9 +2258,10 @@ async fn an_extended_recipient_body_rebuilds_its_commitment_with_its_data() {
     let body = ring_body(
         &bob.address(),
         (5, Mint::SOL.asset.to_bytes(), blinding),
-        Some(RecipientPayload {
-            ring_data_hash: Some(ring_data_hash),
-            data: [&data_hash[..], b"memo"].concat(),
+        Some(NoteData {
+            data_hash,
+            ring_data_hash,
+            application: b"memo".to_vec(),
         }),
         &secret,
     );

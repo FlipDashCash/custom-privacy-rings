@@ -102,7 +102,7 @@ import type { OwnerDebit } from "../../protocol/membership/owner-debits.js";
 import { policyWithdrawalHash } from "../../proof/withdrawals.js";
 import { signVouch, type VouchSigner } from "../../proof/vouch.js";
 import {
-  framesData,
+  bodyForm,
   publishedOutputs,
   type PublishedSlot,
   type RingOutputRail,
@@ -502,6 +502,7 @@ function stagedPlanFrame(
   const shape = proofInputs.checkShape();
   const published = publishedOutputs(proofInputs.outputs);
   const entry = spendsDefaultRing(proofInputs);
+  const { records } = bodyForm(published);
   return Object.freeze({
     subjects: Object.freeze({
       rail: spend.rail,
@@ -526,6 +527,7 @@ function stagedPlanFrame(
         publicOwners: spend.publicOwners === true,
         wideOwners,
         vouched: input.voucher !== undefined,
+        records,
       }),
   });
 }
@@ -1009,7 +1011,8 @@ function previewData(
     salt: external.salt,
     extensions: input.extensions,
     interfaceTransfers: external.interfaceTransfers.map(interfaceTransferOf),
-    hasData: framesData(published.map((slot) => slot.output)),
+    hasData: sealed.layout.records.data,
+    ringData: sealed.layout.records.ringData,
     entry,
     wideOwners: input.wideOwners,
     vouched: sealed.audit.vouched,

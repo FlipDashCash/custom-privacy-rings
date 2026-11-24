@@ -29,8 +29,10 @@ import {
   encodeMergeRecord,
   encodeOutputRecord,
   encodeRecipientPayload,
+  publishedOutputRecord,
   RecordKind,
   UNPUBLISHED_RECORD_KEY,
+  type MergeOutputRecord,
   type OutputRecord,
 } from "../../../src/protocol/codec/audit-stream.js";
 import {
@@ -38,6 +40,8 @@ import {
   auditorMessageLen,
   capacityBlocks,
   checkedStreamLayout,
+  CLEAR_RECORD_FORM,
+  TRANSFER_RECORD_LEN,
   envelopeBlocks,
   envelopeRegion,
   EXIT_RECORD_LEN,
@@ -50,7 +54,7 @@ import {
   RING_RECORD_LEN,
   type AuditStreamLayout,
 } from "../../../src/protocol/codec/ring-disclosure-layout.js";
-import { vectorRecord } from "../../helpers/vector-records.js";
+import { vectorLayout, vectorRecord } from "../../helpers/vector-records.js";
 import { envelopeDigest, recordChain } from "../../../src/protocol/proof/statement.js";
 import { dummyUtxoHash, fieldUtxoHash } from "../../../src/protocol/membership/utxo-hash.js";
 import { RingError } from "../../../src/protocol/error.js";
@@ -109,6 +113,7 @@ describe("the stream regions", () => {
         outputs: key.outputs,
         capacity: key.outputs,
         vouched: false,
+        records: CLEAR_RECORD_FORM,
       });
       const layout = layoutAt(1);
       expect(envelopeBlocks(layout.key)).toBe(key.envelope_blocks);
@@ -132,6 +137,7 @@ describe("the stream regions", () => {
       outputs: 2,
       capacity: 4,
       vouched: false,
+      records: CLEAR_RECORD_FORM,
     };
     expect(envelopeBlocks(layout.key)).toBe(3);
     expect(firstRecipientKeyCounter(layout.key)).toBe(5);
@@ -142,6 +148,9 @@ describe("the stream regions", () => {
     expect(capacityBlocks(layout)).toBe(3 + 5 * 2);
     // `0x04 ‖ eph_u ‖ envelope ‖ keys ‖ one exit record`.
     expect(auditorMessageLen(layout, 1)).toBe(33 + 33 + 64 + 137);
+    // The data bit alone widens an exit record.
+    const records = { data: true, ringData: true };
+    expect(auditorMessageLen({ ...layout, records }, 1)).toBe(33 + 33 + 64 + 169);
   });
 
   it("keeps the voucher's key past the last slot of the capacity and transmits it on a vouched frame alone", () => {
@@ -151,6 +160,7 @@ describe("the stream regions", () => {
       outputs: 2,
       capacity: 4,
       vouched: false,
+      records: CLEAR_RECORD_FORM,
     };
     const vouched: AuditStreamLayout = { ...plain, vouched: true };
     expect(voucherRegion(plain)).toEqual({ startCounter: 13, maxBlocks: 2, length: 0 });
@@ -164,12 +174,18 @@ describe("the stream regions", () => {
     expect(capacityBlocks(vouched)).toBe(capacityBlocks(plain));
     expect(
       [
-        { entry: false, vouched: false },
-        { entry: false, vouched: true },
-        { entry: true, vouched: false },
-        { entry: true, vouched: true },
+        { entry: false, vouched: false, records: CLEAR_RECORD_FORM },
+        { entry: false, vouched: true, records: CLEAR_RECORD_FORM },
+        { entry: true, vouched: false, records: CLEAR_RECORD_FORM },
+        { entry: true, vouched: true, records: CLEAR_RECORD_FORM },
       ].map(auditLayoutValue),
     ).toEqual([0, 1, 2, 3]);
+    const clear = { entry: false, vouched: false };
+    expect(auditLayoutValue({ ...clear, records: { data: true, ringData: false } })).toBe(4);
+    expect(auditLayoutValue({ ...clear, records: { data: false, ringData: true } })).toBe(8);
+    expect([0, 5, 10, 15].map((value) => auditLayoutValue(vectorLayout(value)))).toEqual([
+      0, 5, 10, 15,
+    ]);
     const sealed = Uint8Array.from({ length: 96 }, (_, at) => at);
     expect(splitSealedKeys(plain, sealed)).toEqual({ keys: sealed });
     expect(splitSealedKeys(vouched, sealed)).toEqual({
@@ -186,6 +202,7 @@ describe("the stream regions", () => {
       outputs: 2,
       capacity: 2,
       vouched: false,
+      records: CLEAR_RECORD_FORM,
     };
     expect(checkedStreamLayout(base)).toBe(base);
     expect(() => checkedStreamLayout({ ...base, inputs: 3 })).toThrow();
@@ -193,20 +210,6 @@ describe("the stream regions", () => {
     expect(() => checkedStreamLayout({ ...base, outputs: 3 })).toThrow();
   });
 });
-
-/** The vector carries no payload, the Go writer's hashes on the data case's first output stand in. */
-const dataHashes = (
-  name: string,
-  slot: number,
-): Readonly<{ dataHash?: Bytes32; ringDataHash?: Bytes32 }> => {
-  if (name !== "data" || slot !== 0) return {};
-  const field = (value: number): Bytes32 => {
-    const bytes = new Uint8Array(32);
-    new DataView(bytes.buffer).setUint32(28, value, false);
-    return bytes as Bytes32;
-  };
-  return { dataHash: field(0xda7a), ringDataHash: field(0x5ca1e) };
-};
 
 const keyCiphertexts = (testCase: StreamCase): string[] =>
   testCase.recipient_keys.map((_, slot) =>
@@ -223,12 +226,14 @@ describe("the stream vector", () => {
   const auditor = (): X25519Keypair => X25519Keypair.fromBytes(hex(vector.auditor_sk) as Bytes32);
 
   for (const testCase of vector.cases) {
+    const { entry, vouched, records } = vectorLayout(testCase.layout);
     const layout: AuditStreamLayout = {
-      key: { class: testCase.input_class, entry: (testCase.layout & 2) !== 0 },
+      key: { class: testCase.input_class, entry },
       inputs: testCase.input_count,
       outputs: testCase.output_count,
       capacity: testCase.outputs,
-      vouched: (testCase.layout & 1) !== 0,
+      vouched,
+      records,
     };
     const salt = hex(vector.salt) as Bytes16;
     const txKey = (): X25519Keypair =>
@@ -281,7 +286,12 @@ describe("the stream vector", () => {
 
     it(`${testCase.name} binds its digest and record chain`, async () => {
       await initializePoseidon();
-      const outputs = testCase.record_ciphertexts.map((record) => ({ record: hex(record) }));
+      const outputs = testCase.record_ciphertexts.map((record, slot) => ({
+        record: hex(record),
+        exit:
+          vectorRecord(hex(testCase.records[slot] as string), records).record.kind ===
+          RecordKind.exit,
+      }));
       expect(
         bytesToHex(
           envelopeDigest(
@@ -291,16 +301,18 @@ describe("the stream vector", () => {
           ),
         ),
       ).toBe(testCase.envelope_digest);
-      expect(bytesToHex(recordChain(outputs, testCase.outputs))).toBe(testCase.record_chain);
+      expect(bytesToHex(recordChain(outputs, testCase.outputs, records))).toBe(
+        testCase.record_chain,
+      );
     });
 
-    it(`${testCase.name} rebuilds every published hash from its record and data hashes`, async () => {
+    it(`${testCase.name} rebuilds every published hash from its record alone`, async () => {
       await initializePoseidon();
       const opened = openRingDisclosure(auditor(), { layout, message: message(), salt });
       const firstNullifier = hex(vector.first_nullifier) as Bytes32;
       const seed = ringBlindingSeed(hex(vector.tx_viewing_sk) as Bytes32, salt);
       testCase.records.forEach((plaintext, slot) => {
-        const { record, nullifierPk } = vectorRecord(hex(plaintext));
+        const { record, nullifierPk } = vectorRecord(hex(plaintext), records);
         const blinding = ringOutputBlinding({
           firstNullifier,
           blindingSeed: seed,
@@ -319,7 +331,8 @@ describe("the stream vector", () => {
                 amount: record.amount,
                 blinding: record.blinding,
                 treeId: vector.output_tree_id,
-                ...dataHashes(testCase.name, slot),
+                dataHash: record.dataHash,
+                ringDataHash: record.ringDataHash,
                 ringId:
                   record.kind === RecordKind.ring
                     ? (hex(vector.ring_id) as Bytes32)
@@ -339,6 +352,7 @@ describe("the stream vector", () => {
       outputs: 2,
       capacity: 2,
       vouched: false,
+      records: CLEAR_RECORD_FORM,
     };
     const keys = [
       X25519Keypair.generate().publicKey().u(),
@@ -394,7 +408,7 @@ describe("the stream vector", () => {
 describe("the stream codecs", () => {
   const nullifierPk = new Uint8Array(32).fill(2) as Bytes32;
   /** A merge output's record, the full form carries its key. */
-  const record: OutputRecord = {
+  const mergeRecord: MergeOutputRecord = {
     kind: RecordKind.ring,
     amount: 7n,
     ownerKey: new Uint8Array(32).fill(1) as Bytes32,
@@ -402,38 +416,45 @@ describe("the stream codecs", () => {
     blinding: new Uint8Array(32).fill(3) as Bytes32,
     key: { kind: "carried", nullifierPk },
   };
+  /** The same note as a transfer's ring output, its key unpublished. */
+  const record: OutputRecord = {
+    ...mergeRecord,
+    key: UNPUBLISHED_RECORD_KEY,
+    dataHash: new Uint8Array(32).fill(4) as Bytes32,
+    ringDataHash: new Uint8Array(32).fill(5) as Bytes32,
+  };
+  const form = { data: true, ringData: true };
 
   it("lays the output record out at its contract bytes", () => {
-    const bytes = encodeOutputRecord(record);
-    expect(bytes).toHaveLength(EXIT_RECORD_LEN);
+    const bytes = encodeOutputRecord(record, form);
+    expect(bytes).toHaveLength(TRANSFER_RECORD_LEN);
     expect(bytes[0]).toBe(1);
     expect(bytes[8]).toBe(7);
     expect(bytes.subarray(73, RING_RECORD_LEN)).toEqual(record.blinding);
-    expect(bytes.subarray(RING_RECORD_LEN)).toEqual(nullifierPk);
-    expect(decodeOutputRecord(bytes.subarray(0, RING_RECORD_LEN))).toEqual({
-      ...record,
-      key: UNPUBLISHED_RECORD_KEY,
-    });
-    expect(encodeOutputRecord(DUMMY_RECORD).every((byte) => byte === 0)).toBe(true);
+    expect(bytes.subarray(RING_RECORD_LEN, EXIT_RECORD_LEN)).toEqual(record.dataHash);
+    expect(bytes.subarray(EXIT_RECORD_LEN)).toEqual(record.ringDataHash);
+    expect(decodeOutputRecord(bytes, form)).toEqual(record);
+    expect(encodeOutputRecord(DUMMY_RECORD, form).every((byte) => byte === 0)).toBe(true);
   });
 
   it("refuses a kind off the three, a dummy with any nonzero byte and another length", () => {
-    const bytes = encodeOutputRecord(record).subarray(0, RING_RECORD_LEN);
+    const bytes = publishedOutputRecord(record, form);
     const kind = bytes.slice();
     kind[0] = 3;
     const dummy = bytes.slice();
     dummy[0] = 0;
-    const dummyBlinding = new Uint8Array(RING_RECORD_LEN);
+    const dummyBlinding = new Uint8Array(TRANSFER_RECORD_LEN);
     dummyBlinding[RING_RECORD_LEN - 1] = 1;
     for (const refused of [kind, dummy, dummyBlinding, bytes.subarray(1)])
-      expect(() => decodeOutputRecord(refused)).toThrow(RingError);
+      expect(() => decodeOutputRecord(refused, form)).toThrow(RingError);
   });
 
   it("carries a 169 byte merge record of a ring note", () => {
     const seed = new Uint8Array(32).fill(5) as Bytes32;
-    const merge = encodeMergeRecord({ record, seed });
+    const merge = encodeMergeRecord({ record: mergeRecord, seed });
     expect(merge).toHaveLength(169);
-    expect(decodeMergeRecord(merge)).toEqual({ record, seed });
+    expect(merge.subarray(RING_RECORD_LEN, EXIT_RECORD_LEN)).toEqual(nullifierPk);
+    expect(decodeMergeRecord(merge)).toEqual({ record: mergeRecord, seed });
     // The codec reads any kind as Rust does, the merge reader refuses one other than a ring note.
     const exit = merge.slice();
     exit[0] = RecordKind.exit;
@@ -449,6 +470,7 @@ describe("the stream codecs", () => {
       outputs: 2,
       capacity: 4,
       vouched: true,
+      records: CLEAR_RECORD_FORM,
     };
     const keys = [
       X25519Keypair.generate().publicKey().u(),
@@ -510,6 +532,7 @@ describe("the stream codecs", () => {
       outputs: 2,
       capacity: 2,
       vouched: false,
+      records: CLEAR_RECORD_FORM,
     };
     const envelope = new Uint8Array(envelopeRegion(layout).length);
     expect(decodeAuditEnvelope(envelope, layout).evidence.kind).toBe("entry");
@@ -517,24 +540,17 @@ describe("the stream codecs", () => {
   });
 
   it("frames the payload with its length and refuses what the encoder never writes", () => {
-    const ringDataHash = new Uint8Array(32).fill(4) as Bytes32;
-    // The presence byte is always written, an empty payload is `u16be(1) ‖ 0`.
-    expect(encodeRecipientPayload({ data: new Uint8Array() })).toEqual(Uint8Array.of(0, 1, 0));
-    const withHash = encodeRecipientPayload({ ringDataHash, data: new Uint8Array() }, 40);
-    expect(withHash).toHaveLength(40);
-    expect([...withHash.subarray(0, 3)]).toEqual([0, 33, 1]);
-    expect(decodeRecipientPayload(withHash)).toEqual({ ringDataHash, data: new Uint8Array() });
+    expect(encodeRecipientPayload({ data: new Uint8Array() })).toEqual(Uint8Array.of(0, 0));
     const data = new Uint8Array(40).fill(6);
-    const withData = encodeRecipientPayload({ data });
-    expect(withData[2]).toBe(0);
-    expect(decodeRecipientPayload(withData).data).toEqual(data);
-    const padding = withHash.slice();
-    padding[39] = 1;
+    const padded = encodeRecipientPayload({ data }, 50);
+    expect(padded).toHaveLength(50);
+    expect([...padded.subarray(0, 2)]).toEqual([0, 40]);
+    expect(decodeRecipientPayload(padded)).toEqual({ data });
+    expect(decodeRecipientPayload(Uint8Array.of(0, 0, 0))).toEqual({ data: new Uint8Array() });
+    const padding = padded.slice();
+    padding[49] = 1;
     const pastBytes = Uint8Array.of(0, 9, 0);
-    const presence = Uint8Array.of(0, 1, 2);
-    const shortHash = Uint8Array.of(0, 2, 1, 0);
-    const empty = Uint8Array.of(0, 0, 0);
-    for (const refused of [padding, pastBytes, presence, shortHash, empty, new Uint8Array(1)])
+    for (const refused of [padding, pastBytes, new Uint8Array(1)])
       expect(() => decodeRecipientPayload(refused)).toThrow(RingError);
     expect(() => encodeRecipientPayload({ data }, 10)).toThrow(RingError);
   });
@@ -544,18 +560,17 @@ describe("the stream codecs", () => {
     const secret = new Uint8Array(32).fill(9) as Bytes32;
     secret[0] = 0;
     const payload = { data: new Uint8Array(40).fill(6) };
-    const body = sealOutputSlot(secret, { record, payload, payloadLength: 50 });
-    // A ring slot publishes the record without its key, the payload follows at its end.
-    expect(body).toHaveLength(RING_RECORD_LEN + 50);
-    const published = { ...record, key: UNPUBLISHED_RECORD_KEY };
-    expect(openOutputSlot(secret, body)).toEqual({
-      record: published,
+    const body = sealOutputSlot(secret, { record, form, payload, payloadLength: 50 });
+    // A ring slot publishes the record with its two hashes, the payload follows at its end.
+    expect(body).toHaveLength(TRANSFER_RECORD_LEN + 50);
+    expect(openOutputSlot(secret, body, form)).toEqual({
+      record,
       payload: { kind: "opened", payload },
     });
-    const bare = sealOutputSlot(secret, { record });
+    const bare = sealOutputSlot(secret, { record, form });
     // One keystream from counter 2, the record bytes seal alike with or without a payload.
-    expect(bare).toEqual(body.subarray(0, RING_RECORD_LEN));
-    expect(openOutputSlot(secret, bare)).toEqual({ record: published, payload: ABSENT_PAYLOAD });
-    expect(() => openOutputSlot(secret, bare.subarray(1))).toThrow();
+    expect(bare).toEqual(body.subarray(0, TRANSFER_RECORD_LEN));
+    expect(openOutputSlot(secret, bare, form)).toEqual({ record, payload: ABSENT_PAYLOAD });
+    expect(() => openOutputSlot(secret, bare.subarray(1), form)).toThrow();
   });
 });

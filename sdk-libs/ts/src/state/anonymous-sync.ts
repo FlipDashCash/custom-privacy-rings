@@ -41,18 +41,16 @@ import {
   type ReplyClaim,
 } from "../protocol/codec/anonymous-delivery.js";
 import { parseAuditorMessage } from "../crypto/audit/audit.js";
-import {
-  openOutputSlot,
-  openSealedDisclosure,
-  type OpenedOutput,
-} from "../crypto/audit/ring-disclosure.js";
+import { openOutputSlot, openSealedDisclosure } from "../crypto/audit/ring-disclosure.js";
+import type { OutputRecord } from "../protocol/codec/audit-stream.js";
 import {
   auditorMessageLen,
+  recipientBodyForms,
   type AuditStreamLayout,
 } from "../protocol/codec/ring-disclosure-layout.js";
 import { TRANSFER_SHAPES } from "../protocol/proof/transfer-shapes.js";
 import { ringBodyOutput, senderBundleOutputBody } from "../protocol/transaction/output.js";
-import { openRecipientNote } from "../crypto/derivation/blinding.js";
+import { openRecipientBody } from "../crypto/derivation/blinding.js";
 import { HalvingPageLimit, readRingPages, scanLimits, type ScanLimits } from "../rpc/history.js";
 import type { AnonymousWallet } from "./anonymous-wallet.js";
 import {
@@ -1287,9 +1285,7 @@ class BodyRead {
   }
 
   recipientBody(body: Body, position: number, secret: Bytes32): void {
-    const opening = decoded(() => openOutputSlot(secret, body.ciphertext));
-    if (opening === undefined) return;
-    this.#note(body, position, opening, claimOf(body.reply, secret));
+    this.#note(body, position, secret, body.ciphertext, claimOf(body.reply, secret));
   }
 
   /** Rust `SenderBundle` and `Scan::open_bundle`, change candidates are the zero-tag bodies alone. */
@@ -1313,12 +1309,7 @@ class BodyRead {
         const parts = slot === undefined ? undefined : ringBodyOutput(slot.payload);
         const changeSecret = secrets[index];
         if (parts === undefined || changeSecret === undefined) return;
-        this.#note(
-          body,
-          position,
-          decoded(() => openOutputSlot(changeSecret, parts.body)),
-          undefined,
-        );
+        this.#note(body, position, changeSecret, parts.body, undefined);
       });
     } finally {
       secrets.forEach((changeSecret) => changeSecret.fill(0));
@@ -1339,12 +1330,16 @@ class BodyRead {
   #note(
     body: Body,
     position: number,
-    opening: OpenedOutput | undefined,
+    secret: Bytes32,
+    ciphertext: Uint8Array,
     claim: ReplyClaim | undefined,
   ): void {
     const slot = body.tx.outputSlots[position];
-    if (slot === undefined || opening === undefined) return;
-    const rebuilt = rebuild(this.#reads.assets, this.#owner, slot, body.context.ring, opening);
+    if (slot === undefined) return;
+    const rebuilt = rebuild(this.#reads.assets, this.#owner, slot, body.context.ring, {
+      secret,
+      ciphertext,
+    });
     if (rebuilt !== undefined) this.#keep(body, position, rebuilt, claim);
   }
 
@@ -1375,21 +1370,26 @@ class BodyRead {
       outputIndex: position,
       firstNullifier: body.context.firstNullifier,
     });
-    let opening: OpenedOutput | undefined;
+    let record: OutputRecord | undefined;
+    let verified: ShieldedAddress | undefined;
     try {
       // The tag binds `V_k` to its slot, a key read under another layout derives another tag.
       if (!equalBytes(anonymousSlotTag(secret), slot.viewTag)) return undefined;
-      opening = decoded(() => openOutputSlot(secret, parts.body));
+      const sealed = { secret, ciphertext: parts.body };
+      // The amount sits in the record's head, the same bytes under every form.
+      for (const form of recipientBodyForms(parts.body.length)) {
+        record = decoded(() => openOutputSlot(secret, parts.body, form))?.record;
+        if (record !== undefined) break;
+      }
+      if (record === undefined) return undefined;
+      verified = this.#reads.recipients.find(
+        (address) =>
+          address.viewingPublicKey.equals(recipient) &&
+          rebuild(this.#reads.assets, address, slot, body.context.ring, sealed) !== undefined,
+      );
     } finally {
       secret.fill(0);
     }
-    if (opening === undefined) return undefined;
-    const { record } = opening;
-    const verified = this.#reads.recipients.find(
-      (address) =>
-        address.viewingPublicKey.equals(recipient) &&
-        rebuild(this.#reads.assets, address, slot, body.context.ring, opening) !== undefined,
-    );
     return Object.freeze({
       txSignature: body.tx.txSignature,
       utxoHash: slot.outputContext.hash,
@@ -1518,12 +1518,16 @@ function rebuild(
   owner: ShieldedAddress,
   slot: OutputSlot,
   ring: Address,
-  opening: OpenedOutput,
+  sealed: Readonly<{ secret: Bytes32; ciphertext: Uint8Array }>,
 ): Rebuilt | undefined {
   const { hash, treeId } = slot.outputContext;
   if (treeId === undefined) return undefined;
   return decoded(() =>
-    openRecipientNote({ owner, ring, treeId, commitment: hash, assets }, opening),
+    openRecipientBody(
+      { owner, ring, treeId, commitment: hash, assets },
+      sealed.secret,
+      sealed.ciphertext,
+    ),
   );
 }
 
@@ -1545,7 +1549,7 @@ function sentRecipientKeys(
   const exits = tx.outputSlots.filter((slot) => ringBodyOutput(slot.payload) === undefined).length;
   const txViewingSecret = txViewingKey.secretBytes();
   try {
-    return senderAuditLayouts(tx.nullifiers.length, tx.outputSlots.length)
+    return senderAuditLayouts(tx.nullifiers.length, tx.outputSlots.length, exits)
       .filter((layout) => auditorMessageLen(layout, exits) === message.data.length)
       .flatMap((layout) => {
         const opened = decoded(() =>
@@ -1564,8 +1568,15 @@ function sentRecipientKeys(
   }
 }
 
-/** One plain layout, the plain envelope fixes every counter, then one per entry class holding `n`, each unvouched and vouched. */
-function senderAuditLayouts(inputs: number, outputs: number): readonly AuditStreamLayout[] {
+/**
+ * One plain layout, the plain envelope fixes every counter, then one per entry class holding `n`,
+ * each unvouched and vouched, and under an exit each with the data bit its record length reads.
+ */
+function senderAuditLayouts(
+  inputs: number,
+  outputs: number,
+  exits: number,
+): readonly AuditStreamLayout[] {
   const entryClasses = new Set(
     TRANSFER_SHAPES.filter((shape) => shape.entry && shape.inputs >= inputs).map(
       (shape) => shape.inputs,
@@ -1575,8 +1586,11 @@ function senderAuditLayouts(inputs: number, outputs: number): readonly AuditStre
     { class: inputs, entry: false },
     ...[...entryClasses].map((keyClass) => ({ class: keyClass, entry: true })),
   ];
+  const forms = (exits === 0 ? [false] : [false, true]).map((data) => ({ data, ringData: false }));
   return keys.flatMap((key) =>
-    [false, true].map((vouched) => ({ key, inputs, outputs, capacity: outputs, vouched })),
+    [false, true].flatMap((vouched) =>
+      forms.map((records) => ({ key, inputs, outputs, capacity: outputs, vouched, records })),
+    ),
   );
 }
 

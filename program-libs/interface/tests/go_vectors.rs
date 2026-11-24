@@ -2,8 +2,8 @@
 
 use custom_ring_interface::{
     cosign::ApprovalMask, domain, key_catalog::RING_KEYS, AuditHead, AuditLayout,
-    ConfidentialSender, MergePublicInput, MergeRecord, RecordKind, RingOutput, SignerSet, SlotBody,
-    TransferFamily, TransferRoots, TransferStatement, ANONYMOUS_PARTIES, EXIT_RECORD_LEN,
+    ConfidentialSender, MergePublicInput, MergeRecord, RecordForm, RecordKind, RingOutput,
+    SignerSet, SlotBody, TransferFamily, TransferRoots, TransferStatement, ANONYMOUS_PARTIES,
 };
 use serde::Deserialize;
 use spr_hasher::{hash_chain::create_hash_chain_4_from_slice, primitives::right_align};
@@ -39,6 +39,8 @@ fn signer_chain(identities: &[[u8; 32]], slots: usize) -> [u8; 32] {
 #[derive(Deserialize)]
 struct OutputCase {
     record: String,
+    /// The frame's exit claim, the record chain tags each cell with it.
+    exit: bool,
 }
 
 #[derive(Deserialize)]
@@ -122,15 +124,15 @@ fn transfer_statements_reach_the_go_public_inputs() {
     for case in &vector.cases {
         let records: Vec<Vec<u8>> = case.outputs.iter().map(|o| bytes(&o.record)).collect();
         let (zero_tag, zero_hash) = ([0u8; 32], [0u8; 32]);
-        // Only an exit publishes its key, the record length tells the two bodies apart.
         let outputs: Vec<RingOutput<'_>> = records
             .iter()
-            .map(|record| RingOutput {
+            .zip(&case.outputs)
+            .map(|(record, output)| RingOutput {
                 hash: &zero_hash,
                 owner_tag: zero_tag,
-                body: match record.len() {
-                    EXIT_RECORD_LEN => SlotBody::Exit(&[]),
-                    _ => SlotBody::Recipient(record),
+                body: match output.exit {
+                    true => SlotBody::Exit(&[]),
+                    false => SlotBody::Recipient(record),
                 },
                 record,
             })
@@ -186,6 +188,10 @@ fn transfer_statements_reach_the_go_public_inputs() {
                 layout: AuditLayout {
                     entry: case.layout & 2 != 0,
                     vouched: case.layout & 1 != 0,
+                    records: RecordForm {
+                        data: case.layout & 4 != 0,
+                        ring_data: case.layout & 8 != 0,
+                    },
                 },
             },
             family,

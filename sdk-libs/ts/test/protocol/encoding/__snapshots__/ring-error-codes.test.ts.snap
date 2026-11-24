@@ -221,5 +221,6 @@ exports[`ring error codes > pins the public codes and their order 1`] = `
   "RING_PROGRAM_COMMITMENT_MISMATCH",
   "RING_PROGRAM_TRANSACTION_HASH_MISMATCH",
   "RING_APPROVAL_OUTSIDE_PROGRAM",
+  "RING_EXIT_RING_DATA",
 ]
 `;

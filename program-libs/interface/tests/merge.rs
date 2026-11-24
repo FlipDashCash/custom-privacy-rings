@@ -126,7 +126,7 @@ fn the_forward_parses_as_merge_ring() {
     MergeRingIxDataRef::from_bytes(&forwarded[1..]).unwrap();
 }
 
-/// The merge record is a transfer's record followed by the seed, under its own label.
+/// The merge record is a record head, its key and the seed, under its own label.
 #[test]
 fn the_merge_record_is_a_transfer_record_and_its_seed() {
     let merged = MergeRecord {
@@ -137,11 +137,14 @@ fn the_merge_record_is_a_transfer_record_and_its_seed() {
             mint: [0xa2; 32],
             blinding: [0xa5; 32],
             key: RecordKey::Carried([0xa3; 32]),
+            ..OutputRecord::default()
         },
         seed: [0xa4; 32],
     };
     let encoded = merged.encode();
-    assert_eq!(encoded[..137], merged.record.encode());
+    assert_eq!(encoded[0], RecordKind::Ring as u8);
+    assert_eq!(encoded[73..105], [0xa5; 32]);
+    assert_eq!(encoded[105..137], [0xa3; 32]);
     assert_eq!(encoded[137..], [0xa4; 32]);
     assert_eq!(MergeRecord::decode(&encoded).unwrap(), merged);
     assert!(MergeRecord::decode(&encoded[..168]).is_err());

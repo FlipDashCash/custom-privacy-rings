@@ -198,8 +198,7 @@ pub(crate) struct AnonymousSeal<'a> {
     pub outputs: &'a [SppProofOutputUtxo],
     pub slots: &'a [AnonymousSlot],
     pub plan: &'a AnonymousPlan,
-    /// The frame's payload width, `None` without data.
-    pub width: Option<usize>,
+    pub form: crate::BodyForm,
 }
 
 /// One non-exit slot's bytes, its reply empty without reply metadata.
@@ -218,7 +217,7 @@ impl AnonymousSeal<'_> {
         let output = &self.outputs[slot_index];
         let body = self
             .rail
-            .seal_body(output, &self.first_nullifier, slot_index, self.width)?;
+            .seal_body(output, &self.first_nullifier, slot_index, self.form)?;
         let replies = self.plan.slot_replies(self.slots);
         let reply = match (self.slots[slot_index], replies[slot_index], reply_len) {
             (AnonymousSlot::Payment { recipient }, Some(reply), Some(reply_len)) => {

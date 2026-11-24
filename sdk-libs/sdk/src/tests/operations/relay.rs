@@ -674,7 +674,7 @@ fn opened_records(
             }
             .secret()
             .unwrap();
-            zolana_ring_transaction::open_recipient_body(output.record, &secret)
+            zolana_ring_transaction::open_recipient_body(output.record, &secret, data.record_form())
                 .unwrap()
                 .record
         })
@@ -1370,9 +1370,12 @@ mod delegate_message {
 
             let payloads = rewritten(&honest, expected.rail, |data| {
                 data.has_data = true;
+                // A data frame's record ends on its data hash, a recipient body on a payload.
                 for output in &mut data.outputs {
-                    if let custom_ring_interface::SlotBody::Recipient(body) = output.body {
-                        let padded = [body, &[0; 3][..]].concat();
+                    let record: &[u8] = Box::leak([output.record, &[0; 32][..]].concat().into());
+                    output.record = record;
+                    if let custom_ring_interface::SlotBody::Recipient(_) = output.body {
+                        let padded = [record, &[0; 3][..]].concat();
                         output.body =
                             custom_ring_interface::SlotBody::Recipient(Box::leak(padded.into()));
                     }

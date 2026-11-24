@@ -208,6 +208,7 @@ func (w World) newAudit(t testing.TB, shape audit.StreamShape) ringaudit.Audit {
 	}
 	a.Outputs = slices.Clone(a.Outputs)
 	if w.HasData {
+		a.Data, a.RingData = true, true
 		for i := range a.Outputs {
 			if a.Outputs[i].Utxo.IsUtxo() && a.Outputs[i].Utxo.RingProgramID.Sign() != 0 {
 				a.Outputs[i].Utxo.DataHash, a.Outputs[i].Utxo.RingDataHash = big.NewInt(0x77), big.NewInt(0x78)

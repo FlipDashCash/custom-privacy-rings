@@ -17,11 +17,13 @@ export const ENVELOPE_HEAD_LEN = ENVELOPE_KEY_LEN + REAL_INPUT_COUNT_LEN;
 export const MAX_INPUT_CLASS = 64;
 /** Keys with entry capacity alone, bit `k` set when note `k` is a default-ring note. */
 export const DEFAULT_NOTE_BITS_LEN = 8;
-/** `kind ‖ u64be(amount) ‖ owner_key ‖ mint ‖ be32(blinding)`, a dummy or ring output slot publishes it. */
+/** `kind ‖ u64be(amount) ‖ owner_key ‖ mint ‖ be32(blinding)`, a dummy or ring output slot publishes it under a clear form. */
 export const RING_RECORD_LEN = 105;
-/** The ring record then `be32(nullifier_pk)`, an exit publishes the full record. */
+/** The ring record then `be32(nullifier_pk)`, an exit publishes it under a clear form. */
 export const EXIT_RECORD_LEN = RING_RECORD_LEN + 32;
-/** The full record then `be32(seed)`. */
+/** The plaintext every transfer slot seals, an exit's key then its `data_hash`, any other slot's two hashes. */
+export const TRANSFER_RECORD_LEN = EXIT_RECORD_LEN + 32;
+/** `head ‖ be32(nullifier_pk) ‖ be32(seed)`. */
 export const MERGE_RECORD_LEN = EXIT_RECORD_LEN + 32;
 /** `eph_sk ‖ V`, sealed to the auditor. */
 export const MERGE_ENVELOPE_LEN = 64;
@@ -41,19 +43,69 @@ export function packedChunks(length: number): number {
   return Math.ceil(length / DISCLOSURE_CHUNK_BYTES);
 }
 
+/** A record's kind without its zero-key bit, the circuit derives it from the slot's domain and ring id, Rust `RecordKind`. */
+export const RecordKind = Object.freeze({ dummy: 0, ring: 1, exit: 2 } as const);
+export type RecordKind = (typeof RecordKind)[keyof typeof RecordKind];
+
+/** The hashes a frame's records publish at one length per kind, the proof holds an unpublished hash to zero, Rust `RecordForm`. */
+export interface RecordForm {
+  /** Every record publishes `data_hash`. */
+  readonly data: boolean;
+  /** Every non-exit record publishes `ring_data_hash`. */
+  readonly ringData: boolean;
+}
+
+export const CLEAR_RECORD_FORM: RecordForm = Object.freeze({ data: false, ringData: false });
+
+const RECORD_FORMS: readonly RecordForm[] = Object.freeze(
+  [false, true].flatMap((data) =>
+    [false, true].map((ringData) => Object.freeze({ data, ringData })),
+  ),
+);
+
+/** The prefix of `TRANSFER_RECORD_LEN` a slot of `kind` publishes, a dummy as a ring slot, Rust `RecordForm::published_len`. */
+export function publishedRecordLen(form: RecordForm, kind: RecordKind): number {
+  return kind === RecordKind.exit
+    ? EXIT_RECORD_LEN + (form.data ? 32 : 0)
+    : RING_RECORD_LEN + (form.data ? 32 : 0) + (form.ringData ? 32 : 0);
+}
+
+/** A data frame's payload follows the record at its length prefix or longer, any other body ends at the record, Rust `RecordForm::fits_recipient_body`. */
+export function fitsRecipientBody(form: RecordForm, bodyLength: number): boolean {
+  const recordLength = publishedRecordLen(form, RecordKind.ring);
+  return form.data ? bodyLength >= recordLength + PAYLOAD_LENGTH_LEN : bodyLength === recordLength;
+}
+
+/** The forms a recipient body of `bodyLength` can hold, a reader without the frame tries each against the commitment, Rust `RecordForm::of_recipient_body`. */
+export function recipientBodyForms(bodyLength: number): readonly RecordForm[] {
+  return RECORD_FORMS.filter((form) => fitsRecipientBody(form, bodyLength));
+}
+
 /** The statement's layout element, Rust `AuditLayout`. */
 export interface AuditLayout {
   /** The key carries default bits and one evidence entry per published input. */
   readonly entry: boolean;
   /** The frame publishes the voucher's sealed key after the slot keys. */
   readonly vouched: boolean;
+  readonly records: RecordForm;
 }
 
-/** `vouched | entry << 1`. */
+/** Bit 0 vouched, bit 1 entry, bit 2 data, bit 3 ring data. */
 export function auditLayoutValue(layout: AuditLayout): number {
-  if (typeof layout.entry !== "boolean" || typeof layout.vouched !== "boolean")
+  const { records } = layout;
+  if (
+    typeof layout.entry !== "boolean" ||
+    typeof layout.vouched !== "boolean" ||
+    typeof records?.data !== "boolean" ||
+    typeof records.ringData !== "boolean"
+  )
     throw shapeError("layout");
-  return (layout.vouched ? 1 : 0) | (layout.entry ? 2 : 0);
+  return (
+    (layout.vouched ? 1 : 0) |
+    (layout.entry ? 2 : 0) |
+    (records.data ? 4 : 0) |
+    (records.ringData ? 8 : 0)
+  );
 }
 
 /** Rust `AuditLayout::split_keys`, a vouched region shorter than one key refused. */
@@ -94,6 +146,16 @@ export interface AuditStreamLayout {
   readonly capacity: number;
   /** The frame publishes the voucher's key. */
   readonly vouched: boolean;
+  readonly records: RecordForm;
+}
+
+/** The statement's layout element of a stream, Rust `AuditStreamLayout::layout`. */
+export function auditLayoutOf(layout: AuditStreamLayout): AuditLayout {
+  return Object.freeze({
+    entry: layout.key.entry,
+    vouched: layout.vouched,
+    records: layout.records,
+  });
 }
 
 /** Refuses an input count off the key, a key past the bitmap and an output count off the capacity. */
@@ -106,6 +168,8 @@ export function checkedStreamLayout(layout: AuditStreamLayout): AuditStreamLayou
     key.class <= MAX_INPUT_CLASS &&
     typeof key.entry === "boolean" &&
     typeof layout.vouched === "boolean" &&
+    typeof layout.records?.data === "boolean" &&
+    typeof layout.records.ringData === "boolean" &&
     Number.isInteger(capacity) &&
     Number.isInteger(outputs) &&
     outputs >= 1 &&
@@ -172,7 +236,7 @@ export function auditorMessageLen(layout: AuditStreamLayout, exits: number): num
     TAGGED_KEY_LEN +
     envelopeRegion(layout).length +
     recipientKeysLen(layout) +
-    EXIT_RECORD_LEN * exits
+    publishedRecordLen(layout.records, RecordKind.exit) * exits
   );
 }
 

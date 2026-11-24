@@ -1353,7 +1353,7 @@ export interface RingWalletNote {
   readonly mint?: Address;
   readonly amount: bigint;
   readonly blinding: Bytes32;
-  /** Absent with `ringDataHash` while no payload rebuilt the published commitment. */
+  /** The record's proven hash, absent with `ringDataHash` on a record that rebuilt no commitment. */
   readonly dataHash?: Bytes32;
   readonly ringDataHash?: Bytes32;
   readonly treeId: number;
@@ -2769,7 +2769,7 @@ function decodeDecryptedUtxo(wire: Record<string, unknown>, path: string): Audit
   });
 }
 
-/** Rust `DecryptedKnownUtxo`, `ownerHash` for a deposited UTXO, neither for an unresolved owner with no data hash. */
+/** Rust `DecryptedKnownUtxo`, `ownerHash` for a deposited UTXO, neither for an unresolved owner. */
 function decodeKnownUtxo(wire: Record<string, unknown>, path: string): KnownUtxo {
   const nullifierPk = wire["nullifierPk"];
   const ownerHash = wire["ownerHash"];
@@ -2779,8 +2779,6 @@ function decodeKnownUtxo(wire: Record<string, unknown>, path: string): KnownUtxo
   if (fields.mint !== undefined && !equalBytes(assetField(fields.mint), fields.asset))
     throw invalid(`${path}.mint`);
   const unresolved = absent(nullifierPk) && absent(ownerHash);
-  if (unresolved && (fields.dataHash !== undefined || fields.ringDataHash !== undefined))
-    throw invalid(`${path}.dataHash`);
   return Object.freeze({
     ...fields,
     owner: unresolved

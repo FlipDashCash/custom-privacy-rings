@@ -436,7 +436,6 @@ export type {
   AuditedRingTransaction,
   AuditedSender,
   AuditedUtxo,
-  ClaimedData,
   CreatedRingUtxo,
   InputOpening,
   KnownNote,

@@ -23,21 +23,23 @@
 //  1. X25519(auditor_sk, tx_u) and the salt give the stream's key and nonce.
 //  2. The envelope gives tx_viewing_sk, note count R and any entry evidence, the key region each V_i,
 //     and the voucher region the key that vouched on a vouched transfer.
-//  3. X25519(tx_viewing_sk, V_i) opens record i, and the record, the frame's tree id and the payload's
-//     data hashes rebuild that slot's published hash. A dummy rebuilds as audit/record.go states.
+//  3. X25519(tx_viewing_sk, V_i) opens record i, and the record and the frame's tree id rebuild that
+//     slot's published hash. A dummy rebuilds as audit/record.go states.
 //
 // A statement built on the package proves the following.
 //  1. The auditor stream is AES-256-CTR under a key schedule bound to the auditor key, tx_u and the salt,
 //     over the sealed tx_viewing_sk, R, the entry evidence and one recipient key per slot.
 //  2. Each record is AES-256-CTR under the slot secret of tx_viewing_sk and that slot's sealed key.
-//  3. Each live slot's record holds the opening its published commitment hashes, but for the data hashes.
+//  3. Each live slot's record holds the opening its published commitment hashes. A data hash the frame's
+//     layout leaves out is zero under the proof.
 //  4. Slots are notes or dummies, dummies last, and a dummy carries nothing but its blinding.
 //  5. R counts spent notes. An entry record names each default ring note's owner, nullifier key, amount,
 //     mint and spent commitment at its note position, with zero records elsewhere.
 //  6. A slot's kind derives from the domain and ring id its hash commits, no prover bit passes a note
 //     as a dummy.
 //  7. Every transmitted ciphertext byte is bound, the envelope and keys through their counted digests and
-//     each record's published prefix through the record chain, the full record on an exit.
+//     each record's published prefix through the record chain. Each chain cell is tagged with the slot's
+//     exit bit, so a frame naming an exit where the proof opened a ring slot fails at equal lengths.
 //  8. The stream seals Voucher while Vouched is set and zeros otherwise. The caller binds Vouched to the
 //     layout's bit 0 and Voucher to the key policy/voucher.go verified, no constraint here holds either.
 //
@@ -122,15 +124,16 @@ func AssertClamped(api frontend.API, secret [32]frontend.Variable) {
 type Opened struct {
 	Slots   []shared.Output
 	Count   ringgadget.Count
+	layout  LayoutFlags
 	records [][]frontend.Variable
 	keys    [][32]frontend.Variable
 }
 
 // OpenSlots opens each output wire and holds the slots to SPP's output form, so a later section reads the note that settles.
-func (s StreamShape) OpenSlots(api frontend.API, rc frontend.Rangechecker, outputs []OutputWires, outputCount frontend.Variable) Opened {
+func (s StreamShape) OpenSlots(api frontend.API, rc frontend.Rangechecker, layout LayoutFlags, outputs []OutputWires, outputCount frontend.Variable) Opened {
 	// 1. m selects the published slots, a key's capacity may exceed it and a slot past it publishes nothing.
 	count := ringgadget.SelectCount(api, outputCount, 1, len(outputs))
-	opened := Opened{Slots: make([]shared.Output, len(outputs)), Count: count, records: make([][]frontend.Variable, len(outputs)), keys: make([][32]frontend.Variable, len(outputs))}
+	opened := Opened{Slots: make([]shared.Output, len(outputs)), Count: count, layout: layout, records: make([][]frontend.Variable, len(outputs)), keys: make([][32]frontend.Variable, len(outputs))}
 	ordered := make([]transaction.UtxoCircuitFields, len(outputs))
 	for i, output := range outputs {
 		// 2. Dummies stay off the output chain, the slot form alone keeps them empty.
@@ -139,7 +142,9 @@ func (s StreamShape) OpenSlots(api frontend.API, rc frontend.Rangechecker, outpu
 		// 3. An omitted slot holds no note, SPP's compact slots publish none.
 		abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: api.Sub(1, count.Active[i]), V: slot.Utxo})
 		// 4. The plaintext reads the opened wires, RecordChain seals them with no second opening to disagree.
-		opened.records[i] = output.record(api, rc, slot)
+		// A hash the layout leaves out of the record is zero in the commitment.
+		layout.assertHashes(api, slot)
+		opened.records[i] = output.record(api, rc, layout, slot)
 		opened.keys[i] = output.RecipientKey
 		opened.Slots[i] = slot
 	}
@@ -157,25 +162,29 @@ func (w AuditWires) RecordChain(api frontend.API, e Envelope, opened Opened) fro
 			Plaintext: record, EphSk: w.TxViewingSk, Eph: e.txPk[:], RecipientPk: opened.keys[i],
 			Salt: e.salt, Index: i, FirstNullifier: w.FirstNullifier, Info: shared.OutputRecordInfo,
 		}.Seal(api)
+		exit := opened.Slots[i].Exit
+		// The exit tag parts an exit from a ring slot of one published length, the frame's exit claim then names the proof's ring id.
+		cell := gadget.PoseidonHash(api, []frontend.Variable{exit, opened.layout.publishedRecordHash(api, ciphertext, exit)})
 		// A slot past m publishes nothing.
-		hashes[i] = api.Mul(opened.Count.Active[i], publishedRecordHash(api, ciphertext, opened.Slots[i].Exit))
+		hashes[i] = api.Mul(opened.Count.Active[i], cell)
 	}
 	return gadget.HashChain4(api, hashes)
 }
 
-// publishedRecordHash is hash_bytes of the bytes the slot publishes, RecordLen on an exit and RingRecordLen otherwise.
-// The program rebuilds the chain from each slot's published length, so a non-exit slot carrying the key tail, or an exit
-// without it, hashes apart. Both lengths share their first three 31 byte chunks, one chain head serves both.
-func publishedRecordHash(api frontend.API, ciphertext []frontend.Variable, exit frontend.Variable) frontend.Variable {
+// publishedRecordHash is hash_bytes at PublishedRecordLen, the three lengths end chunks four, five and six of one 31 byte chain.
+func (l LayoutFlags) publishedRecordHash(api frontend.API, ciphertext []frontend.Variable, exit frontend.Variable) frontend.Variable {
 	const chunk = gadget.HashBytesChunkSize
-	head := gadget.HashBoundedBytes(api, ciphertext[:3*chunk])
-	pack := func(bytes []frontend.Variable) frontend.Variable {
-		return gadget.BytesToFieldWith(api, ringgadget.BoundedBytes{}, bytes)
+	link := func(chain frontend.Variable, bytes []frontend.Variable) frontend.Variable {
+		return gadget.PoseidonHash(api, []frontend.Variable{chain, gadget.BytesToFieldWith(api, ringgadget.BoundedBytes{}, bytes)})
 	}
-	ring := gadget.PoseidonHash(api, []frontend.Variable{head, pack(ciphertext[3*chunk : RingRecordLen])})
-	full := gadget.PoseidonHash(api, []frontend.Variable{head, pack(ciphertext[3*chunk : 4*chunk])})
-	full = gadget.PoseidonHash(api, []frontend.Variable{full, pack(ciphertext[4*chunk : RecordLen])})
-	return api.Select(exit, full, ring)
+	chain := gadget.HashBoundedBytes(api, ciphertext[:3*chunk])
+	head := link(chain, ciphertext[3*chunk:RingRecordLen])
+	chain = link(chain, ciphertext[3*chunk:4*chunk])
+	one := link(chain, ciphertext[4*chunk:RecordLen])
+	chain = link(chain, ciphertext[4*chunk:5*chunk])
+	two := link(chain, ciphertext[5*chunk:TransferRecordLen])
+	// An exit always publishes its key field, a ring slot its ring data field under the flag.
+	return api.Lookup2(l.Data, api.Select(exit, 1, l.RingData), head, one, one, two)
 }
 
 type Stream struct {

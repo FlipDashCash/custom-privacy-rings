@@ -13,6 +13,7 @@ import expansion from "../../../../../test-vectors/proof/ring-transact-expansion
 import keyed from "../../../../../test-vectors/proof/ring_keyed_shapes.json" with { type: "json" };
 import statements from "../../../../../test-vectors/audit/transfer_statement.json" with { type: "json" };
 import { encodeRingTransactInstructionData } from "../../../src/protocol/proof/circuit.js";
+import { vectorLayout } from "../../helpers/vector-records.js";
 import {
   applyEnrollmentsStatementHash,
   signerBinding,
@@ -161,7 +162,7 @@ describe("transfer_statement.json", () => {
         envelope: hexToBytes(vector.envelope),
         recipientKeys: hexToBytes(vector.recipient_keys),
         salt: hexToBytes(vector.salt) as Bytes16,
-        layout: { entry: (vector.layout & 2) !== 0, vouched: (vector.layout & 1) !== 0 },
+        layout: vectorLayout(vector.layout),
       },
       family:
         vector.family === "confidential"
@@ -180,7 +181,10 @@ describe("transfer_statement.json", () => {
       approvalMask: vector.approval_mask,
       approvalTotals: field(vector.approval_totals),
       noSpend: vector.no_spend,
-      outputs: vector.outputs.map((output) => ({ record: hexToBytes(output.record) })),
+      outputs: vector.outputs.map((output) => ({
+        record: hexToBytes(output.record),
+        exit: output.exit,
+      })),
       capacity: vector.output_capacity,
       inputCount: vector.input_count,
       privateTxHash: field(vector.private_tx_hash),

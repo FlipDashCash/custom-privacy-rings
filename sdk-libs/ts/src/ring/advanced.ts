@@ -34,6 +34,9 @@ export {
   RING_RECORD_LEN,
   STREAM_BLOCK_LEN,
   STREAM_FIRST_COUNTER,
+  TRANSFER_RECORD_LEN,
+  CLEAR_RECORD_FORM,
+  auditLayoutOf,
   auditLayoutValue,
   auditorMessageLen,
   capacityBlocks,
@@ -42,6 +45,8 @@ export {
   envelopeRegion,
   firstRecipientKeyCounter,
   packedChunks,
+  publishedRecordLen,
+  recipientBodyForms,
   recipientKeyRegion,
   recipientKeysLen,
   splitSealedKeys,
@@ -52,6 +57,7 @@ export type {
   AuditLayout,
   AuditStreamLayout,
   AuditStreamRegion,
+  RecordForm,
 } from "../protocol/codec/ring-disclosure-layout.js";
 export {
   DUMMY_RECORD,
@@ -73,13 +79,14 @@ export {
   encodeRecipientPayload,
   isEmptyEntryRecord,
   namedNullifierPk,
-  publishedRecordLen,
+  publishedOutputRecord,
   sealedRecordKey,
 } from "../protocol/codec/audit-stream.js";
 export type {
   AuditEnvelope,
   AuditEvidence,
   EntryRecord,
+  MergeOutputRecord,
   MergeRecord,
   OutputRecord,
   RecipientPayload,
@@ -138,6 +145,7 @@ export {
 } from "../protocol/membership/approval-totals.js";
 export {
   OutputBlindings,
+  openRecipientBody,
   openRecipientNote,
   ringBlindingSeed,
   ringOutputBlinding,
