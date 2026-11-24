@@ -1,6 +1,7 @@
 //! Inert Custom Jupiter measured-output descriptor context V1.
 //!
-//! Imported only by a host test. There is no authenticated caller yet. The
+//! Exercised only by host tests and typechecked in the no-entrypoint target
+//! review. There is no authenticated caller yet. The
 //! deployment pins, live roots, stock withdrawal reference, role addresses
 //! and guard views must come from independent checks in the future processor,
 //! never from instruction assertions or a quote. The result is not a proof,
@@ -8,6 +9,9 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(target_os = "solana")]
+use pinocchio::Address;
+#[cfg(not(target_os = "solana"))]
 use solana_address::Address;
 use spr_hasher::{
     primitives::{hash_bytes, is_canonical_bn254_scalar_be},
@@ -15,7 +19,12 @@ use spr_hasher::{
 };
 
 use super::wire::{Access, DraftFrame, Role, DRAFT_TAG, DRAFT_VERSION, ROLES};
+// The host includes this source below a test crate; the target imports the
+// same public types through its existing normal dependencies.
+#[cfg(not(target_os = "solana"))]
 use crate::{storage::Revision, TransferRoots};
+#[cfg(target_os = "solana")]
+use custom_ring_interface::{storage::Revision, TransferRoots};
 
 const DOMAIN: &[u8] = b"pyrol:custom:jupiter:measured-descriptor-context:v1\0";
 pub(super) const GUARD_FRAME_BYTES: usize = 126;

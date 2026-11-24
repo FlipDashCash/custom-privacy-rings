@@ -3,12 +3,15 @@
 //! Exact public statement/projection arithmetic lifted from owned closed Custom
 //! #5 f841ff6b9fb454c1228f7d5591735a9536d055e0, blob
 //! 68ddff0e1d1debaa0c2a7fbcf043dd9bedc03832. The matching relation in that
-//! source is a reference, not a release profile. Only the frozen Jupiter host
-//! integration test imports this file. A future caller must authenticate the
-//! policy, tracking revision/root and runtime original before calling it.
+//! source is a reference, not a release profile. Host tests exercise this
+//! file; the no-entrypoint target review only typechecks it. A future caller
+//! must authenticate the policy, tracking revision/root and runtime original.
 
 #![forbid(unsafe_code)]
 
+#[cfg(target_os = "solana")]
+use pinocchio::Address;
+#[cfg(not(target_os = "solana"))]
 use solana_address::Address;
 use spr_hasher::{
     hash_chain::create_hash_chain_4_from_slice,

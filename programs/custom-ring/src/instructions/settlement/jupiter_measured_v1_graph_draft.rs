@@ -1,7 +1,8 @@
 //! Single-graph source handoff for Custom measured Jupiter V1.
 //!
 //! The prefix matcher is also used by the no-entrypoint runtime review.
-//! The context and statement progression below remain host-test-only.
+//! The context and statement are exercised by host tests and typechecked
+//! by that target review only when no-entrypoint is also set.
 //! A prefix match is not a successful proof, policy or artifact approval.
 //! This module never constructs a transaction, invokes a program or exposes
 //! the stock binding. Provenance of the exact lifted helpers is documented.
@@ -12,8 +13,6 @@ use custom_ring_interface::{
     RingTransactData, MAX_SPP_CPI_ACCOUNTS, RING_TRANSACT_ACCOUNT_PREFIX_LEN,
     RING_TRANSACT_RING_CONFIG_INDEX,
 };
-#[cfg(not(target_os = "solana"))]
-use custom_ring_interface::{tracking::TrackingRegistry, TransferRoots};
 use pinocchio::Address;
 use spr_hasher::{Hasher, Sha256};
 use spr_interface::{
@@ -21,15 +20,21 @@ use spr_interface::{
     RING_AUTH_PDA_SEED, SHIELDED_POOL_PROGRAM_ID, SPL_TOKEN_PROGRAM_ID,
 };
 
-#[cfg(not(target_os = "solana"))]
-use super::context::{
-    ContextFields, ContextInput, GuardAccount, MatchedGuards, OriginalWithdrawal, ProfilePins,
-    SPL_OUTPUT_MAX,
+#[cfg(any(
+    not(target_os = "solana"),
+    all(feature = "test-sbf", feature = "no-entrypoint")
+))]
+use {
+    super::{
+        context::{
+            ContextFields, ContextInput, GuardAccount, MatchedGuards, OriginalWithdrawal,
+            ProfilePins, SPL_OUTPUT_MAX,
+        },
+        descriptor_statement::{DescriptorProjection, DescriptorRecord, PreparedDescriptor},
+        wire::DraftFrame,
+    },
+    custom_ring_interface::{tracking::TrackingRegistry, TransferRoots},
 };
-#[cfg(not(target_os = "solana"))]
-use super::descriptor_statement::{DescriptorProjection, DescriptorRecord, PreparedDescriptor};
-#[cfg(not(target_os = "solana"))]
-use super::wire::DraftFrame;
 use super::wire::{Role, ROLES};
 
 const RING_PREFIX: usize = 2; // policy and pinned tracking, for the checked profile.
@@ -512,7 +517,10 @@ pub(super) struct PrefixProjection<'a> {
     pub(super) instructions: [PreviousInstruction<'a>; 5],
 }
 
-#[cfg(not(target_os = "solana"))]
+#[cfg(any(
+    not(target_os = "solana"),
+    all(feature = "test-sbf", feature = "no-entrypoint")
+))]
 pub(super) struct DescriptorScope<'a> {
     pub(super) profile: &'a ProfilePins,
     pub(super) roles: &'a [Address; ROLES.len()],
@@ -524,9 +532,15 @@ pub(super) struct DescriptorScope<'a> {
 pub(super) enum PrepareError {
     Prefix,
     RoleScope,
-    #[cfg(not(target_os = "solana"))]
+    #[cfg(any(
+        not(target_os = "solana"),
+        all(feature = "test-sbf", feature = "no-entrypoint")
+    ))]
     Descriptor,
-    #[cfg(not(target_os = "solana"))]
+    #[cfg(any(
+        not(target_os = "solana"),
+        all(feature = "test-sbf", feature = "no-entrypoint")
+    ))]
     Statement,
 }
 
@@ -612,7 +626,10 @@ pub(super) fn prepare_context(
 /// The supplied registry and accepted root must already be authenticated by
 /// the future runtime. This does not choose or call a verifier, accept a proof,
 /// certify deployment, measure credit, or authorize an operation.
-#[cfg(not(target_os = "solana"))]
+#[cfg(any(
+    not(target_os = "solana"),
+    all(feature = "test-sbf", feature = "no-entrypoint")
+))]
 pub(super) fn prepare_descriptor(
     projection: PrefixProjection<'_>,
     scope: &DescriptorScope<'_>,
@@ -656,7 +673,10 @@ pub(super) fn prepare_descriptor(
     })
 }
 
-#[cfg(not(target_os = "solana"))]
+#[cfg(any(
+    not(target_os = "solana"),
+    all(feature = "test-sbf", feature = "no-entrypoint")
+))]
 fn with_matched_context<R>(
     projection: PrefixProjection<'_>,
     scope: &DescriptorScope<'_>,

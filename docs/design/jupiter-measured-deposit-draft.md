@@ -2,10 +2,9 @@
 
 This is source for a **disabled and unregistered** Custom instruction: one
 legacy SPL ExactIn Jupiter route, one legacy SPL staging account, one protected
-output. It defines bytes and account positions, not a working processor. Only
-`program-libs/interface/tests/jupiter_measured_deposit_draft.rs` imports the codec.
-There is no program or SDK import, verifier key, guard address, trusted loader,
-release flag, instruction builder, or runtime call. Nothing is deployed.
+output. It defines bytes and account positions, not a working processor. Test
+and private review modules import the codec. There is no SDK builder, release
+profile, installed verifier or runtime caller. Nothing is deployed.
 
 ## Local wire
 
@@ -89,8 +88,9 @@ view is not an authenticated instruction or an amount attributable to Jupiter.
 ### Descriptor context V1 source
 
 `jupiter_measured_descriptor_context_draft.rs` implements this separate
-deterministic input to a future descriptor relation. Only host tests import
-it. It reuses the tag-68 role order, descriptor selection, stock `Revision`
+deterministic input to a future descriptor relation. Host tests exercise it;
+the no-entrypoint target review typechecks it. It reuses the tag-68 role order,
+descriptor selection, stock `Revision`
 and `TransferRoots`, and the pinned SPR hashing primitives. A future selected
 caller must obtain the original's first nullifier **and** private transaction
 hash from the genuine stock withdrawal binder after the checked withdrawal,
@@ -194,9 +194,10 @@ SHA-256 / HB32 sources used are blobs
 `9cfdf5bc0e9b7ff348cf763ae093f64918e5f889`. This is not a cross-version
 proof claim.
 
-The existing owned wire/context source blobs
+The host handoff originally used owned wire/context source blobs
 `cc3a30023cb00400aa3a20e970942633711731a8` and
-`47bc6ca921bf37c4fb2012b59d529462cbc87afd` are imported unchanged.
+`47bc6ca921bf37c4fb2012b59d529462cbc87afd`. The target review uses the
+same context arithmetic with imports from existing target dependencies.
 The existing shared wire, stock encoder and its common fixture blobs are
 `bb1c97670288318649921682cb2aa3a298ebd02b`,
 `625153a2ee76bd38cd007be608b07d62f5029599` and
@@ -284,13 +285,33 @@ exact custody increase before success. Actual credit accounting is not added
 here without the authenticated instruction. Qualify the complete message,
 runtime, and independently recoverable output separately before any release.
 
-The account reader is only compiled by a host integration test. It uses an
-in-memory `AccountView` with the pinned layout, not a crafted transaction or
-real state. It checks ordinary owned balances and stock PDA derivations.
+The host account-reader test uses an in-memory `AccountView` with the pinned
+layout, not a transaction or real state. It checks ordinary balances, stock
+PDA derivations and the typed stock deposit body.
 
 ```sh
 cargo test --offline --locked -p custom-ring-program --test jupiter_legacy_spl_output_draft
 ```
+
+### Solana producer dependency check
+
+On `sbpf-solana-solana`, `test-sbf,no-entrypoint` now typechecks the exact
+`jupiter_measured_v1_spp_payload_draft.rs` used by the host tests. The private
+review module shares the checked graph, descriptor/context sources and
+legacy SPL reader. An anonymous compile-time assertion refers only to
+function items, including the pinned `RingDepositIxData::serialize`. It has
+no call, input instance, export, or connection to a runtime handler. The
+existing parent module is excluded with `bpf-entrypoint`, even if both
+review features are also set. Without `no-entrypoint`, `test-sbf` still
+typechecks the previous reader only.
+
+```sh
+CARGO_NET_OFFLINE=true cargo +1.89.0-sbpf-solana-v1.54 check --offline --locked \
+  --target sbpf-solana-solana -p custom-ring-program --lib --features test-sbf,no-entrypoint
+```
+
+This is a target type/dependency check, not an SBF image build or execution.
+No pins are selected, proof consumed, CPI issued, or custody changed.
 
 For the host codec checks on the complete pinned source (Rust 1.98.1 through
 the nested Privacy toolchain):

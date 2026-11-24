@@ -6,7 +6,9 @@
 //! pinned registry at that same slot and match the frame. No deployment
 //! profile is selected or proof verified here. Read-only output checks bind
 //! canonical SPL views to this same observation; they do not attribute credit
-//! to Jupiter or perform a deposit.
+//! to Jupiter or perform a deposit. The existing Solana no-entrypoint
+//! review profile also typechecks the exact host SPP payload composition;
+//! it cannot call or dispatch it.
 #![allow(dead_code)] // No processor calls this review input.
 
 #[path = "../../../../../program-libs/interface/src/instructions/jupiter_measured_deposit_draft.rs"]
@@ -17,6 +19,40 @@ mod graph;
 #[cfg(target_os = "solana")]
 #[path = "../settlement/jupiter_legacy_spl_output_draft.rs"]
 mod output;
+
+// This parent module is itself excluded by bpf-entrypoint. Require
+// no-entrypoint as well for the additional producer dependency check.
+#[cfg(all(target_os = "solana", feature = "test-sbf", feature = "no-entrypoint"))]
+#[path = "../../../../../program-libs/interface/src/proof/jupiter_measured_descriptor_context_draft.rs"]
+mod context;
+#[cfg(all(target_os = "solana", feature = "test-sbf", feature = "no-entrypoint"))]
+#[path = "../../../../../program-libs/interface/src/proof/jupiter_measured_descriptor_statement_draft.rs"]
+mod descriptor_statement;
+#[cfg(all(target_os = "solana", feature = "test-sbf", feature = "no-entrypoint"))]
+#[path = "../settlement/jupiter_measured_v1_spp_payload_draft.rs"]
+mod spp_payload;
+#[cfg(all(target_os = "solana", feature = "test-sbf", feature = "no-entrypoint"))]
+use self::graph as draft;
+
+// Function items only: force the target to check the whole existing
+// descriptor -> observation -> stock body composition. Do not create inputs,
+// call an operation, export a symbol, or attach this to the runtime reader.
+#[cfg(all(target_os = "solana", feature = "test-sbf", feature = "no-entrypoint"))]
+const _: () = {
+    use custom_ring_interface::tracking::TrackingRegistry;
+    use spr_interface::instruction::RingDepositIxData;
+
+    let _: for<'review, 'views> fn(
+        graph::PrefixProjection<'review>,
+        &'review graph::DescriptorScope<'review>,
+        &'review wire::DraftFrame<'review>,
+        &'review TrackingRegistry,
+        &'views [AccountView; ROLE_COUNT],
+    ) -> Result<spp_payload::PreparedSppBody<'views>, spp_payload::PayloadError> =
+        spp_payload::prepare_original;
+    let _ = spp_payload::PreparedSppBody::body;
+    let _: fn(&RingDepositIxData) -> Result<Vec<u8>, wincode::Error> = RingDepositIxData::serialize;
+};
 
 use pinocchio::{
     account::Ref,
