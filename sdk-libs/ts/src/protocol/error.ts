@@ -224,6 +224,10 @@ export const RING_ERROR_CODES = [
   "RING_RELAY_VOUCHER_UNSUPPORTED",
   "RING_VOUCHER_UNSCREENED",
   "RING_VOUCHER_SIGNATURE_MISMATCH",
+  "RING_PROGRAM_RAIL_UNSUPPORTED",
+  "RING_PROGRAM_COMMITMENT_MISMATCH",
+  "RING_PROGRAM_TRANSACTION_HASH_MISMATCH",
+  "RING_APPROVAL_OUTSIDE_PROGRAM",
 ] as const;
 import { extractCauseCodes, hideCause, sanitizeDetails } from "@heliuslabs/spr/internal";
 import type { ErrorEnvelope } from "@heliuslabs/spr";
@@ -301,6 +305,10 @@ export const RingProgramError = Object.freeze({
   coSignerRecordAlreadyExists: 8261,
   coSignerOutOfScope: 8262,
   coSignerCountOutOfRange: 8263,
+  missingTransferApproval: 8270,
+  transferApprovalOtherCall: 8271,
+  transferApprovalOtherPosition: 8272,
+  approvalNotTopLevel: 8273,
   invalidRingPolicy: 8300,
   ringPolicyAlreadyExists: 8301,
   invalidStorageRegistry: 8302,

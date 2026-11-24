@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { Address, Signature } from "@heliuslabs/spr/interface";
 
 import type {
+  ApprovedTransfer,
   CoSignTransactionRequest,
   CoSignTransactionResponse,
 } from "../../src/protocol/ring-rpc/ring-rpc-types.js";
@@ -20,7 +21,10 @@ const messageBytes = Uint8Array.of(0x81, 1, 2, 3, 4);
 type Transaction = Parameters<TransactionPartialSigner["signTransactions"]>[0][number];
 const transaction = { messageBytes, signatures: { [signer]: null } } as unknown as Transaction;
 
-function answering(answer: (message: Uint8Array) => CoSignTransactionResponse) {
+function answering(
+  answer: (message: Uint8Array) => CoSignTransactionResponse,
+  approvedTransfer?: ApprovedTransfer,
+) {
   const requests: CoSignTransactionRequest[] = [];
   const rpc = {
     coSignTransaction: async (request: CoSignTransactionRequest) => {
@@ -28,7 +32,15 @@ function answering(answer: (message: Uint8Array) => CoSignTransactionResponse) {
       return answer(new Uint8Array(getBase64Encoder().encode(request.message)));
     },
   };
-  return { requests, coSigner: ringRpcCoSigner({ rpc, ring, signer }) };
+  return {
+    requests,
+    coSigner: ringRpcCoSigner({
+      rpc,
+      ring,
+      signer,
+      ...(approvedTransfer === undefined ? {} : { approvedTransfer }),
+    }),
+  };
 }
 
 function signedBy(key: Uint8Array, message: Uint8Array): Signature {
@@ -45,6 +57,19 @@ describe("ringRpcCoSigner", () => {
     const [signatures] = await coSigner.signTransactions([transaction]);
     expect(signatures?.[signer]).toEqual(ed25519.sign(messageBytes, secretKey));
     expect(requests).toEqual([{ ring, message: "gQECAwQ=" }]);
+  });
+
+  it("names the transfer a program calls beside the message", async () => {
+    const approvedTransfer = {
+      data: "NwcI" as ApprovedTransfer["data"],
+      accounts: [ring],
+    };
+    const { requests, coSigner } = answering(
+      (message) => ({ signer, signature: signedBy(secretKey, message) }),
+      approvedTransfer,
+    );
+    await coSigner.signTransactions([transaction]);
+    expect(requests).toEqual([{ ring, message: "gQECAwQ=", approvedTransfer }]);
   });
 
   it("refuses a signature from another signer", async () => {

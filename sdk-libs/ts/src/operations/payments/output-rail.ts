@@ -341,16 +341,17 @@ export class RingOutputRail {
   readonly delivery: RingDelivery;
   readonly #firstNullifier: Bytes32;
 
-  /** `firstNullifier` is the transfer's input slot 0, padding never moves it. */
+  /** `firstNullifier` is the transfer's input slot 0, padding never moves it, a program commitment fixes `salt`. */
   constructor(
     txViewingKey: ViewingKey,
     firstNullifier: Bytes32,
     delivery: RingDelivery,
     paymentData: readonly (NoteData | undefined)[] = [],
+    salt: Bytes16 = randomSalt(),
   ) {
     this.#paymentData = paymentData;
     this.txViewingKey = txViewingKey;
-    this.salt = randomSalt();
+    this.salt = salt;
     this.delivery = delivery;
     this.#firstNullifier = firstNullifier;
     Object.freeze(this);

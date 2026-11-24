@@ -2,7 +2,12 @@
  * One transfer pipeline for every rail, Rust `pipeline`. The rail seals the outputs, the ring proof
  * opens them to the auditor and screens the ring's table, the SPP proof spends.
  */
-import type { AccountMeta, Instruction } from "@solana/kit";
+import {
+  downgradeRoleToNonSigner,
+  getBase64Decoder,
+  type AccountMeta,
+  type Instruction,
+} from "@solana/kit";
 
 import {
   addressBytes,
@@ -42,7 +47,17 @@ import {
 import { SppProofInputs, createExternalData } from "@heliuslabs/spr/transaction";
 import type { ProofInputUtxo, ProofOutputUtxo } from "@heliuslabs/spr/transaction";
 import { CUSTOM_RING_PROOF_LENGTH } from "../../protocol/proof/custom-ring-proof.js";
-import { ringAuthAddress, ringCoSignerMetas, ringPolicyAddress } from "../../protocol/pda/index.js";
+import {
+  ringApprovedCoSignerMetas,
+  ringAuthAddress,
+  ringCoSignerMetas,
+  ringPolicyAddress,
+} from "../../protocol/pda/index.js";
+import {
+  approvedTransferCall,
+  transferApprovals,
+} from "../../protocol/transaction/transfer-approval.js";
+import type { ApprovedTransfer } from "../../protocol/ring-rpc/ring-rpc-types.js";
 import { ringIdField } from "../../crypto/derivation/ring-stream.js";
 
 import { RingInstructionTag, ringComputeUnitLimit } from "../management/admin.js";
@@ -178,8 +193,13 @@ export interface StagedTransfer {
   readonly extensions?: FrameExtensions;
   /** The frame discloses its totals under it, the digest waits for the selected key's `N`. */
   readonly approvalBlinder?: Bytes32;
+  /** `approval` on a transfer committed to a program. */
+  readonly coSignerForm?: CoSignerForm;
   readonly spend: RailSpend;
 }
+
+/** What follows the record in each co-signer pair, the signer or the instructions sysvar, Rust `CoSignerForm`. */
+export type CoSignerForm = "signature" | "approval";
 
 /** Rust `TransactInterfaceTransferAccounts` of one deposit leg. */
 export type TransactDeposit =
@@ -206,6 +226,8 @@ export interface RingTransactAccounts {
   /** Read only, right after the ring account, tracking last. */
   readonly registries: readonly Address[];
   readonly coSigners: readonly Address[];
+  /** `signature` when absent, a top-level `ApproveTransfer` stands for the signature under `approval`. */
+  readonly coSignerForm?: CoSignerForm;
   readonly delegate?: Address;
   /** A cached input reads through it, last in SPP's list. */
   readonly cache?: TransactCacheAccounts;
@@ -238,7 +260,9 @@ export class ProvenRingTransfer {
   readonly chargedOutflows: readonly OwnerDebit[];
 
   /** @internal */
-  constructor(fields: Omit<ProvenRingTransfer, "instruction">) {
+  constructor(
+    fields: Omit<ProvenRingTransfer, "instruction" | "approveTransfer" | "approvedTransfer">,
+  ) {
     this.ringProgramId = fields.ringProgramId;
     this.data = fields.data;
     this.accounts = fields.accounts;
@@ -254,6 +278,30 @@ export class ProvenRingTransfer {
 
   instruction(): Promise<Instruction> {
     return ringTransactInstruction(this.ringProgramId, this.accounts, this.data);
+  }
+
+  /** One top-level approval per co-signer of the call `instruction` returns, `position` the calling program's instruction. */
+  async approveTransfer(position: number): Promise<readonly Instruction[]> {
+    return transferApprovals({
+      transfer: await this.#programCall(),
+      coSigners: this.accounts.coSigners,
+      position,
+    });
+  }
+
+  /** The `approvedTransfer` of the co-sign request for the call `instruction` returns. */
+  async approvedTransfer(): Promise<ApprovedTransfer> {
+    const call = approvedTransferCall(await this.#programCall());
+    return Object.freeze({
+      data: base64.decode(call.data) as ApprovedTransfer["data"],
+      accounts: call.accounts,
+    });
+  }
+
+  #programCall(): Promise<Instruction> {
+    if (this.accounts.coSignerForm !== "approval")
+      throw new RingError("RING_APPROVAL_OUTSIDE_PROGRAM");
+    return this.instruction();
   }
 }
 
@@ -635,6 +683,7 @@ async function assembleStagedTransfer<T>(
       ...(staged.withdrawal === undefined ? {} : { withdrawal: staged.withdrawal }),
       registries: ringRegistrySlots(config, transferRootRead(config, delegate)),
       coSigners,
+      ...(staged.coSignerForm === undefined ? {} : { coSignerForm: staged.coSignerForm }),
       ...(spend.delegate === undefined ? {} : { delegate: spend.delegate }),
       ...(proofInputs.cacheAccounts.read === undefined
         ? {}
@@ -836,6 +885,13 @@ export async function ringTransactInstruction(
       ...sppAccounts.slice(head.length),
     ];
   }
+  if (accounts.coSignerForm === "approval")
+    // A program owner signs inside its program's call, the payer signs the transaction.
+    sppAccounts = sppAccounts.map((account) =>
+      account.address !== accounts.payer && accounts.ownerSigners.includes(account.address)
+        ? { address: account.address, role: downgradeRoleToNonSigner(account.role) }
+        : account,
+    );
   if (sppAccounts.length > MAX_SPP_CPI_ACCOUNTS)
     throw new RingError("RING_TOO_MANY_SETTLEMENT_ACCOUNTS", {
       details: { accounts: sppAccounts.length, limit: MAX_SPP_CPI_ACCOUNTS },
@@ -844,8 +900,10 @@ export async function ringTransactInstruction(
     meta(ring, false, false),
     ...accounts.registries.map((registry) => meta(registry, false, false)),
   ];
+  const coSignerMetas =
+    accounts.coSignerForm === "approval" ? ringApprovedCoSignerMetas : ringCoSignerMetas;
   for (const coSigner of accounts.coSigners)
-    prefix.push(...(await ringCoSignerMetas(ringProgramId, coSigner)));
+    prefix.push(...(await coSignerMetas(ringProgramId, coSigner)));
   if (accounts.delegate !== undefined) prefix.push(meta(accounts.delegate, true, false));
   const encoded = RingTransactData.encode(data);
   const bytes = new Uint8Array(1 + encoded.length);
@@ -1151,4 +1209,5 @@ function zeroField(): Bytes32 {
 }
 
 const U32_MAX = 0xffff_ffffn;
+const base64 = getBase64Decoder();
 const NO_EXTENSIONS: FrameExtensions = Object.freeze({});

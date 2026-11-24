@@ -219,6 +219,16 @@ export interface PendingListApproval {
 export interface CoSignTransactionRequest {
   readonly ring: Address;
   readonly message: Base64String;
+  /** Set where a program calls the transfer under the message's `ApproveTransfer`. */
+  readonly approvedTransfer?: ApprovedTransfer;
+}
+
+/** Rust `ApprovedTransfer`, the ring `Transfer` call an `ApproveTransfer` digest commits to. */
+export interface ApprovedTransfer {
+  /** From the transfer tag. */
+  readonly data: Base64String;
+  /** In call order. */
+  readonly accounts: readonly Address[];
 }
 
 /** Rust `CoSignTransactionResponse`, `signature` signs the request message under `signer`. */

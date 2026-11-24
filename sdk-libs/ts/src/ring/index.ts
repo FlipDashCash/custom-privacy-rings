@@ -293,6 +293,7 @@ export type {
   CoSignListEntry,
   CoSignListsPage,
   CoSignSubjectKind,
+  ApprovedTransfer,
   CoSignTransactionRequest,
   CoSignTransactionResponse,
   CreateRecordsRegistryRequest,
@@ -319,8 +320,18 @@ export type {
   TokenAccountSetup,
 } from "../protocol/ring-rpc/ring-rpc-types.js";
 export { ProvenRingTransfer, ringTransactInstruction } from "../operations/workflow/pipeline.js";
+export { ProgramPlan } from "../operations/workflow/program-commitment.js";
+export type { ProgramCommitment } from "../operations/workflow/program-commitment.js";
+export {
+  MAX_TRANSFER_ACCOUNTS,
+  TransferApproval,
+  approveTransferInstruction,
+  approvedTransferCall,
+} from "../protocol/transaction/transfer-approval.js";
+export type { ApprovedTransferCall } from "../protocol/transaction/transfer-approval.js";
 export type {
   AnonymousSpendValues,
+  CoSignerForm,
   RingBoundState,
   RingProvingClient,
   RingTransactAccounts,
