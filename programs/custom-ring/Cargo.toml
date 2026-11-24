@@ -13,7 +13,7 @@ default = []
 bpf-entrypoint = []
 no-entrypoint = []
 cpi = ["no-entrypoint"]
-test-sbf = []
+test-sbf = ["dep:spr-tree"]
 
 [dependencies]
 bincode = { workspace = true }
@@ -29,6 +29,9 @@ wincode = { workspace = true }
 spr-account-checks = { workspace = true }
 spr-hasher = { workspace = true }
 spr-interface = { workspace = true, features = ["borsh"] }
+# Same pinned crate as the host tests. Only the review graph names its
+# stock tree-layout validator; no mutable account-view feature is enabled.
+spr-tree = { workspace = true, optional = true }
 zolana-ring-policy = { workspace = true }
 
 [dev-dependencies]

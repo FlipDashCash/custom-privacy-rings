@@ -19,6 +19,12 @@ mod graph;
 #[cfg(target_os = "solana")]
 #[path = "../settlement/jupiter_legacy_spl_output_draft.rs"]
 mod output;
+#[cfg(any(
+    all(test, not(target_os = "solana")),
+    all(target_os = "solana", feature = "test-sbf", feature = "no-entrypoint")
+))]
+#[path = "jupiter_measured_v1_spp_tree_review.rs"]
+mod spp_tree;
 
 // This parent module is itself excluded by bpf-entrypoint. Require
 // no-entrypoint as well for the additional producer dependency check.
@@ -182,6 +188,8 @@ impl<'a> ObservedV1<'a> {
         )
         .map_err(|_| ProgramError::InvalidInstructionData)?;
         let tracking = self.read_selected_tracking(&policy)?;
+        #[cfg(feature = "no-entrypoint")]
+        let output_tree_field = spp_tree::read_from_roles(views)?;
         let output = output::LegacySplOutputReview::observe(
             &views[Role::Depositor as usize],
             &views[Role::OutputMint as usize],
@@ -195,6 +203,8 @@ impl<'a> ObservedV1<'a> {
             _withdrawal: matched.withdrawal,
             _tracking: tracking,
             _ring_generation: policy.generation(),
+            #[cfg(feature = "no-entrypoint")]
+            _output_tree_field: output_tree_field,
             output,
         })
     }
@@ -307,6 +317,10 @@ struct RuntimePrefixMatch<'read, 'invocation> {
     _withdrawal: graph::WithdrawalBinding,
     _tracking: ServedTracking,
     _ring_generation: u32,
+    // The stock identity from those same bound views, never a host-provided
+    // descriptor value. Nothing currently consumes it outside this review.
+    #[cfg(feature = "no-entrypoint")]
+    _output_tree_field: [u8; 32],
     output: output::LegacySplOutputReview<'read>,
 }
 

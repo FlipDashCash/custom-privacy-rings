@@ -313,6 +313,21 @@ CARGO_NET_OFFLINE=true cargo +1.89.0-sbpf-solana-v1.54 check --offline --locked 
 This is a target type/dependency check, not an SBF image build or execution.
 No pins are selected, proof consumed, CPI issued, or custody changed.
 
+The same review-only match now retains the output tree's canonical field from
+role 10 of its bound account views. It checks the frozen tree and SPP-program
+privileges, ownership and exact SPP layout size, then uses pinned
+`spr_tree::TreeAccount::from_bytes` for the whole layout rather than trusting
+the header alone. The checked in-place parser needs a short exclusive borrow
+of the same account; only immutable getters are called, the data is never
+written, and the borrow is released before returning. An inactive or
+noncanonical PDA cannot replace the bound output tree. No tree ID is exposed
+outside this private match. The field is not an append or credit receipt.
+
+The existing `test-sbf` review feature names the already-pinned `spr-tree`
+crate directly without enabling its `account-view` feature. The ordinary
+dispatch and its dependencies are not extended; `no-entrypoint` gates the new
+target reader.
+
 For the host codec checks on the complete pinned source (Rust 1.98.1 through
 the nested Privacy toolchain):
 
