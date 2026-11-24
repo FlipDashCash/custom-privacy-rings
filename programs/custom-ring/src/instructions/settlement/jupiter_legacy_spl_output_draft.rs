@@ -133,6 +133,7 @@ impl<'a> LegacySplOutputViews<'a> {
 /// conservation, not an amount attributed to Jupiter or a settlement receipt.
 pub(super) struct LegacySplOutputReview<'a> {
     views: LegacySplOutputViews<'a>,
+    initial_stage_units: u64,
     expected_vault_after: u64,
 }
 
@@ -157,8 +158,15 @@ impl<'a> LegacySplOutputReview<'a> {
             .ok_or(ProgramError::ArithmeticOverflow)?;
         Ok(Self {
             views,
+            initial_stage_units: observed.staging_atomic,
             expected_vault_after,
         })
+    }
+
+    /// First-read units and the bump derived from that same validated mint.
+    /// Neither is an execution receipt or authority to transfer those units.
+    pub(super) fn observed_spl_entry(&self) -> (u64, u8) {
+        (self.initial_stage_units, self.views.vault_bump())
     }
 
     /// A future authorized caller would reread immediately after its stock
