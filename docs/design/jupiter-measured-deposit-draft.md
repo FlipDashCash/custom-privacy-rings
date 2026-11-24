@@ -267,6 +267,35 @@ matching verifier fingerprints, and a way to bind that selection to the trusted
 profile. The closed historical CPMM artifacts are not that selection.
 This path chooses no key, consumes no proof and remains unregistered.
 
+
+### Offline source provenance and verifier intake
+
+Python 3.12+ tool: `tools/check_jupiter_descriptor_release.py`.
+
+- `reference` emits the exact reviewed source/compiled relation identity as
+  canonical JSON. This is a pin, not a local compilation or a verifier.
+- `compile` (run from the reviewed checkout) reads the immutable Custom
+  `prover` and nested Privacy `prover/server` Git objects into a fresh temporary
+  directory. It reruns only `TestJupiterDescriptorRelationConstraints` with
+  installed Go 1.27.3 and the offline module cache. Its JSON includes the
+  observed byte count, pinned `ConstraintSystem.WriteTo` digest and shape. It
+  performs no setup, proving, key loading or network requests.
+- `check --manifest FILE --expected-manifest-sha256 SHA --raw-vk FILE` compares
+  the exact raw public VK to an **independently approved expected manifest
+  digest**. Obtain the digest over separately reviewed release metadata, not
+  by hashing the untrusted manifest and then passing that hash back to the
+  tool. The tool does not authenticate the issuer or establish the
+  relation-to-key linkage by itself.
+
+The manifest has exactly `schema: "jupiter-descriptor-public-vk-release-v1"`,
+`relation` (the object emitted by the source tool), `release` (repository
+`owner/name` and full Git `commit`), and `public_vk` (`encoding:
+"gnark-bn254-groth16.VerifyingKey.WriteRawTo"`, integer `bytes`, and
+`sha256`). Use sorted keys, compact JSON and one terminal LF. A full setup
+bundle is not raw VK bytes. A successful byte match is not proof execution,
+approval of the derived Rust verifier or its runtime profile, or permission
+to register the tag.
+
 Before wiring an owned Custom handler, independently select and pin the exact
 guard and executable profile, Jupiter-specific descriptor transcript and
 matching verifier identity. They are **unprovisioned**. Reuse the checked
