@@ -1135,6 +1135,7 @@ impl Relay {
             ring: pending.ring,
             message: message.clone(),
             flows: pending.flows.clone(),
+            approved_transfer: None,
         };
         match self.co_signer.decide(&request).await? {
             CoSignDecision::Signed(signature) => Ok(CollectedSignature {

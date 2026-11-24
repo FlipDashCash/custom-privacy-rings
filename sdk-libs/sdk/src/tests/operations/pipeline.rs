@@ -3479,7 +3479,7 @@ async fn only_a_named_public_spend_takes_the_wallets_zero_key_note() {
     let config = ring().require_config(&chain).await.unwrap();
     let wallet = sender.shielded_address().unwrap().solana_address().unwrap();
     let public = owner_transfer(&sender, ring_transaction(vec![note.clone()])).spend_public(wallet);
-    let staged = public.rail.stage(ring(), &config).await.unwrap();
+    let staged = public.rail.stage(ring(), &config, None).await.unwrap();
     assert!(matches!(staged.spend, Spend::PublicOwners));
     assert_eq!(staged.owner_signers, [wallet]);
 
@@ -3487,7 +3487,7 @@ async fn only_a_named_public_spend_takes_the_wallets_zero_key_note() {
     let misnamed =
         owner_transfer(&sender, ring_transaction(vec![note.clone()])).spend_public(other);
     assert!(matches!(
-        misnamed.rail.stage(ring(), &config).await,
+        misnamed.rail.stage(ring(), &config, None).await,
         Err(RingError::PublicSpendWalletMismatch { named, .. }) if named == other
     ));
 
@@ -3495,12 +3495,15 @@ async fn only_a_named_public_spend_takes_the_wallets_zero_key_note() {
     let config = ring().require_config(&confidential).await.unwrap();
     let signer = owner_transfer(&sender, ring_transaction(vec![note.clone()]));
     assert!(matches!(
-        signer.rail.stage(ring(), &confidential, &config).await,
+        signer
+            .rail
+            .stage(ring(), &confidential, &config, None)
+            .await,
         Err(RingError::ZeroKeyInputUnnamed { index: 0 })
     ));
     let named = owner_transfer(&sender, ring_transaction(vec![note])).spend_public(wallet);
     assert!(matches!(
-        named.rail.stage(ring(), &config).await.unwrap().spend,
+        named.rail.stage(ring(), &config, None).await.unwrap().spend,
         Spend::Owner(_)
     ));
 }
@@ -4277,7 +4280,7 @@ async fn a_program_owner_spends_public_under_either_key_class_on_both_modes() {
                 .spend_public(wallet)
             };
             let transfer = public(pda(0x51));
-            let staged = transfer.rail.stage(ring(), &config).await.unwrap();
+            let staged = transfer.rail.stage(ring(), &config, None).await.unwrap();
             // The frame admits its public owners flag on the anonymous rail alone.
             let spends_public = match mode {
                 RingMode::Anonymous => matches!(staged.spend, Spend::PublicOwners),
@@ -4287,7 +4290,7 @@ async fn a_program_owner_spends_public_under_either_key_class_on_both_modes() {
             assert_eq!(staged.owner_signers, [pda(0x51)], "{mode:?}");
             let misnamed = public(pda(0x52));
             assert!(matches!(
-                misnamed.rail.stage(ring(), &config).await,
+                misnamed.rail.stage(ring(), &config, None).await,
                 Err(RingError::PublicSpendWalletMismatch { named, .. }) if named == pda(0x52)
             ));
         }
@@ -4861,4 +4864,284 @@ async fn anonymous_payout_keeps_all_output_slots_within_inline_limits() {
             .addresses
             .is_some_and(|count| count <= usize::from(solana_message::v1::MAX_ADDRESSES)));
     }
+}
+
+fn program_transfer<'a>(
+    owner: &'a ProgramOwner,
+    note: &WalletUtxo,
+    paid: &RingAddress,
+) -> PublicOwnerTransfer<'a> {
+    CustomRingTransfer::new(CustomRingTransferInput {
+        ring: ring(),
+        sender: owner,
+        nullifier_key: Some(&owner.keys.nullifier_key),
+        transaction: ring_transaction(vec![note.clone()]),
+    })
+    .spend_public(pda(0x51))
+    .with_payment(payment(paid, 4))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_committed_transfer_stages_its_program_plan_on_both_public_rails() {
+    use crate::tests::support::keypair;
+    let owner = ProgramOwner::of(pda(0x51), keypair(1));
+    let paid = ring_address(&keypair(2));
+    let note = zero_key(owner.note(0));
+    let transfer = || program_transfer(&owner, &note, &paid);
+    for mode in [RingMode::Confidential, RingMode::Anonymous] {
+        let chain = Chain::ring(RingSettings::new(mode));
+        let config = ring().require_config(&chain).await.unwrap();
+        let plan = transfer().program_plan(&config).unwrap();
+        let amounts: Vec<u64> = plan.outputs.iter().map(|output| output.amount).collect();
+        let (payment_slot, change_slot) = match mode {
+            RingMode::Anonymous => (1, 0),
+            _ => (0, 1),
+        };
+        assert_eq!(
+            (amounts[payment_slot], amounts[change_slot]),
+            (4, 6),
+            "{mode:?}"
+        );
+        assert_eq!(plan.outputs[change_slot].owner_address, Some(owner.address));
+
+        let committed = transfer().with_program(plan.commitment());
+        let prepared = committed.prepare(&chain).await.ok().unwrap();
+        let staged = &prepared.pipeline.staged;
+        assert_eq!(staged.rail.salt(), plan.salt, "{mode:?}");
+        assert_eq!(
+            staged.rail.blinding_seed().unwrap(),
+            plan.blinding_seed,
+            "{mode:?}"
+        );
+        assert_eq!(staged.proof_inputs.blinding_seed, plan.blinding_seed);
+        assert_eq!(staged.proof_inputs.output_utxos, plan.outputs, "{mode:?}");
+        assert_eq!(staged.proof_inputs.check_shape().unwrap(), plan.shape);
+        assert_eq!(
+            staged
+                .proof_inputs
+                .padding_independent_private_tx_hash()
+                .unwrap(),
+            plan.private_tx_hash,
+            "{mode:?}"
+        );
+
+        let assembled = committed
+            .assemble(&chain.clone().client())
+            .await
+            .ok()
+            .unwrap();
+        assert_eq!(assembled.frame.parts.private_tx_hash, plan.private_tx_hash);
+
+        let other = transfer().with_program(ProgramCommitment {
+            private_tx_hash: [1; 32],
+            ..plan.commitment()
+        });
+        assert!(
+            matches!(
+                other.prepare(&chain).await,
+                Err(RingError::ProgramCommitmentMismatch { committed, staged })
+                    if committed == [1; 32] && staged == plan.private_tx_hash
+            ),
+            "{mode:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_program_commitment_is_refused_where_an_owner_signs_inside_a_proof() {
+    use crate::tests::support::keypair;
+    let sender = keypair(1);
+    let note = ring_utxo(&sender, Mint::SOL, 10, 0);
+    let transfer = || owner_transfer(&sender, ring_transaction(vec![note.clone()]));
+    let confidential = Chain::ring(RingSettings::new(RingMode::Confidential));
+    let config = ring().require_config(&confidential).await.unwrap();
+    let plan = transfer().program_plan(&config).unwrap();
+    let signer = transfer().with_program(plan.commitment());
+    assert!(signer.prepare(&confidential).await.is_ok());
+    let in_proof = || transfer().with_in_proof_owner(&sender.signing_key);
+    assert!(matches!(
+        in_proof().program_plan(&config),
+        Err(RingError::ProgramRailUnsupported)
+    ));
+    assert!(matches!(
+        in_proof()
+            .with_program(plan.commitment())
+            .prepare(&confidential)
+            .await,
+        Err(RingError::ProgramRailUnsupported)
+    ));
+
+    let anonymous = enrolled(&[&sender]);
+    let config = ring().require_config(&anonymous).await.unwrap();
+    let hidden = || transfer().with_anonymous_signer(&sender.signing_key);
+    assert!(matches!(
+        hidden().program_plan(&config),
+        Err(RingError::ProgramRailUnsupported)
+    ));
+    assert!(matches!(
+        hidden()
+            .with_program(plan.commitment())
+            .prepare(&anonymous)
+            .await,
+        Err(RingError::ProgramRailUnsupported)
+    ));
+}
+
+#[tokio::test]
+async fn a_program_transfer_takes_each_co_signer_by_an_approval_of_the_built_call() {
+    use crate::tests::support::{keypair, Registry};
+    use custom_ring_interface::{CoSignScope, TransferApproval};
+    use solana_instruction::AccountMeta;
+    use solana_sdk_ids::sysvar;
+    use spr_program::instruction::TransactSolTransferAccounts;
+    use zolana_ring_policy::MintPolicy;
+    let sender = keypair(1);
+    let approver = Address::new_from_array([77; 32]);
+    let recipient = keypair(40)
+        .shielded_address()
+        .unwrap()
+        .solana_address()
+        .unwrap();
+    let withdrawing = || {
+        let mut transaction = ring_transaction(vec![ring_utxo(&sender, Mint::SOL, 200, 0)]);
+        transaction.withdraw_sol(101, recipient).unwrap();
+        owner_transfer(&sender, transaction)
+            .with_interface_transfer_accounts(vec![TransactInterfaceTransferAccounts::Sol(
+                TransactSolTransferAccounts { recipient },
+            )])
+            .with_co_signer(approver)
+    };
+    let chain = Chain::ring(RingSettings {
+        co_signer: Some((approver, CoSignScope::APPROVE_WITHDRAWAL)),
+        ..RingSettings::new(RingMode::Confidential)
+    })
+    .with_records(Registry::new(&[]).with_mint(
+        Mint::SOL.asset,
+        MintPolicy {
+            withdrawal_threshold: 100,
+            ..MintPolicy::EMPTY
+        },
+    ));
+    let config = ring().require_config(&chain).await.unwrap();
+    let transfer = withdrawing();
+    let plan = transfer.program_plan(&config).unwrap();
+    assert_ne!(plan.transaction_hash, plan.private_tx_hash);
+    let other_transfers = transfer.with_program(ProgramCommitment {
+        transaction_hash: [1; 32],
+        ..plan.commitment()
+    });
+    let refused = other_transfers.prepare(&chain).await.err();
+    assert!(
+        matches!(
+            refused,
+            Some(RingError::ProgramTransactionHashMismatch { committed, staged })
+                if committed == [1; 32] && staged == plan.transaction_hash
+        ),
+        "{refused:?}"
+    );
+
+    let client = chain.client();
+    let record = ring().co_signer_pda(&approver);
+    let pair = |transfer: &Instruction| {
+        let record = transfer
+            .accounts
+            .iter()
+            .position(|account| account.pubkey == record)
+            .unwrap();
+        transfer.accounts[record + 1].clone()
+    };
+    let committed = other_transfers.with_program(plan.commitment());
+    let framed = committed.frame(&client).await.ok().unwrap();
+    let transfer = framed.instruction().unwrap();
+    assert_eq!(
+        pair(&transfer),
+        AccountMeta::new_readonly(sysvar::instructions::ID, false)
+    );
+    assert!(transfer
+        .accounts
+        .iter()
+        .all(|account| account.pubkey != approver));
+    let approvals = framed
+        .frame
+        .accounts
+        .transfer_approvals(&transfer, 3)
+        .unwrap();
+    let digest = TransferApproval::digest(
+        &transfer.program_id,
+        &transfer.data,
+        transfer.accounts.iter().map(|account| &account.pubkey),
+    )
+    .unwrap();
+    assert_eq!(
+        approvals,
+        [Instruction {
+            program_id: ring().program_id(),
+            accounts: vec![
+                AccountMeta::new_readonly(ring().policy_pda(), false),
+                AccountMeta::new_readonly(record, false),
+                AccountMeta::new_readonly(approver, true),
+            ],
+            data: TransferApproval {
+                position: 3,
+                digest
+            }
+            .encode()
+            .to_vec(),
+        }]
+    );
+
+    let direct = withdrawing();
+    let framed = direct.frame(&client).await.ok().unwrap();
+    let transfer = framed.instruction().unwrap();
+    assert_eq!(pair(&transfer), AccountMeta::new_readonly(approver, true));
+    assert!(matches!(
+        framed.frame.accounts.transfer_approvals(&transfer, 3),
+        Err(RingError::ApprovalOutsideProgram)
+    ));
+}
+
+#[tokio::test]
+async fn a_program_transfer_leaves_its_owner_for_the_calling_program_to_sign() {
+    use crate::tests::support::keypair;
+    let owner = ProgramOwner::of(pda(0x51), keypair(1));
+    let paid = ring_address(&keypair(2));
+    let note = zero_key(owner.note(0));
+    let chain = Chain::ring(RingSettings::new(RingMode::Confidential));
+    let config = ring().require_config(&chain).await.unwrap();
+    let client = chain.client();
+    let owner_signs = |transfer: &Instruction| {
+        let named = transfer
+            .accounts
+            .iter()
+            .find(|account| account.pubkey == pda(0x51));
+        named.unwrap().is_signer
+    };
+
+    let direct = program_transfer(&owner, &note, &paid);
+    let plan = direct.program_plan(&config).unwrap();
+    let framed = direct.frame(&client).await.ok().unwrap();
+    let transfer = framed.instruction().unwrap();
+    assert!(owner_signs(&transfer));
+    assert!(matches!(
+        framed.frame.accounts.approved_transfer(&transfer),
+        Err(RingError::ApprovalOutsideProgram)
+    ));
+
+    let called = program_transfer(&owner, &note, &paid).with_program(plan.commitment());
+    let framed = called.frame(&client).await.ok().unwrap();
+    let transfer = framed.instruction().unwrap();
+    assert!(!owner_signs(&transfer));
+    let payer = framed.frame.accounts.payer;
+    assert!(transfer
+        .accounts
+        .iter()
+        .any(|account| account.pubkey == payer && account.is_signer));
+    let approved = framed.frame.accounts.approved_transfer(&transfer).unwrap();
+    assert_eq!(approved.data.0, transfer.data);
+    assert!(approved
+        .accounts
+        .iter()
+        .map(|account| &account.0)
+        .eq(transfer.accounts.iter().map(|account| &account.pubkey)));
 }

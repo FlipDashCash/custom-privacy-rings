@@ -6,7 +6,6 @@ use std::future::Future;
 
 use async_trait::async_trait;
 use solana_address::Address;
-use solana_message::VersionedMessage;
 
 pub(crate) use self::store::migration;
 pub use self::{
@@ -14,7 +13,10 @@ pub use self::{
     store::{ListStore, StoredLists},
 };
 use super::rule::{CoSignRule, Operation, Verdict};
-use crate::{cosign::CoSignFlows, error::RingRpcError};
+use crate::{
+    cosign::{CoSignFlows, FrameSource},
+    error::RingRpcError,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FrameParties {
@@ -28,7 +30,7 @@ pub trait PartySource: Send + Sync {
     fn parties(
         &self,
         ring: Address,
-        message: &VersionedMessage,
+        frame: FrameSource<'_>,
     ) -> impl Future<Output = Result<FrameParties, RingRpcError>> + Send;
 }
 
@@ -49,7 +51,7 @@ impl<P: PartySource, S: ListStore> CoSignRule for ListRule<P, S> {
         let parties = match operation.flows {
             CoSignFlows::Frame => match self
                 .parties
-                .parties(operation.ring, operation.message)
+                .parties(operation.ring, operation.frame_source())
                 .await?
             {
                 FrameParties::Delegate => return Ok(Verdict::Admitted),

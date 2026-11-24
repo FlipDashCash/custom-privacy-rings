@@ -8,7 +8,6 @@ use async_trait::async_trait;
 use custom_ring_interface::CoSignScope;
 use sea_orm::{ConnectionTrait, DbErr, TransactionTrait};
 use solana_address::Address;
-use solana_message::VersionedMessage;
 use zolana_operator_custody::SigningIdentity;
 use zolana_ring_policy::{
     ApprovalInputs, ApprovalMask, Member, MintPolicy, OwnerDebit, PublicGross,
@@ -17,7 +16,7 @@ use zolana_ring_policy::{
 use crate::{
     cosign::{
         AssetFlow, CoSignError, CoSignFlows, CoSignRefusal, CoSignSettlement, CoSignerApproval,
-        OwnerFlow,
+        FrameSource, OwnerFlow,
     },
     cosign_usage::{
         AdmissionSlot, AssetScope, Measure, ReservationState, Reserve, UsageLedger, WindowSum,
@@ -49,11 +48,11 @@ pub trait AssetLimitSource: Send + Sync {
         signer: Address,
     ) -> impl Future<Output = Result<CoSignScope, RingRpcError>> + Send;
 
-    /// One flow per owner and asset of the transfer `message` carries, refused on an unknown input.
+    /// One flow per owner and asset of the transfer `frame` reads, refused on an unknown input.
     fn transfer_flows(
         &self,
         ring: Address,
-        message: &VersionedMessage,
+        frame: FrameSource<'_>,
     ) -> impl Future<Output = Result<FrameRead, RingRpcError>> + Send;
 }
 
@@ -167,7 +166,7 @@ impl<L: AssetLimitSource> CoSignRule for WindowRule<L> {
             CoSignFlows::Frame => {
                 match self
                     .limits
-                    .transfer_flows(request.ring, request.message)
+                    .transfer_flows(request.ring, request.frame_source())
                     .await?
                 {
                     // A delegate transfer demands no class, no limit reads it and nothing reserves.
@@ -359,12 +358,12 @@ impl<S: TransactionSource + 'static> AssetLimitSource for RecordLimits<S> {
     async fn transfer_flows(
         &self,
         ring: Address,
-        message: &VersionedMessage,
+        frame: FrameSource<'_>,
     ) -> Result<FrameRead, RingRpcError> {
         TransferDebits {
             shared: &self.0,
             ring,
-            message,
+            source: frame,
         }
         .flows()
         .await
@@ -375,12 +374,12 @@ impl<S: TransactionSource + 'static> PartySource for RecordLimits<S> {
     async fn parties(
         &self,
         ring: Address,
-        message: &VersionedMessage,
+        frame: FrameSource<'_>,
     ) -> Result<FrameParties, RingRpcError> {
         TransferDebits {
             shared: &self.0,
             ring,
-            message,
+            source: frame,
         }
         .parties()
         .await
@@ -614,7 +613,7 @@ mod tests {
     };
 
     use sea_orm::ConnectionTrait;
-    use solana_message::Message;
+    use solana_message::{Message, VersionedMessage};
     use zolana_ring_policy::AssetLimits;
 
     use solana_keypair::Keypair;
@@ -801,7 +800,7 @@ mod tests {
         async fn transfer_flows(
             &self,
             _ring: Address,
-            _message: &VersionedMessage,
+            _frame: FrameSource<'_>,
         ) -> Result<FrameRead, RingRpcError> {
             self.flows.clone().map_err(Into::into)
         }
@@ -847,9 +846,9 @@ mod tests {
         async fn transfer_flows(
             &self,
             ring: Address,
-            message: &VersionedMessage,
+            frame: FrameSource<'_>,
         ) -> Result<FrameRead, RingRpcError> {
-            self.limits.transfer_flows(ring, message).await
+            self.limits.transfer_flows(ring, frame).await
         }
     }
 
@@ -865,6 +864,7 @@ mod tests {
             ring: Address::new_from_array([9; 32]),
             message: message(nonce),
             flows: CoSignFlows::Published(vec![debit(7, amount)]),
+            approved_transfer: None,
         }
     }
 
@@ -930,6 +930,7 @@ mod tests {
             ring: Address::new_from_array([9; 32]),
             message: message(1),
             flows: CoSignFlows::Frame,
+            approved_transfer: None,
         }
     }
 
@@ -1236,6 +1237,7 @@ mod tests {
                 ring: Address::new_from_array([9; 32]),
                 message: message(1),
                 flows: CoSignFlows::Frame,
+                approved_transfer: None,
             })
             .await
             .expect("decision");
@@ -1259,6 +1261,7 @@ mod tests {
                     ring: Address::new_from_array([9; 32]),
                     message: message(1),
                     flows: CoSignFlows::Frame,
+                    approved_transfer: None,
                 })
                 .await,
             Err(RingRpcError::CoSign(CoSignError::LimitsUnavailable))
@@ -1354,6 +1357,7 @@ mod tests {
             ring: Address::new_from_array([9; 32]),
             message: message(1),
             flows: CoSignFlows::Published(vec![debit(7, 10), debit(8, 20)]),
+            approved_transfer: None,
         };
         let CoSignDecision::Signed(signature) = co_signer.decide(&mixed()).await.expect("first")
         else {
@@ -1381,6 +1385,7 @@ mod tests {
             ring: Address::new_from_array([9; 32]),
             message: message(1),
             flows: CoSignFlows::Published(vec![debit(7, 10), debit(8, 20)]),
+            approved_transfer: None,
         };
         assert!(matches!(
             co_signer.decide(&request).await.expect("decision"),
@@ -1408,6 +1413,7 @@ mod tests {
                     ring: Address::new_from_array([9; 32]),
                     message: message(1),
                     flows: CoSignFlows::Published(vec![debit(7, 10), debit(7, 20)]),
+                    approved_transfer: None,
                 })
                 .await,
             Err(RingRpcError::CoSign(CoSignError::RepeatedAsset))

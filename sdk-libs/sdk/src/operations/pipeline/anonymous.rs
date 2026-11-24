@@ -18,19 +18,16 @@ use spr_transaction::{
 };
 use zolana_ring_client::rpc::SubjectListSalt;
 use zolana_ring_keys::{RingAddress, RingPaymentRequest};
-use zolana_ring_transaction::{
-    AnonymousPlan, ClassifiedInput, ReplyMetadata, RingDelivery, RingOutputRail,
-};
+use zolana_ring_transaction::{AnonymousPlan, ClassifiedInput, ReplyMetadata, RingDelivery};
 
 use super::{
     canonical_shape,
     owner::{CustomRingTransferInput, Owner},
-    pad_under_rail,
     public_owners::check_zero_key_inputs,
     sealed,
     selection::{payment_total, widest, Candidate, Funding},
-    spends_default_ring, transaction_key, transfer_key, CoOwnerKey, OwnerSource, Rail, RailKind,
-    RingSender, RingTransfer, Spend, Staged, TransferAuthority,
+    spends_default_ring, transfer_key, CoOwnerKey, OutputSeal, OwnerSource, Rail, RailKind,
+    RingSender, RingTransfer, SealedOutputs, Spend, Staged, TransferAuthority,
 };
 use crate::{
     client::{RingClient, RingIndexerBackend},
@@ -260,6 +257,7 @@ impl<'a> RingTransfer<Owner<'a>> {
             ring_salt: self.ring_salt,
             approval: self.approval,
             seal_row: self.seal_row,
+            program: self.program,
         }
     }
 }
@@ -487,15 +485,16 @@ impl Anonymous<'_> {
             Some(shape) => shape,
             None => canonical_shape(&transaction, &sender)?,
         };
-        let first_nullifier = *transaction.first_nullifier();
-        let tx_viewing_key = transaction_key(keys, first_nullifier)?;
-        let rail = RingOutputRail::new(
-            tx_viewing_key,
-            config.auditor_pubkey,
-            RingDelivery::Anonymous(Box::new(anonymous_plan(&self.payments))),
-        );
-        let transaction = pad_under_rail(transaction, &rail, shape, &sender)?;
-        let proof_inputs = self.cached(rail.encrypt(transaction, &sender)?)?;
+        let SealedOutputs { rail, proof_inputs } = OutputSeal {
+            keys,
+            sender: &sender,
+            auditor: config.auditor_pubkey,
+            delivery: RingDelivery::Anonymous(Box::new(anonymous_plan(&self.payments))),
+            shape,
+            program_salt: None,
+        }
+        .seal(transaction)?;
+        let proof_inputs = self.cached(proof_inputs)?;
         check_anonymous_inputs(&proof_inputs, &sender, self.exposure)?;
         let owner_signers = public_co_owners(&proof_inputs, &sender)?;
         // A signer owning no input authorizes its data output alone, it spends with no key, and an address slot spends nothing.

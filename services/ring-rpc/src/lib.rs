@@ -125,14 +125,16 @@ pub use config::{
 };
 pub use cosign::{
     ApproveClass, AssetFlow, CoSignDecision, CoSignError, CoSignFlows, CoSignPolicy, CoSignRefusal,
-    CoSignRequest, CoSignSettlement, CoSignerApproval, OwnerFlow, RefusingCoSigner, Ticket,
+    CoSignRequest, CoSignSettlement, CoSignerApproval, FrameSource, OwnerFlow, RefusingCoSigner,
+    Ticket,
 };
 pub use cosign_limits::{
     AssetLimitSource, FrameRead, LimitedCoSigner, LimitedCoSignerInit, TransferRead, WindowRule,
 };
 pub use cosigner::{
-    Chain, CoSignRule, CoSigner, FrameParties, List, ListDecision, ListEntry, ListRule, ListStore,
-    Lists, Operation, Parties, PartySource, StoredLists, Subject, SubjectKind, Verdict,
+    ApprovedCall, Chain, CoSignRule, CoSigner, FrameParties, List, ListDecision, ListEntry,
+    ListRule, ListStore, Lists, Operation, Parties, PartySource, StoredLists, Subject, SubjectKind,
+    Verdict,
 };
 pub use database::{Store, STORE_CONNECTIONS};
 pub use enrollment_applier::{EnrollmentApplier, EnrollmentApplierParts};
@@ -140,7 +142,7 @@ pub use error::{GrantRefusal, RingRpcError};
 pub use escrow_merge::RingSdkMergeBuilder;
 pub use hub::{Clock, Hub, HubBuilder, NotReady, ServiceIdentity};
 pub use keys::{KeySource, GRANT_ROW_KEY_INFO};
-pub use landing::{ChainOutcome, ChainSubmit, LatestBlockhash, Simulation, SolanaChain};
+pub use landing::{ChainOutcome, ChainSubmit, InnerCall, LatestBlockhash, Simulation, SolanaChain};
 pub use managed_merge::{
     BuiltMerge, ManagedMerge, ManagedMergeInit, MergeBuilder, MergeTarget, OwnerMerge,
     MANAGED_MERGE_INTERVAL,

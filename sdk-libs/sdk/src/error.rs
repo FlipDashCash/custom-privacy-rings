@@ -153,6 +153,22 @@ pub enum RingError {
     PublicSpendWalletMismatch { named: Address, sender: Address },
     #[error("a public spend signs the transaction, it cannot prove its owner in the proof")]
     PublicSpendInProofOwner,
+    #[error("a program commitment needs a rail whose owners all sign the transaction")]
+    ProgramRailUnsupported,
+    #[error("the staged private transaction hash differs from the program commitment")]
+    ProgramCommitmentMismatch {
+        committed: [u8; 32],
+        staged: [u8; 32],
+    },
+    #[error(
+        "the staged transaction hash over the public transfers differs from the program commitment"
+    )]
+    ProgramTransactionHashMismatch {
+        committed: [u8; 32],
+        staged: [u8; 32],
+    },
+    #[error("only a transfer committed to a program takes a transfer approval")]
+    ApprovalOutsideProgram,
     #[error(transparent)]
     AddressCeiling(#[from] crate::AddressCeilingError),
     #[error(transparent)]

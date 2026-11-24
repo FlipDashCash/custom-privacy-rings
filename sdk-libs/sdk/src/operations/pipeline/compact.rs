@@ -4,7 +4,7 @@ use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, tag, AnonymousProofData, AppMessage, CustomRingError,
     CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
     PlainGroth16Proof, PolicyProof, Replies, RingOutput, RingPolicy, RingRail, RingTransactData,
-    RootRead, SlotBody, EXIT_RECORD_LEN, MAX_SPP_CPI_ACCOUNTS,
+    RootRead, SlotBody, TransferApproval, EXIT_RECORD_LEN, MAX_SPP_CPI_ACCOUNTS,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -14,6 +14,8 @@ use spr_interface::instruction::{
 use spr_program::instruction::{
     RingAuthorityTransact, RingTransact, TransactInterfaceTransferAccounts,
 };
+
+use zolana_ring_client::rpc::ApprovedTransfer;
 
 use super::owner::deposit_funder;
 use crate::{CustomRing, RingError};
@@ -247,6 +249,14 @@ impl TransactParts {
     }
 }
 
+/// What follows the record in each co-signer pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CoSignerForm {
+    Signature,
+    /// The instructions sysvar, a top-level `ApproveTransfer` stands for the signature.
+    Approval,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TransactAccounts {
     pub payer: Address,
@@ -259,6 +269,7 @@ pub(crate) struct TransactAccounts {
     /// SPP reads each cached note from it, it follows the settlement groups.
     pub read_cache: Option<Address>,
     pub co_signers: Vec<Address>,
+    pub co_signer_form: CoSignerForm,
     pub delegate: Option<Address>,
     pub delegate_mint: Option<Address>,
 }
@@ -275,6 +286,51 @@ impl TransactAccounts {
             .collect()
     }
 
+    /// One per co-signer, the digest reads `transfer` as built.
+    pub fn transfer_approvals(
+        &self,
+        transfer: &Instruction,
+        position: u8,
+    ) -> Result<Vec<Instruction>, RingError> {
+        self.called_by_program()?;
+        let digest = TransferApproval::digest(
+            &transfer.program_id,
+            &transfer.data,
+            transfer.accounts.iter().map(|account| &account.pubkey),
+        )?;
+        let data = TransferApproval { position, digest }.encode();
+        let ring = CustomRing::new(transfer.program_id);
+        Ok(self
+            .co_signers
+            .iter()
+            .map(|co_signer| Instruction {
+                program_id: transfer.program_id,
+                accounts: ring.transfer_approval_metas(*co_signer).into(),
+                data: data.into(),
+            })
+            .collect())
+    }
+
+    /// The call Ring RPC reads beside the approvals of `transfer`.
+    pub fn approved_transfer(&self, transfer: &Instruction) -> Result<ApprovedTransfer, RingError> {
+        self.called_by_program()?;
+        Ok(ApprovedTransfer {
+            data: transfer.data.clone().into(),
+            accounts: transfer
+                .accounts
+                .iter()
+                .map(|account| account.pubkey.into())
+                .collect(),
+        })
+    }
+
+    fn called_by_program(&self) -> Result<(), RingError> {
+        match self.co_signer_form {
+            CoSignerForm::Approval => Ok(()),
+            CoSignerForm::Signature => Err(RingError::ApprovalOutsideProgram),
+        }
+    }
+
     /// The ring prefix, then SPP's own list, the data's tag by its rail.
     pub fn instruction(
         &self,
@@ -284,7 +340,7 @@ impl TransactAccounts {
     ) -> Result<Instruction, RingError> {
         let data = parts.data()?;
         let expanded = data.transact_ix_data(config, TransactProof::zeroed())?;
-        let spp = match parts.rail {
+        let mut spp = match parts.rail {
             RingRail::Delegate | RingRail::AnonymousDelegate => {
                 RingAuthorityTransact {
                     payer: self.payer,
@@ -313,6 +369,13 @@ impl TransactAccounts {
                 }
             }
         };
+        if self.called_by_program().is_ok() {
+            // A program owner signs inside its program's call, the payer signs the transaction.
+            spp.iter_mut()
+                .filter(|meta| meta.pubkey != self.payer)
+                .filter(|meta| self.owner_signers.contains(&meta.pubkey))
+                .for_each(|meta| meta.is_signer = false);
+        }
         if spp.len() > MAX_SPP_CPI_ACCOUNTS {
             return Err(RingError::TooManySettlementAccounts {
                 accounts: spp.len(),
@@ -328,7 +391,10 @@ impl TransactAccounts {
         accounts.extend(
             self.co_signers
                 .iter()
-                .flat_map(|co_signer| ring.co_signer_metas(*co_signer)),
+                .flat_map(|co_signer| match self.co_signer_form {
+                    CoSignerForm::Signature => ring.co_signer_metas(*co_signer),
+                    CoSignerForm::Approval => ring.approved_co_signer_metas(*co_signer),
+                }),
         );
         accounts.extend(
             self.delegate

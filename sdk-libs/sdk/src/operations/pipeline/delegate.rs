@@ -177,6 +177,7 @@ impl<'a> RingTransfer<Delegated<'a>> {
             ring_salt: None,
             approval: ApprovalDisclosure::None,
             seal_row: None,
+            program: None,
         }
     }
 

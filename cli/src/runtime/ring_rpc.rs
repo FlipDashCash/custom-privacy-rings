@@ -281,6 +281,7 @@ impl RingRpcClient {
         let request = CoSignTransactionRequest {
             ring: ring.into(),
             message: message.into(),
+            approved_transfer: None,
         };
         let answer: CoSignTransactionResponse = self.call(CO_SIGN_TRANSACTION, request)?;
         Ok(CollectedSignature {

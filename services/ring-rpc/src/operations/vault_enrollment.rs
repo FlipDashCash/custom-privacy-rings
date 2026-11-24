@@ -144,7 +144,10 @@ impl EnrollmentApplier {
         if in_flight.is_some() {
             return Err(EnrollmentRefusal::InFlight.into());
         }
-        if !matches!(self.chain.simulate(&message).await?, Simulation::Passed) {
+        if !matches!(
+            self.chain.simulate(&message).await?,
+            Simulation::Passed { .. }
+        ) {
             return Err(EnrollmentRefusal::InvalidWrite.into());
         }
         if !self.budget.charge(ring, EnrollmentBudget::vault_fee()) {

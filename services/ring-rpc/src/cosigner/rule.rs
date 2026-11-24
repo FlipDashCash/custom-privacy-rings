@@ -4,8 +4,9 @@ use async_trait::async_trait;
 use solana_address::Address;
 use solana_message::VersionedMessage;
 
+use super::scope::ApprovedCall;
 use crate::{
-    cosign::{CoSignFlows, CoSignRefusal, CoSignSettlement, Ticket},
+    cosign::{CoSignFlows, CoSignRefusal, CoSignSettlement, FrameSource, Ticket},
     error::RingRpcError,
 };
 
@@ -13,9 +14,19 @@ use crate::{
 pub struct Operation<'a> {
     pub ring: Address,
     pub message: &'a VersionedMessage,
+    pub approved_transfer: Option<&'a ApprovedCall>,
     pub flows: &'a CoSignFlows,
     /// Of `message`, the key of every reservation.
     pub ticket: Ticket,
+}
+
+impl<'a> Operation<'a> {
+    pub const fn frame_source(&self) -> FrameSource<'a> {
+        FrameSource {
+            message: self.message,
+            approved_transfer: self.approved_transfer,
+        }
+    }
 }
 
 #[must_use]

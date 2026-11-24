@@ -1,18 +1,20 @@
 //! The relay co-signs within its asset's window caps, sends once a second approver signed, and refuses an outflow beyond them, a proof naming a co-signer the run left out, or a ring whose auditor key it does not hold, and keeps a reservation while a stored relay holds it.
 
+use custom_ring_interface::TransferApproval;
 use custom_ring_sdk::CustomRing;
 use jsonrpsee::RpcModule;
 use sea_orm::{ConnectionTrait, Statement};
-use solana_instruction::AccountMeta;
+use solana_instruction::{AccountMeta, Instruction};
+use spr_client::{compile_message, ComputeBudgetConfig};
 use spr_keypair::{ShieldedKeypair, SigningKey};
 use zolana_operator_custody::{CustodyError, OperatorSigner};
 use zolana_ring_client::rpc::{
-    CoSignList, CoSignListEdit, CoSignListEntry, CoSignSubjectKind, CoSignTransactionRequest,
-    CoSignTransactionResponse, EditCoSignList, EditCoSignListRequest, GetCoSignListsRequest,
-    GetCoSignListsResponse, GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest,
-    ReadCoSignLists, RelayId, RelayProofInputs, RelayQuote, RelayRail, RelayStatus, RelayStep,
-    SubmitRelayRequest, CO_SIGN_TRANSACTION, EDIT_CO_SIGN_LIST, GET_CO_SIGN_LISTS, GET_RELAY_QUOTE,
-    GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
+    ApprovedTransfer, CoSignList, CoSignListEdit, CoSignListEntry, CoSignSubjectKind,
+    CoSignTransactionRequest, CoSignTransactionResponse, EditCoSignList, EditCoSignListRequest,
+    GetCoSignListsRequest, GetCoSignListsResponse, GetRelayQuoteRequest, GetRelayStatusRequest,
+    PrepareRelayRequest, ReadCoSignLists, RelayId, RelayProofInputs, RelayQuote, RelayRail,
+    RelayStatus, RelayStep, SubmitRelayRequest, CO_SIGN_TRANSACTION, EDIT_CO_SIGN_LIST,
+    GET_CO_SIGN_LISTS, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
 };
 use zolana_ring_policy::{AssetLimits, MintPolicy};
 use zolana_ring_rpc::{
@@ -1205,6 +1207,7 @@ async fn a_direct_request_is_simulated_then_signed_under_the_same_rules() {
             as_object(CoSignTransactionRequest {
                 ring: RING.into(),
                 message: sent.message.serialize().into(),
+                approved_transfer: None,
             }),
         )
     };
@@ -1228,6 +1231,196 @@ async fn a_direct_request_is_simulated_then_signed_under_the_same_rules() {
     let freeze = listing(CoSignList::Freeze, CoSignSubjectKind::Owner, sender);
     relay.edit_list(&authority(), freeze).await.expect("frozen");
     assert_eq!(refusal(direct().await), CoSignError::Frozen.code());
+}
+
+/// A sent ring transfer as a program calls it, the co-signer approving from the top level.
+struct ProgramCall {
+    message: solana_message::VersionedMessage,
+    transfer: ApprovedTransfer,
+}
+
+impl ProgramCall {
+    const CALLER: Address = Address::new_from_array([0x71; 32]);
+
+    fn of(sent: &solana_message::VersionedMessage, co_signer: Address) -> Self {
+        let keys = sent.static_account_keys();
+        let ring = sent
+            .instructions()
+            .iter()
+            .find(|instruction| keys[usize::from(instruction.program_id_index)] == RING)
+            .expect("ring transfer");
+        let accounts: Vec<Address> = ring
+            .accounts
+            .iter()
+            .map(|index| match keys[usize::from(*index)] {
+                signer if signer == co_signer => solana_sdk_ids::sysvar::instructions::ID,
+                account => account,
+            })
+            .collect();
+        let digest = TransferApproval::digest(&RING, &ring.data, &accounts).expect("digest");
+        let ring_accounts = CustomRing::new(RING);
+        let approval = Instruction {
+            program_id: RING,
+            accounts: vec![
+                AccountMeta::new_readonly(ring_accounts.policy_pda(), false),
+                AccountMeta::new_readonly(ring_accounts.co_signer_pda(&co_signer), false),
+                AccountMeta::new_readonly(co_signer, true),
+            ],
+            data: TransferApproval {
+                position: 0,
+                digest,
+            }
+            .encode()
+            .to_vec(),
+        };
+        let caller = Instruction {
+            program_id: Self::CALLER,
+            accounts: accounts
+                .iter()
+                .chain([&RING])
+                .map(|account| AccountMeta::new_readonly(*account, false))
+                .collect(),
+            data: Vec::new(),
+        };
+        Self {
+            message: compile_message(
+                &keys[0],
+                &[caller, approval],
+                solana_hash::Hash::default(),
+                ComputeBudgetConfig::new(1),
+            )
+            .expect("message"),
+            transfer: ApprovedTransfer {
+                data: ring.data.clone().into(),
+                accounts: accounts.into_iter().map(Into::into).collect(),
+            },
+        }
+    }
+
+    /// The caller makes the approved call in every later simulation.
+    fn runs_on(&self, relay: &CappedRelay) {
+        *relay.chain.simulated_calls.lock().expect("calls") = vec![zolana_ring_rpc::InnerCall {
+            position: 0,
+            program: RING,
+            accounts: self.transfer.accounts.iter().map(|key| key.0).collect(),
+            data: self.transfer.data.0.clone(),
+        }];
+    }
+
+    async fn co_sign(
+        &self,
+        relay: &CappedRelay,
+        transfer: Option<ApprovedTransfer>,
+    ) -> Result<CoSignTransactionResponse, jsonrpsee::MethodsError> {
+        relay
+            .module
+            .call(
+                CO_SIGN_TRANSACTION,
+                as_object(CoSignTransactionRequest {
+                    ring: RING.into(),
+                    message: self.message.serialize().into(),
+                    approved_transfer: transfer,
+                }),
+            )
+            .await
+    }
+}
+
+impl CappedRelay {
+    /// `(outflow, state)` of each reservation in the order it was made.
+    async fn reservations(&self) -> Vec<(i64, String)> {
+        let connection = self.store.connection();
+        connection
+            .query_all(Statement::from_string(
+                connection.get_database_backend(),
+                "SELECT outflow_lo, state FROM cosign_usage ORDER BY rowid",
+            ))
+            .await
+            .expect("rows")
+            .iter()
+            .map(|row| {
+                (
+                    row.try_get("", "outflow_lo").expect("outflow"),
+                    row.try_get("", "state").expect("state"),
+                )
+            })
+            .collect()
+    }
+
+    /// The transaction of a relayed transfer that spends the whole SENDER_CAP.
+    async fn sends_cap(&self) -> solana_message::VersionedMessage {
+        let step: RelayStep = self
+            .module
+            .call(PREPARE_RELAY, as_object(self.spending_cap(1)))
+            .await
+            .expect("relayed");
+        assert!(matches!(step, RelayStep::Submitted { .. }), "{step:?}");
+        let [sent] = self.chain.sent().try_into().expect("one sent transaction");
+        sent.message
+    }
+}
+
+#[tokio::test]
+async fn a_program_call_is_co_signed_under_its_approval_and_the_same_limits() {
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    let step = relay.pays(1).await.expect("relayed");
+    assert!(matches!(step, RelayStep::Submitted { .. }), "{step:?}");
+    let [sent] = relay.chain.sent().try_into().expect("one sent transaction");
+    let call = ProgramCall::of(&sent.message, relay.co_signer);
+
+    assert_eq!(
+        refusal(call.co_sign(&relay, None).await),
+        CoSignError::MessageScope.code()
+    );
+    let mut other = call.transfer.clone();
+    other.data.0.push(0);
+    assert_eq!(
+        refusal(call.co_sign(&relay, Some(other)).await),
+        CoSignError::MessageScope.code()
+    );
+    call.runs_on(&relay);
+
+    let signed = call
+        .co_sign(&relay, Some(call.transfer.clone()))
+        .await
+        .expect("co-signed");
+    assert_eq!(signed.signer.0, relay.co_signer);
+    assert!(signed
+        .signature
+        .0
+        .verify(relay.co_signer.as_ref(), &call.message.serialize()));
+    // The call reserves the debit its direct form reserved.
+    let [direct, called] = relay.reservations().await.try_into().expect("two rows");
+    assert_eq!(called.0, direct.0);
+
+    let capped = CappedRelay::new(|| RelayRail::Confidential).await;
+    let call = ProgramCall::of(&capped.sends_cap().await, capped.co_signer);
+    call.runs_on(&capped);
+    assert_eq!(
+        refusal(call.co_sign(&capped, Some(call.transfer.clone())).await),
+        CoSignError::OverLimit.code()
+    );
+}
+
+#[tokio::test]
+async fn an_approved_call_holds_the_window_only_when_its_program_makes_it() {
+    let proving = CappedRelay::new(|| RelayRail::Confidential).await;
+    let call = ProgramCall::of(&proving.sends_cap().await, proving.co_signer);
+
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    assert_eq!(
+        refusal(call.co_sign(&relay, Some(call.transfer.clone())).await),
+        CoSignError::ApprovedCallNotOnce.code()
+    );
+    assert!(relay.reservations().await.is_empty());
+
+    call.runs_on(&relay);
+    call.co_sign(&relay, Some(call.transfer.clone()))
+        .await
+        .expect("co-signed");
+    assert!(relay.chain.sent().is_empty());
+    let cap = i64::try_from(SENDER_CAP).expect("cap");
+    assert_eq!(relay.reservations().await, [(cap, "held".to_owned())]);
 }
 
 #[tokio::test]

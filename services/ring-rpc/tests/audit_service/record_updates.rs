@@ -89,7 +89,7 @@ impl ChainSubmit for StubChain {
         &self,
         _message: &solana_message::VersionedMessage,
     ) -> Result<zolana_ring_rpc::Simulation, RingRpcError> {
-        Ok(zolana_ring_rpc::Simulation::Passed)
+        Ok(zolana_ring_rpc::Simulation::Passed { calls: Vec::new() })
     }
 
     async fn account_data(

@@ -120,6 +120,7 @@ pub struct RecordingChain {
     pub slot: AtomicU64,
     pub accounts: Mutex<Vec<Address>>,
     pub simulation_refusal: Mutex<Option<String>>,
+    pub simulated_calls: Mutex<Vec<zolana_ring_rpc::InnerCall>>,
 }
 
 impl Default for RecordingChain {
@@ -133,6 +134,7 @@ impl Default for RecordingChain {
             slot: AtomicU64::new(SLOT),
             accounts: Mutex::default(),
             simulation_refusal: Mutex::default(),
+            simulated_calls: Mutex::default(),
         }
     }
 }
@@ -152,7 +154,9 @@ impl ChainSubmit for RecordingChain {
         Ok(
             match self.simulation_refusal.lock().expect("refusal").clone() {
                 Some(reason) => zolana_ring_rpc::Simulation::Refused { reason },
-                None => zolana_ring_rpc::Simulation::Passed,
+                None => zolana_ring_rpc::Simulation::Passed {
+                    calls: self.simulated_calls.lock().expect("calls").clone(),
+                },
             },
         )
     }

@@ -8,6 +8,7 @@ mod owner;
 mod plan;
 mod policy;
 mod pool_subjects;
+mod program_commitment;
 mod proof;
 mod public_owners;
 mod relay;
@@ -38,7 +39,10 @@ use spr_event::is_confidential_encrypted_output;
 use spr_hasher::primitives::solana_owner_identity;
 use spr_interface::instruction::instruction_data::transact::CacheAccess;
 use spr_interface::{instruction::TreeContext, N_PUBLIC_SLOTS};
-use spr_keypair::{NullifierKey, PublicKey, ShieldedAddress, SigningKey, ViewingKey, X25519Pubkey};
+use spr_keypair::{
+    random_salt, viewing_key::Salt, NullifierKey, PublicKey, ShieldedAddress, SigningKey,
+    ViewingKey, X25519Pubkey,
+};
 use spr_program::instruction::TransactInterfaceTransferAccounts;
 use spr_transaction::{
     instructions::transact::{
@@ -47,7 +51,10 @@ use spr_transaction::{
     utxo::SppProofInputUtxo,
     ShieldedKeys, TransactionError,
 };
-use zolana_ring_client::{rpc::SubjectListSalt, AsyncRingIndexer};
+use zolana_ring_client::{
+    rpc::{ApprovedTransfer, SubjectListSalt},
+    AsyncRingIndexer,
+};
 use zolana_ring_policy::{ApprovalTotals, Member, OwnerDebit};
 use zolana_ring_transaction::{
     payload_width, published_outputs, PublishedSlot, RingDelivery, RingOutputRail,
@@ -66,6 +73,7 @@ pub use self::{
     },
     owner::{CustomRingTransfer, CustomRingTransferInput, Owner},
     plan::SealRow,
+    program_commitment::{ProgramCommitment, ProgramPlan},
     public_owners::{PublicOwnerTransfer, PublicOwners},
     relay::UnsignedRelay,
     relayed::{Relayed, RelayedTransfer, RelayedTransferInput},
@@ -81,8 +89,8 @@ use self::{
     anonymous::AnonymousSpend,
     audit::{AuditSeal, PresealedAudit, SealedAudit},
     compact::{
-        OwnedAppMessage, OwnedExtensions, OwnedInProofOwner, OwnedOutput, OwnedSenderBundle,
-        TransactAccounts, TransactParts,
+        CoSignerForm, OwnedAppMessage, OwnedExtensions, OwnedInProofOwner, OwnedOutput,
+        OwnedSenderBundle, TransactAccounts, TransactParts,
     },
     plan::{PlannedTransfer, TransferPlanner},
     policy::{owner_rows, PolicyInputs, PolicyRead},
@@ -195,6 +203,7 @@ pub struct RingTransfer<R: Rail> {
     approval: ApprovalDisclosure,
     /// `None` seals ahead of the relay's reads under the row the public counts select.
     seal_row: Option<SealRow>,
+    program: Option<ProgramCommitment>,
 }
 
 /// A frame that discloses its totals carries a digest a named co-signer opens.
@@ -412,6 +421,34 @@ impl<R: Rail> RingTransfer<R> {
         self
     }
 
+    /// Staging seals under the committed salt and refuses another hash, each co-signer approves the program's call.
+    #[must_use = "use the updated transfer"]
+    pub const fn with_program(mut self, commitment: ProgramCommitment) -> Self {
+        self.program = Some(commitment);
+        self
+    }
+
+    /// Draws the salt, a transfer changed after the plan stages another hash.
+    pub async fn plan_for_program<P: AsyncRpc, I: RingIndexerBackend>(
+        &self,
+        client: &RingClient<P, I>,
+    ) -> Result<ProgramPlan, RingError> {
+        let config = self.ring.require_config(client.zolana()).await?;
+        self.program_plan(&config)
+    }
+
+    pub(crate) fn program_plan(&self, config: &CustomRingConfig) -> Result<ProgramPlan, RingError> {
+        let salt = Some(random_salt());
+        let sealed = match self.rail.kind() {
+            RailKind::Owner(owner) => owner.seal(config, salt)?,
+            RailKind::PublicOwners(public) => public.seal(self.ring, config, salt)?,
+            RailKind::Anonymous(_) | RailKind::Delegated(_) | RailKind::Relayed(_) => {
+                return Err(RingError::ProgramRailUnsupported);
+            }
+        };
+        ProgramPlan::of(&sealed.proof_inputs)
+    }
+
     pub async fn prove<P: AsyncRpc, I: RingIndexerBackend>(
         &self,
         client: &RingClient<P, I>,
@@ -473,8 +510,16 @@ impl<R: Rail> RingTransfer<R> {
     async fn prepare<C: AsyncRpc + ?Sized>(&self, client: &C) -> Result<Prepared<'_>, RingError> {
         let config = self.ring.require_config(client).await?;
         self.ring.require_active(client).await?;
+        let program_salt = self.program.map(|program| program.salt);
         let mut staged = match self.rail.kind() {
-            RailKind::Owner(owner) => boxed(|| owner.stage(self.ring, client, &config)).await?,
+            RailKind::Anonymous(_) | RailKind::Delegated(_) | RailKind::Relayed(_)
+                if program_salt.is_some() =>
+            {
+                return Err(RingError::ProgramRailUnsupported);
+            }
+            RailKind::Owner(owner) => {
+                boxed(|| owner.stage(self.ring, client, &config, program_salt)).await?
+            }
             RailKind::Anonymous(rail) => boxed(|| rail.stage(self.ring, client, &config)).await?,
             RailKind::Delegated(delegated) => {
                 boxed(|| delegated.stage(self.ring, client, &config)).await?
@@ -482,8 +527,13 @@ impl<R: Rail> RingTransfer<R> {
             RailKind::Relayed(relayed) => {
                 boxed(|| relayed.stage(self.ring, client, &config)).await?
             }
-            RailKind::PublicOwners(public) => boxed(|| public.stage(self.ring, &config)).await?,
+            RailKind::PublicOwners(public) => {
+                boxed(|| public.stage(self.ring, &config, program_salt)).await?
+            }
         };
+        if let Some(program) = &self.program {
+            program.check(&staged.proof_inputs)?;
+        }
         check_ring_output_markers(&staged.proof_inputs)?;
         staged.list_salts.extend_from_slice(&self.list_salts);
         let voucher = match self.rail.kind() {
@@ -505,6 +555,10 @@ impl<R: Rail> RingTransfer<R> {
                 config,
                 staged,
                 co_signers: self.co_signers.clone(),
+                co_signer_form: match self.program {
+                    Some(_) => CoSignerForm::Approval,
+                    None => CoSignerForm::Signature,
+                },
                 priority_fee: self.priority_fee,
                 approval_blinder,
                 voucher,
@@ -521,6 +575,7 @@ struct Pipeline<'a> {
     config: CustomRingConfig,
     staged: Staged<'a>,
     co_signers: Vec<Address>,
+    co_signer_form: CoSignerForm,
     priority_fee: Option<u64>,
     approval_blinder: Option<[u8; 32]>,
     voucher: Option<Voucher<'a>>,
@@ -725,6 +780,7 @@ impl<'a> Pipeline<'a> {
                 ring: self.ring,
                 config: self.config,
                 co_signers: self.co_signers,
+                co_signer_form: self.co_signer_form,
                 staged: Staged {
                     proof_inputs,
                     rail,
@@ -831,6 +887,7 @@ impl<'a> Prepared<'a> {
             config,
             staged,
             co_signers,
+            co_signer_form,
             priority_fee,
             approval_blinder,
             voucher,
@@ -896,6 +953,7 @@ impl<'a> Prepared<'a> {
                 ring,
                 config,
                 co_signers,
+                co_signer_form,
                 staged: Staged {
                     proof_inputs,
                     rail,
@@ -929,6 +987,7 @@ impl<'a> Sealed<'a> {
                     config: ring_config,
                     staged,
                     co_signers: supplied_co_signers,
+                    co_signer_form,
                     priority_fee,
                     approval_blinder,
                     voucher,
@@ -1024,6 +1083,7 @@ impl<'a> Sealed<'a> {
             interface_transfer_accounts,
             read_cache: proof_inputs.cache_accounts.read,
             co_signers,
+            co_signer_form,
             delegate,
             delegate_mint: delegate_mint.map(|mint| mint.address),
         };
@@ -1332,6 +1392,17 @@ impl ProvenRingTransfer {
     pub fn instruction(&self) -> Result<Instruction, RingError> {
         self.accounts
             .instruction(self.ring, &self.config, &self.parts)
+    }
+
+    /// One top-level approval per co-signer of the call `instruction` returns, `position` the calling program's instruction.
+    pub fn approve_transfer(&self, position: u8) -> Result<Vec<Instruction>, RingError> {
+        self.accounts
+            .transfer_approvals(&self.instruction()?, position)
+    }
+
+    /// The `approved_transfer` of the co-sign request for the call `instruction` returns.
+    pub fn approved_transfer(&self) -> Result<ApprovedTransfer, RingError> {
+        self.accounts.approved_transfer(&self.instruction()?)
     }
 
     /// The owners who sign the transaction in public, none on the anonymous and in-proof owner rails.
@@ -1698,6 +1769,38 @@ fn check_ring_output_markers(inputs: &SppProofInputs) -> Result<(), RingError> {
         }
     }
     Ok(())
+}
+
+/// One sealing path, a staged transfer and its program plan order the same outputs.
+pub(crate) struct OutputSeal<'a> {
+    pub keys: &'a dyn RingSender,
+    pub sender: &'a ShieldedAddress,
+    pub auditor: X25519Pubkey,
+    pub delivery: RingDelivery,
+    pub shape: Shape,
+    /// `None` draws a fresh salt.
+    pub program_salt: Option<Salt>,
+}
+
+pub(crate) struct SealedOutputs {
+    pub rail: RingOutputRail,
+    pub proof_inputs: SppProofInputs,
+}
+
+impl OutputSeal<'_> {
+    pub(crate) fn seal(
+        self,
+        transaction: ConfidentialTransaction,
+    ) -> Result<SealedOutputs, RingError> {
+        let tx_viewing_key = transaction_key(self.keys, *transaction.first_nullifier())?;
+        let rail = match self.program_salt {
+            Some(salt) => RingOutputRail::sealed(tx_viewing_key, salt, self.auditor, self.delivery),
+            None => RingOutputRail::new(tx_viewing_key, self.auditor, self.delivery),
+        };
+        let transaction = pad_under_rail(transaction, &rail, self.shape, self.sender)?;
+        let proof_inputs = rail.encrypt(transaction, self.sender)?;
+        Ok(SealedOutputs { rail, proof_inputs })
+    }
 }
 
 /// The shape SPP's own finalization pads to.
