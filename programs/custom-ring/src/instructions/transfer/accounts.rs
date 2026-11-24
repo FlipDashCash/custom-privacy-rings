@@ -7,7 +7,7 @@
 //!
 //! 1. The ring account.
 //! 2. The registries `RootRead` names, own then curator then tracking, each compared with the ring's pin.
-//! 3. One `[record, signer]` pair per co-signer the demand needs, SPP does not receive them.
+//! 3. One `[record, signer]` or `[record, instructions_sysvar]` pair per co-signer the demand needs, SPP does not receive them.
 //! 4. The delegate's signer on the authority rails, then the mint when its permanent delegate signs, SPP receives neither.
 //! 5. SPP's list, forwarded whole. Prefix, input trees, nullifier PDAs, owner run, settlement groups, cache accounts.
 //!
@@ -38,7 +38,9 @@ use spr_interface::instruction::instruction_data::settlement_accounts;
 
 use crate::instructions::{
     instruction_runtime::{PlacedRingAuth, RingAuth},
-    loader::{check_funding_signer, load_mint_delegate_asset, CoSigners, RegistrySlots},
+    loader::{
+        check_funding_signer, load_mint_delegate_asset, CoSigners, RegistrySlots, TransferCall,
+    },
     public_legs::public_slots,
 };
 
@@ -66,6 +68,8 @@ pub(super) struct TransactCheck<'a> {
     pub program_id: &'a Address,
     pub ring: &'a RingPolicy,
     pub transfer: &'a ParsedTransact<'a>,
+    /// From the tag, an approval digests these bytes.
+    pub instruction_data: &'a [u8],
     pub signer: RailSigner,
     pub slot: u64,
 }
@@ -100,8 +104,14 @@ impl TransactCheck<'_> {
             .demand(),
         };
         let co_signers_start = RING_INDEX + 1 + registries.len;
+        let call = TransferCall {
+            program_id: self.program_id,
+            ring: account_at(accounts, RING_INDEX)?.address(),
+            data: self.instruction_data,
+            accounts,
+        };
         let co_signers = CoSigners::verify(
-            self.program_id,
+            &call,
             accounts
                 .get(co_signers_start..)
                 .ok_or(ProgramError::NotEnoughAccountKeys)?,
