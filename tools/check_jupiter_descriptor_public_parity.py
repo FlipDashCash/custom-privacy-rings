@@ -15,7 +15,7 @@ PINS = {
     "prover/go.mod": "21108269a9edb1bc84cca1b92e29a5f1972c0bc9",
     "prover/go.sum": "5413e2cf4ddfd1a79f666c70771f90bb2b8ba4ec",
     "prover/circuits/dynamicdescriptor/descriptor.go": "5126dcc69e1e0780e56cb44d127155a0ae7026dc",
-    "program-libs/interface/src/proof/jupiter_measured_descriptor_statement_draft.rs": "cdc98c73d0f9fa3508b28891645af6dd07c09b45",
+    "program-libs/interface/src/proof/jupiter_measured_descriptor_statement_draft.rs": "d9650d8b3e37858d21edb119f374191affea0acb",
     "test-vectors/settlement/jupiter_measured_descriptor_v1_public_input.json": "14291591cd6913bd7002cbf668d2be26c4afb0a0",
 }
 MARKER = re.compile(r"PYROL_JUPITER_V1_PUBLIC_PARITY ([0-9a-f]{1600})\.([0-9a-f]{64})$", re.MULTILINE)
