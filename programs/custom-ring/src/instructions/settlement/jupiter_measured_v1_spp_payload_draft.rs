@@ -1,6 +1,6 @@
 //! Inert producer-side materialization of one stock SPP SPL deposit body.
 //!
-//! Host source composition only: it accepts no caller-supplied amount, bump,
+//! Review-only source composition: it accepts no caller-supplied amount, bump,
 //! second recipient record or operation-context override. Preparing this data
 //! does not verify the descriptor, establish an executed original, or make the
 //! observed staging balance attributable to Jupiter. It creates no account
@@ -33,12 +33,17 @@ pub(super) enum PayloadError {
 /// Neither a body nor matching post-deposit balances make this an authorization.
 pub(super) struct PreparedSppBody<'a> {
     body: RingDepositIxData,
+    public_input_hash: [u8; 32],
     observation: LegacySplOutputReview<'a>,
 }
 
 impl PreparedSppBody<'_> {
     pub(super) fn body(&self) -> &RingDepositIxData {
         &self.body
+    }
+
+    pub(super) fn public_input_hash(&self) -> &[u8; 32] {
+        &self.public_input_hash
     }
 
     pub(super) fn compare_same_output_views(&self) -> Result<(), pinocchio::error::ProgramError> {
@@ -86,7 +91,11 @@ pub(super) fn prepare_original<'a>(
     // lower account reader retains the first read for both encoding and its
     // same-handle postcondition. No reread selects an alternative amount.
     let body = materialize(statement, &observation)?;
-    Ok(PreparedSppBody { body, observation })
+    Ok(PreparedSppBody {
+        body,
+        public_input_hash: *prepared.public_input_hash(),
+        observation,
+    })
 }
 
 fn materialize(

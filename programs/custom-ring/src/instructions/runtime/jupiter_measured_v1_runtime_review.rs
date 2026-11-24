@@ -7,8 +7,8 @@
 //! profile is selected or proof verified here. Read-only output checks bind
 //! canonical SPL views to this same observation; they do not attribute credit
 //! to Jupiter or perform a deposit. The existing Solana no-entrypoint
-//! review profile also typechecks the exact host SPP payload composition;
-//! it cannot call or dispatch it.
+//! review profile also prepares the public input and SPP body from a single
+//! bound invocation. This path has no verifier, signer, or dispatch entry.
 #![allow(dead_code)] // No processor calls this review input.
 
 #[path = "../../../../../program-libs/interface/src/instructions/jupiter_measured_deposit_draft.rs"]
@@ -39,26 +39,6 @@ mod descriptor_statement;
 mod spp_payload;
 #[cfg(all(target_os = "solana", feature = "test-sbf", feature = "no-entrypoint"))]
 use self::graph as draft;
-
-// Function items only: force the target to check the whole existing
-// descriptor -> observation -> stock body composition. Do not create inputs,
-// call an operation, export a symbol, or attach this to the runtime reader.
-#[cfg(all(target_os = "solana", feature = "test-sbf", feature = "no-entrypoint"))]
-const _: () = {
-    use custom_ring_interface::tracking::TrackingRegistry;
-    use spr_interface::instruction::RingDepositIxData;
-
-    let _: for<'review, 'views> fn(
-        graph::PrefixProjection<'review>,
-        &'review graph::DescriptorScope<'review>,
-        &'review wire::DraftFrame<'review>,
-        &'review TrackingRegistry,
-        &'views [AccountView; ROLE_COUNT],
-    ) -> Result<spp_payload::PreparedSppBody<'views>, spp_payload::PayloadError> =
-        spp_payload::prepare_original;
-    let _ = spp_payload::PreparedSppBody::body;
-    let _: fn(&RingDepositIxData) -> Result<Vec<u8>, wincode::Error> = RingDepositIxData::serialize;
-};
 
 use pinocchio::{
     account::Ref,
@@ -133,18 +113,14 @@ impl<'a> ObservedV1<'a> {
         self.window.prior_five()
     }
 
-    /// Compare against a separately retained operation. Comparands are not
-    /// approval, executable pins, or a substitute for authenticating the plan.
-    fn compare_retained_prefix<'read>(
-        &'read self,
+    fn with_original_projection<R>(
+        &self,
         retained: &RetainedOperation<'_>,
-    ) -> Result<RuntimePrefixMatch<'read, 'a>, ProgramError> {
-        use graph::{ComparedRoles, PrefixProjection, PreviousInstruction};
+        prepare: impl FnOnce(graph::PrefixProjection<'_>) -> Result<R, ProgramError>,
+    ) -> Result<R, ProgramError> {
+        use graph::{PrefixProjection, PreviousInstruction};
 
         let views = self.roles();
-        let actual_roles = views.each_ref().map(|view| *view.address());
-        let compared = ComparedRoles::new(&actual_roles, retained.ordered_roles)
-            .map_err(|_| ProgramError::InvalidInstructionData)?;
         let policy_view = &views[Role::RingPolicy as usize];
         if policy_view.executable() {
             return Err(ProgramError::InvalidAccountData);
@@ -175,37 +151,84 @@ impl<'a> ObservedV1<'a> {
             accounts: &metas[i],
             data: rows[i].get_instruction_data(),
         });
-        let matched = graph::compare_measured_prefix(
-            PrefixProjection {
-                program,
-                policy_address: policy_view.address(),
-                policy: &policy,
-                first,
-                review: retained.original,
-                instructions,
-            },
-            compared,
-        )
-        .map_err(|_| ProgramError::InvalidInstructionData)?;
-        let tracking = self.read_selected_tracking(&policy)?;
-        #[cfg(feature = "no-entrypoint")]
-        let output_tree_field = spp_tree::read_from_roles(views)?;
-        let output = output::LegacySplOutputReview::observe(
-            &views[Role::Depositor as usize],
-            &views[Role::OutputMint as usize],
-            &views[Role::OutputStaging as usize],
-            &views[Role::OutputVault as usize],
-            &views[Role::LegacyTokenProgram as usize],
-            matched.minimum_output,
-        )?;
-        Ok(RuntimePrefixMatch {
-            _observed: self,
-            _withdrawal: matched.withdrawal,
-            _tracking: tracking,
-            _ring_generation: policy.generation(),
+        prepare(PrefixProjection {
+            program,
+            policy_address: policy_view.address(),
+            policy: &policy,
+            first,
+            review: retained.original,
+            instructions,
+        })
+    }
+
+    /// Compare against a separately retained operation. Comparands are not
+    /// approval, executable pins, or a substitute for authenticating the plan.
+    fn compare_retained_prefix<'read>(
+        &'read self,
+        retained: &RetainedOperation<'_>,
+    ) -> Result<RuntimePrefixMatch<'read, 'a>, ProgramError> {
+        let roles = self.roles().each_ref().map(|view| *view.address());
+        let compared = graph::ComparedRoles::new(&roles, retained.ordered_roles)
+            .map_err(|_| ProgramError::InvalidInstructionData)?;
+        self.with_original_projection(retained, |projection| {
+            let policy = projection.policy;
+            let matched = graph::compare_measured_prefix(projection, compared)
+                .map_err(|_| ProgramError::InvalidInstructionData)?;
+            let tracking = self.read_selected_tracking(policy)?;
+            let views = self.roles();
             #[cfg(feature = "no-entrypoint")]
-            _output_tree_field: output_tree_field,
-            output,
+            let output_tree_field = spp_tree::read_from_roles(views)?;
+            let output = output::LegacySplOutputReview::observe(
+                &views[Role::Depositor as usize],
+                &views[Role::OutputMint as usize],
+                &views[Role::OutputStaging as usize],
+                &views[Role::OutputVault as usize],
+                &views[Role::LegacyTokenProgram as usize],
+                matched.minimum_output,
+            )?;
+            Ok(RuntimePrefixMatch {
+                _observed: self,
+                _withdrawal: matched.withdrawal,
+                _tracking: tracking,
+                _ring_generation: policy.generation(),
+                #[cfg(feature = "no-entrypoint")]
+                _output_tree_field: output_tree_field,
+                output,
+            })
+        })
+    }
+
+    /// Prepare one unverified deposit from the bound invocation. Roles and
+    /// profile still require independent authentication by a future caller.
+    #[cfg(feature = "no-entrypoint")]
+    fn prepare_retained_deposit<'read>(
+        &'read self,
+        retained: &RetainedOperation<'_>,
+        profile: &context::ProfilePins,
+    ) -> Result<UnverifiedMeasuredDeposit<'read>, ProgramError> {
+        self.with_original_projection(retained, |projection| {
+            let frame = wire::DraftFrame::decode(self.envelope())
+                .map_err(|_| ProgramError::InvalidInstructionData)?;
+            let views = self.roles();
+            let registry = load_pinned_tracking(
+                projection.policy,
+                &views[Role::TrackingRegistry as usize],
+            )?;
+            let live = registry.roots(self.slot());
+            let selected = self.match_tracking(projection.policy, &live, &frame)?;
+            let tree_id = spp_tree::read_from_roles(views)?;
+            let scope = graph::DescriptorScope {
+                profile,
+                roles: retained.ordered_roles,
+                tree_id: &tree_id,
+                accepted_roots: &selected.roots,
+            };
+            let body = spp_payload::prepare_original(projection, &scope, &frame, live.tracking, views)
+                .map_err(|_| ProgramError::InvalidInstructionData)?;
+            Ok(UnverifiedMeasuredDeposit {
+                body,
+                descriptor_proof_bytes: frame.descriptor_proof_bytes,
+            })
         })
     }
 
@@ -217,18 +240,23 @@ impl<'a> ObservedV1<'a> {
         let view = &self.roles()[Role::TrackingRegistry as usize];
         let registries = load_pinned_tracking(policy, view)?;
         let live = registries.roots(self.slot());
-        // Use the same public identity checks as the owned descriptor
-        // projection. Matching stored fields selects no executable or VK.
-        let ring_id = spr_hasher::primitives::hash_bytes(self.window.program.as_array())
-            .map_err(|_| ProgramError::InvalidAccountData)?;
-        if live.tracking.ring_id != ring_id
-            || live.tracking.auditor_pubkey != policy.auditor_pubkey
-        {
-            return Err(ProgramError::InvalidAccountData);
-        }
         let frame = wire::DraftFrame::decode(self.envelope())
             .map_err(|_| ProgramError::InvalidInstructionData)?;
-        FrameTracking::from_frame(&frame).compare(&live)
+        self.match_tracking(policy, &live, &frame)
+    }
+
+    fn match_tracking(
+        &self,
+        policy: &RingPolicy,
+        live: &LiveRoots<'_>,
+        frame: &wire::DraftFrame<'_>,
+    ) -> Result<ServedTracking, ProgramError> {
+        let ring_id = spr_hasher::primitives::hash_bytes(self.window.program.as_array())
+            .map_err(|_| ProgramError::InvalidAccountData)?;
+        if live.tracking.ring_id != ring_id || live.tracking.auditor_pubkey != policy.auditor_pubkey {
+            return Err(ProgramError::InvalidAccountData);
+        }
+        FrameTracking::from_frame(frame).compare(live)
     }
 }
 
@@ -238,6 +266,14 @@ impl<'a> ObservedV1<'a> {
 struct RetainedOperation<'a> {
     ordered_roles: &'a [Address; ROLE_COUNT],
     original: &'a graph::ExpectedLegacySplPrefix<'a>,
+}
+
+/// One public input, the exact opaque frame proof, and a body retaining the
+/// same staged amount and account views. This type grants no settlement authority.
+#[cfg(all(target_os = "solana", feature = "no-entrypoint"))]
+struct UnverifiedMeasuredDeposit<'a> {
+    body: spp_payload::PreparedSppBody<'a>,
+    descriptor_proof_bytes: &'a [u8; wire::PROOF_LEN],
 }
 
 /// Load the one registry the matched no-policy V1 rail reads. There is no

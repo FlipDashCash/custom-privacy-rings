@@ -357,6 +357,7 @@ pub(super) fn with_archived_graph(
     let make = |views: &[pinocchio::AccountView; ROLES.len()]| {
         let plan =
             spp_payload::prepare_original(projection(), &scope, &frame, &tracking, views).ok()?;
+        assert_eq!(plan.public_input_hash(), prepared.public_input_hash());
         // No deposit occurred in this fixture.
         assert!(plan.compare_same_output_views().is_err());
         Some(plan.body().clone())
