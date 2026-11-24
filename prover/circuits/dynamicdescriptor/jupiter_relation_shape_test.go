@@ -1,6 +1,9 @@
 package descriptor
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"hash"
 	"reflect"
 	"testing"
 
@@ -11,8 +14,8 @@ import (
 )
 
 // Inspect the exact owned relation as an in-memory symbolic circuit only.
-// The compile parameters and shape checks match the first part of
-// TestDescriptorNativeConstraintSystem in owned Custom #5, f841ff6.
+// The compile parameters, shape checks, and WriteTo serializer are the same
+// as TestDescriptorNativeConstraintSystem in owned Custom #5, f841ff6.
 // This target has no witness fixture, proof or key use, verifier invocation,
 // output artifact, endpoint, or runtime registration.
 func TestJupiterDescriptorRelationConstraints(t *testing.T) {
@@ -38,4 +41,31 @@ func TestJupiterDescriptorRelationConstraints(t *testing.T) {
 	}
 	t.Logf("relation-only: curve=BN254 compression_threshold=300 constraints=%d public_inputs=%d public_input=PublicInputHash private_bsb22_commitments=%d public_committed=%d",
 		constraints, publicInputs, len(commitments), commitments[0].NbPublicCommitted)
+
+	// The keyless Custom #5 qualification recorded this hash of cs.WriteTo.
+	const wantR1CSSHA256 = "746aea82a384ca80d53c988242371a1789a04d4dc88b4d5390aa7a40dfaaeaa1"
+	digest := &countedR1CSHash{Hash: sha256.New()}
+	n, err := cs.WriteTo(digest)
+	if err != nil {
+		t.Fatalf("serialize descriptor R1CS: %v", err)
+	}
+	if n <= 0 || n != digest.bytes {
+		t.Fatalf("descriptor R1CS byte count: WriteTo reported %d, SHA-256 received %d", n, digest.bytes)
+	}
+	got := hex.EncodeToString(digest.Sum(nil))
+	if got != wantR1CSSHA256 {
+		t.Fatalf("descriptor R1CS SHA-256 mismatch (%d bytes): got %s, want %s", n, got, wantR1CSSHA256)
+	}
+	t.Logf("NO_SETUP NO_PROOF: r1cs_bytes=%d r1cs_sha256=%s", n, got)
+}
+
+type countedR1CSHash struct {
+	hash.Hash
+	bytes int64
+}
+
+func (w *countedR1CSHash) Write(p []byte) (int, error) {
+	n, err := w.Hash.Write(p)
+	w.bytes += int64(n)
+	return n, err
 }
