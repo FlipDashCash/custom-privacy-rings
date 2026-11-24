@@ -445,6 +445,7 @@ dependencies = [
  "educe",
  "num-bigint",
  "num-traits",
+ "rayon",
  "zeroize",
 ]
 
@@ -595,6 +596,8 @@ dependencies = [
  "ark-std 0.6.0",
  "digest 0.10.7",
  "num-bigint",
+ "rayon",
+ "serde_with",
 ]
 
 [[package]]
@@ -658,6 +661,7 @@ checksum = "367c9c827ed431bff6868b7aa926e05b16eb46603cc8b6e768e4a5553fa1d155"
 dependencies = [
  "num-traits",
  "rand 0.8.8",
+ "rayon",
 ]
 
 [[package]]
@@ -1878,6 +1882,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-deque"
+version = "0.8.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "622f3fc73690be383c7214310406f28a90e6edeadc3cea882f9d71e495b9711a"
+dependencies = [
+ "crossbeam-epoch",
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-epoch"
+version = "0.9.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc74980687109a3b14c72fd458107bf0baa1da1a1a805e178d15501ba9b86d9d"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-queue"
 version = "0.3.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2197,6 +2220,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bincode 2.0.1",
+ "borsh",
  "bytemuck",
  "custom-ring-cli",
  "custom-ring-interface",
@@ -2235,7 +2259,9 @@ dependencies = [
  "spr-user-registry-interface",
  "tokio",
  "tracing-subscriber",
+ "xark",
  "zeroize",
+ "zk-ring-program",
  "zolana-operator-custody",
  "zolana-ring-client",
  "zolana-ring-indexer",
@@ -5176,6 +5202,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
 dependencies = [
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rayon"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb39b166781f92d482534ef4b4b1b2568f42613b53e5b6c160e24cfbfa30926d"
+dependencies = [
+ "either",
+ "rayon-core",
+]
+
+[[package]]
+name = "rayon-core"
+version = "1.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
+dependencies = [
+ "crossbeam-deque",
+ "crossbeam-utils",
 ]
 
 [[package]]
@@ -8448,6 +8494,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "spr-circuit"
+version = "0.10.0"
+dependencies = [
+ "ark-bn254 0.5.0",
+ "ark-ff 0.5.0",
+ "borsh",
+ "light-poseidon 0.4.0",
+ "spr-instruction",
+ "spr-interface",
+ "xark",
+]
+
+[[package]]
 name = "spr-client"
 version = "0.10.0"
 dependencies = [
@@ -8601,6 +8660,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "spr-macros"
+version = "0.10.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "spr-hasher",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "spr-merkle-tree"
 version = "0.10.0"
 dependencies = [
@@ -8614,11 +8683,29 @@ dependencies = [
 name = "spr-program"
 version = "0.10.0"
 dependencies = [
+ "ark-bn254 0.6.0",
+ "ark-ec 0.6.0",
+ "ark-serialize 0.6.0",
+ "borsh",
+ "groth16-solana",
+ "pinocchio 0.11.2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "solana-address 2.7.0",
+ "solana-bn254",
+ "solana-program-error",
+ "spr-circuit",
  "spr-hasher",
  "spr-instruction",
  "spr-interface",
+ "spr-keypair",
+ "spr-macros",
+ "spr-transaction",
+ "spr-tree",
+ "thiserror 2.0.20",
  "wincode",
+ "zeroize",
 ]
 
 [[package]]
@@ -10161,6 +10248,96 @@ dependencies = [
 ]
 
 [[package]]
+name = "xark"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f539ebc1f0c65819eafede2b666538bc278efc89445b54a15084b2be9ff9907"
+dependencies = [
+ "ark-bn254 0.6.0",
+ "ark-ff 0.6.0",
+ "num-bigint",
+ "serde_json",
+ "xark-ir",
+ "xark-macros",
+ "xark-prover",
+ "xark-schema",
+]
+
+[[package]]
+name = "xark-groth16"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da34e8e0bb5d2108348914f2058ff81c62140bd94ad151880ff4230a739e1593"
+dependencies = [
+ "ark-bn254 0.6.0",
+ "ark-ec 0.6.0",
+ "ark-ff 0.6.0",
+ "ark-poly 0.6.0",
+ "ark-serialize 0.6.0",
+ "num-bigint",
+ "rand 0.8.8",
+ "rand_chacha 0.3.1",
+ "rayon",
+ "xark-ir",
+]
+
+[[package]]
+name = "xark-ir"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bf63aa494032fc0187514f4e25f246da5f8b480b566b1f235760ab41a507f5d"
+dependencies = [
+ "ark-bn254 0.6.0",
+ "ark-ff 0.6.0",
+ "crypto-bigint 0.7.5",
+ "num-bigint",
+ "num-traits",
+ "rayon",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "xark-macros"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d06e84403e94da18975648c8dea7b10d66fe3c098841508736c452bd43b68480"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "xark-prover"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c2a90a755f763d742aea08a43f9d814148d4a56a673e3ad612fe5a14b8fc0c0e"
+dependencies = [
+ "ark-bn254 0.6.0",
+ "ark-ff 0.6.0",
+ "ark-serialize 0.6.0",
+ "num-bigint",
+ "rand 0.8.8",
+ "serde_json",
+ "sha2 0.11.0",
+ "xark-groth16",
+ "xark-ir",
+]
+
+[[package]]
+name = "xark-schema"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3874bab45b3a7861102122a95440a093dfaffeddca6c593349f707a18e648b48"
+dependencies = [
+ "ark-bn254 0.6.0",
+ "ark-ff 0.6.0",
+ "num-bigint",
+ "serde_json",
+]
+
+[[package]]
 name = "xattr"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10330,6 +10507,32 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
+]
+
+[[package]]
+name = "zk-ring-program"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "borsh",
+ "bytemuck",
+ "custom-ring-interface",
+ "custom-ring-sdk",
+ "pinocchio 0.11.2",
+ "solana-account 4.7.0",
+ "solana-address 2.7.0",
+ "solana-instruction 3.5.1",
+ "spr-client",
+ "spr-hasher",
+ "spr-interface",
+ "spr-keypair",
+ "spr-program",
+ "spr-transaction",
+ "tokio",
+ "wincode",
+ "xark",
+ "zolana-ring-client",
+ "zolana-ring-keys",
 ]
 
 [[package]]

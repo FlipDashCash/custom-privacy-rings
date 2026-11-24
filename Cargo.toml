@@ -7,6 +7,7 @@ members = [
     "program-libs/member-registry",
     "program-libs/policy",
     "program-tests/custom-ring",
+    "program-tests/zk-ring-program",
     "programs/custom-ring",
     "programs/storage",
     "sdk-libs/client",

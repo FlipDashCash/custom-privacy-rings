@@ -159,12 +159,15 @@ impl PublicOwners<'_> {
         program_salt: Option<Salt>,
     ) -> Result<SealedOutputs, RingError> {
         self.owner.check_settlement_accounts()?;
-        let transaction = SenderChange {
+        let change = SenderChange {
             shape: self.owner.shape,
             sender,
             ring: ring.program_id(),
-        }
-        .ensure(self.owner.transaction.clone())?;
+        };
+        let transaction = match program_salt {
+            Some(_) => change.ensure_in_spent_asset(self.owner.transaction.clone())?,
+            None => change.ensure(self.owner.transaction.clone())?,
+        };
         let shape = match self.owner.shape {
             Some(shape) => shape,
             None => canonical_shape(&transaction, sender)?,

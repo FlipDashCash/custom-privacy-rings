@@ -34,13 +34,13 @@ pub struct ProgramPlan {
     pub transaction_hash: [u8; 32],
 }
 
-struct CommittedHashes {
+pub(super) struct CommittedHashes {
     private_tx_hash: [u8; 32],
     transaction_hash: [u8; 32],
 }
 
 impl CommittedHashes {
-    fn of(sealed: &SppProofInputs) -> Result<Self, RingError> {
+    pub(super) fn of(sealed: &SppProofInputs) -> Result<Self, RingError> {
         let private_tx_hash = sealed.padding_independent_private_tx_hash()?;
         let transfers: Vec<_> = sealed
             .external_data
@@ -66,8 +66,7 @@ fn public_transfer(transfer: &SettlementTransfer) -> PublicTransfer {
 }
 
 impl ProgramCommitment {
-    pub(super) fn check(&self, staged: &SppProofInputs) -> Result<(), RingError> {
-        let staged = CommittedHashes::of(staged)?;
+    pub(super) fn check(&self, staged: &CommittedHashes) -> Result<(), RingError> {
         if staged.private_tx_hash != self.private_tx_hash {
             return Err(RingError::ProgramCommitmentMismatch {
                 committed: self.private_tx_hash,
@@ -91,6 +90,14 @@ impl ProgramPlan {
             private_tx_hash: self.private_tx_hash,
             transaction_hash: self.transaction_hash,
         }
+    }
+
+    /// The check staging runs, a commitment it refuses stages no transfer of the plan.
+    pub fn check(&self, commitment: &ProgramCommitment) -> Result<(), RingError> {
+        commitment.check(&CommittedHashes {
+            private_tx_hash: self.private_tx_hash,
+            transaction_hash: self.transaction_hash,
+        })
     }
 
     pub(super) fn of(sealed: &SppProofInputs) -> Result<Self, RingError> {

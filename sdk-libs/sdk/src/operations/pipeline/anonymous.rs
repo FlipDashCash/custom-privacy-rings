@@ -877,6 +877,27 @@ pub(super) struct SenderChange<'a> {
 impl SenderChange<'_> {
     pub(super) fn ensure(
         self,
+        transaction: ConfidentialTransaction,
+    ) -> Result<ConfidentialTransaction, RingError> {
+        self.ensure_in(Mint::SOL, transaction)
+    }
+
+    /// A program circuit keeps its zero change in the asset it spent.
+    pub(super) fn ensure_in_spent_asset(
+        self,
+        transaction: ConfidentialTransaction,
+    ) -> Result<ConfidentialTransaction, RingError> {
+        let spent = transaction
+            .inputs()
+            .iter()
+            .find(|input| input.utxo.amount > 0)
+            .map_or(Mint::SOL, |input| input.utxo.asset);
+        self.ensure_in(spent, transaction)
+    }
+
+    fn ensure_in(
+        self,
+        asset: Mint,
         mut transaction: ConfidentialTransaction,
     ) -> Result<ConfidentialTransaction, RingError> {
         let declared = transaction.outputs().len();
@@ -892,7 +913,7 @@ impl SenderChange<'_> {
         if !returns && declared < shape.n_outputs() {
             transaction.add_output_utxo(SppProofOutputUtxo {
                 owner_address: Some(*self.sender),
-                asset: Mint::SOL,
+                asset,
                 ring_program_id: Some(self.ring),
                 ..Default::default()
             })?;

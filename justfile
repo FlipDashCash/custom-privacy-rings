@@ -137,6 +137,16 @@ test-sdk-libs:
 test-ring-indexer:
     cargo nextest run -p ring-indexer
 
+# The Xark test program of a ring, its circuit, insecure test key and verifier module, then its hermetic tests.
+test-zk-ring-program: zolana::build-cli
+    zolana/target/debug/zolana build-zk-program --test --manifest-path program-tests/zk-ring-program/Cargo.toml --skip-wasm --skip-sbf
+    git diff --exit-code -- program-tests/zk-ring-program/src/verifier
+    cargo nextest run -p zk-ring-program --features circuits
+
+build-zk-ring-program:
+    SBF_TOOLS_VERSION={{sbf-tools-version}} zolana/tools/build-programs.sh \
+        --manifest-path program-tests/zk-ring-program/Cargo.toml -- --locked --features bpf-entrypoint
+
 # The Postgres store tests of the indexer and Ring RPC, over a scratch cluster gone at the end.
 test-postgres:
     #!/usr/bin/env bash
@@ -166,6 +176,15 @@ test-custom-ring-validator filter="all()" *args: fetch-custom-ring-keys build-pr
     : "${SHIELDED_POOL_PROGRAM_ID:?xtask did not emit SHIELDED_POOL_PROGRAM_ID}"
     export SHIELDED_POOL_PROGRAM_ID
     ZOLANA_SPP_KEYS_DIR="{{spp-keys-dir}}" bash tools/test-ring-controls.sh ring -E '{{filter}}' {{args}}
+
+# A plain program's PDA spends a ring note through CPI.
+test-custom-ring-program-owner *args:
+    @{{just_executable()}} test-custom-ring-validator 'test(a_program_pda)' {{args}}
+
+# The Xark program creates and updates its ring note under Ring RPC approvals, then the auditor checks it.
+test-custom-ring-program-update *args: build-zk-ring-program zolana::build-cli
+    zolana/target/debug/zolana build-zk-program --test --manifest-path program-tests/zk-ring-program/Cargo.toml --skip-wasm --skip-sbf
+    @{{just_executable()}} test-custom-ring-validator 'test(ring_note_under_a_ring_rpc_approval) | test(updated_note_commitment)' --features proofs {{args}}
 
 test-custom-ring-sanity *args:
     @{{just_executable()}} test-custom-ring-validator 'test(sanity)' {{args}}

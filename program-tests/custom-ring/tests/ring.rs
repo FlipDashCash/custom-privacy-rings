@@ -55,6 +55,11 @@ mod migration;
 mod one_key;
 #[path = "ring/policy.rs"]
 mod policy;
+#[path = "ring/program_owner.rs"]
+mod program_owner;
+#[cfg(feature = "proofs")]
+#[path = "ring/program_update.rs"]
+mod program_update;
 #[path = "ring/relay.rs"]
 mod relay;
 #[path = "ring/transfers.rs"]
@@ -88,9 +93,9 @@ use custom_ring_test_validator::{
     ring_rpc::RingRpcSpec,
     ring_wallet::RingWallet,
     shared::{
-        custom_ring_program_id, prover_url, send, send_expecting_rejection, setup, AuthorityRail,
-        ExpectRejection, RegisterRing, RejectedTransact, RingRoleKeys, SendAs, TestEnv, Tier,
-        WalletSync, USDC_ASSET_ID,
+        custom_ring_program_id, prover_url, send, send_expecting_rejection, setup,
+        setup_with_programs, AuthorityRail, ExpectRejection, RegisterRing, RejectedTransact,
+        RingRoleKeys, SendAs, TestEnv, Tier, WalletSync, USDC_ASSET_ID,
     },
 };
 use solana_address::Address;
@@ -114,7 +119,7 @@ use spr_interface::{
     },
     SHIELDED_POOL_PROGRAM_ID, ZERO_NULLIFIER_PUBKEY,
 };
-use spr_keypair::{random_blinding, ShieldedAddress, ShieldedKeypair, X25519Keypair};
+use spr_keypair::{random_blinding, NullifierKey, ShieldedAddress, ShieldedKeypair, X25519Keypair};
 use spr_program::instruction::{
     AssetDeposit, Deposit as SppDeposit, DepositAsset, DepositSplAccounts,
     TransactInterfaceTransferAccounts, TransactSplWithdrawalAccounts, UpdateRingConfig,
@@ -132,7 +137,8 @@ use spr_test_utils::{
 use spr_transaction::{
     decrypt_spendable,
     instructions::transact::{canonical_shape, ConfidentialTransaction, SppProofOutputUtxo},
-    AssetRegistry, Data, Mint, Utxo, WalletUtxo, SOL_ASSET_ID, SOL_MINT,
+    AssetRegistry, Data, LocalShieldedKeys, Mint, ShieldedKeys, Utxo, WalletUtxo, SOL_ASSET_ID,
+    SOL_MINT,
 };
 use spr_tree::TreeAccount;
 use spr_user_registry_interface::user_registry_program_id;
@@ -954,6 +960,49 @@ fn expect_foreign_ring(result: Result<ProvenRingTransfer, RingError>, ring: Addr
             "expected ForeignRing({ring}), the transfer was proven"
         )),
     }
+}
+
+/// A PDA's note proven by the indexer under the zero key.
+fn pda_note(env: &TestEnv, utxo: Utxo, data_hash: Option<[u8; 32]>) -> Result<WalletUtxo> {
+    let tree_id = env.tree_id(env.tree)?;
+    let zero_key = NullifierKey::from_secret([0; 31]);
+    let hash = utxo.hash(
+        &zero_key.pubkey()?,
+        &data_hash.unwrap_or_default(),
+        &[0; 32],
+        tree_id,
+    )?;
+    let state = wait_for_merkle_proof(env.client.indexer(), env.tree, hash);
+    spr_test_utils::utxo::wallet(utxo, &zero_key, tree_id, state.leaf_index, data_hash, None)
+}
+
+/// `output` as the note its PDA `holder` spends.
+fn pda_output(
+    env: &TestEnv,
+    output: &SppProofOutputUtxo,
+    holder: &ShieldedAddress,
+) -> Result<WalletUtxo> {
+    pda_note(
+        env,
+        Utxo {
+            owner: holder.signing_pubkey,
+            asset: output.asset,
+            amount: output.amount,
+            blinding: output.blinding,
+            ring_program_id: output.ring_program_id,
+            data: output.data.clone(),
+        },
+        output.data_hash,
+    )
+}
+
+/// The ring keys of a PDA, its notes sealed to the operator's viewing key.
+fn pda_keys(pda: &Address, operator: &ShieldedKeypair) -> Result<LocalShieldedKeys> {
+    Ok(LocalShieldedKeys::new(
+        ShieldedAddress::for_pda(pda, ZERO_NULLIFIER_PUBKEY, operator.viewing_pubkey()),
+        vec![operator.viewing_key.clone()],
+        NullifierKey::from_secret([0; 31]),
+    )?)
 }
 
 fn indexed_note(

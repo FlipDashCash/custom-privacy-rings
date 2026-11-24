@@ -22,16 +22,18 @@ use spr_keypair::X25519Keypair;
 use spr_test_utils::localnet::isolated_temp_path;
 use zolana_operator_custody::SigningIdentity;
 use zolana_ring_client::rpc::{
-    GetRelayQuoteRequest, GetRelayStatusRequest, PrepareAuthorityTransferRequest,
-    PrepareRelayRequest, ReadTarget, RelayId, RelayOperation, RelayQuote, RelayStatus, RelayStep,
-    ServiceTarget, SetMergeSettingsRequest, SetMergeSettingsResponse, SubmitRelayRequest,
+    CoSignTransactionRequest, CoSignTransactionResponse, GetRelayQuoteRequest,
+    GetRelayStatusRequest, PrepareAuthorityTransferRequest, PrepareRelayRequest, ReadTarget,
+    RelayId, RelayOperation, RelayQuote, RelayStatus, RelayStep, ServiceTarget,
+    SetMergeSettingsRequest, SetMergeSettingsResponse, SubmitRelayRequest, CO_SIGN_TRANSACTION,
     GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_AUTHORITY_TRANSFER, PREPARE_RELAY,
     SET_MERGE_SETTINGS, SUBMIT_RELAY,
 };
 use zolana_ring_rpc::{
-    run_server, BindPolicy, ChainSource, ClientLimits, EnrollmentApplierParts, Hub,
-    LiveStorageChain, ManagedMerge, RelayBudget, RelayServices, RelayServicesInit, ServerOptions,
-    ServiceIdentity, Store, TransactionSource, Upstreams, RECORD_FLUSH_INTERVAL, STORE_CONNECTIONS,
+    run_server, BindPolicy, ChainSource, ClientLimits, CoSignerApproval, EnrollmentApplierParts,
+    Hub, LiveStorageChain, ManagedMerge, RelayBudget, RelayServices, RelayServicesInit,
+    ServerOptions, ServiceIdentity, Store, TransactionSource, Upstreams, RECORD_FLUSH_INTERVAL,
+    STORE_CONNECTIONS,
 };
 
 use crate::shared::{prover_url, TestEnv, ACTOR_AIRDROP};
@@ -67,6 +69,19 @@ pub struct RelayedRingRpc {
     merge: ManagedMerge<ChainSource>,
 }
 
+/// A ring rpc co-signing under a key the test holds.
+pub struct CoSigningRingRpc {
+    served: LocalRingRpc,
+    relay: RingRpcRelay,
+    pub co_signer: Address,
+}
+
+/// The classes the co-signer approves, the caps come from the ring's asset records.
+struct CoSignerParts {
+    signer: SigningIdentity,
+    approval: CoSignerApproval,
+}
+
 pub struct RingRpcRelay {
     url: String,
     http: reqwest::Client,
@@ -77,6 +92,7 @@ struct ServerParts {
     store: Store,
     writer: SigningIdentity,
     relay: Option<RelayServices>,
+    co_signer: Option<CoSignerParts>,
 }
 
 impl ServerParts {
@@ -87,6 +103,7 @@ impl ServerParts {
             runtime,
             writer,
             relay: None,
+            co_signer: None,
         })
     }
 
@@ -117,6 +134,26 @@ impl RingRpcSpec<'_> {
 
     pub fn serve_with_writer(self, writer: SigningIdentity) -> Result<LocalRingRpc> {
         Ok(self.start(ServerParts::new(writer)?)?.rpc)
+    }
+
+    /// `approval` empty refuses every operation.
+    pub fn serve_co_signer(
+        self,
+        co_signer: Arc<Keypair>,
+        approval: CoSignerApproval,
+    ) -> Result<CoSigningRingRpc> {
+        let address = co_signer.pubkey();
+        let mut server = ServerParts::new(Arc::new(self.env.payer.insecure_clone()))?;
+        server.co_signer = Some(CoSignerParts {
+            signer: co_signer,
+            approval,
+        });
+        let served = self.start(server)?.rpc;
+        Ok(CoSigningRingRpc {
+            relay: RingRpcRelay::new(&served.url),
+            served,
+            co_signer: address,
+        })
     }
 
     pub fn serve_relayed(self) -> Result<RelayedRingRpc> {
@@ -168,6 +205,7 @@ impl RingRpcSpec<'_> {
             store,
             writer,
             relay,
+            co_signer,
         } = server;
         let upstreams = Upstreams {
             indexer_url: &self.env.indexer_url,
@@ -206,8 +244,13 @@ impl RingRpcSpec<'_> {
         let mut builder = Hub::builder(source, identity)
             .with_enrollment_applier(enrollments)
             .with_store(store)
-            .with_storage_chain(Arc::new(storage_chain), Arc::new(Keypair::new()))
-            .with_co_signer(Arc::new(Keypair::new()));
+            .with_storage_chain(Arc::new(storage_chain), Arc::new(Keypair::new()));
+        builder = match co_signer {
+            Some(parts) => builder
+                .with_co_signer(parts.signer)
+                .with_co_signer_approval(parts.approval),
+            None => builder.with_co_signer(Arc::new(Keypair::new())),
+        };
         if let Some(services) = relay {
             builder = builder
                 .with_relay_services(services)
@@ -328,6 +371,18 @@ impl RelayedRingRpc {
             .runtime
             .block_on(self.merge.merge_due())
             .map_err(|e| anyhow!("managed merge pass {e:?}"))
+    }
+}
+
+impl CoSigningRingRpc {
+    /// A refusal carries the service's `CoSignError` code in its text.
+    pub fn co_sign(
+        &self,
+        request: CoSignTransactionRequest,
+    ) -> Result<CoSignTransactionResponse, RingError> {
+        self.served
+            .runtime
+            .block_on(self.relay.call(CO_SIGN_TRANSACTION, request))
     }
 }
 

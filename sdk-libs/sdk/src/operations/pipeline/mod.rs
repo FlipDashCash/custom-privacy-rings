@@ -532,7 +532,9 @@ impl<R: Rail> RingTransfer<R> {
             }
         };
         if let Some(program) = &self.program {
-            program.check(&staged.proof_inputs)?;
+            program.check(&program_commitment::CommittedHashes::of(
+                &staged.proof_inputs,
+            )?)?;
         }
         check_ring_output_markers(&staged.proof_inputs)?;
         staged.list_salts.extend_from_slice(&self.list_salts);
