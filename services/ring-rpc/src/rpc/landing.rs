@@ -14,7 +14,12 @@ use solana_address::Address;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
 use solana_message::VersionedMessage;
-use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
+use solana_rpc_client_api::{
+    client_error::{Error as RpcClientError, ErrorKind},
+    config::RpcSimulateTransactionConfig,
+    custom_error::JSON_RPC_SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE,
+    request::RpcError,
+};
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction_error::TransactionError;
@@ -206,24 +211,13 @@ impl ChainSubmit for SolanaChain {
             preflight_commitment: Some(CommitmentLevel::Confirmed),
             ..RpcSendTransactionConfig::default()
         };
-        let Err(error) = self
+        match self
             .rpc
             .send_transaction_with_config(transaction, config)
             .await
-        else {
-            return Ok(());
-        };
-        let refusal = match &error {
-            ClientError::SolanaRpcTransaction { source, .. } => source.get_transaction_error(),
-            _ => None,
-        };
-        match refusal {
-            Some(TransactionError::AlreadyProcessed) => Ok(()),
-            Some(refused) => Err(RelayError::SendRefused {
-                reason: refused.to_string(),
-            }
-            .into()),
-            None => Err(error.into()),
+        {
+            Ok(_) => Ok(()),
+            Err(error) => send_refusal(error),
         }
     }
 
@@ -270,6 +264,31 @@ impl ChainSubmit for SolanaChain {
             .ok_or_else(|| ClientError::Rpc("simulate_transaction: inner instructions".into()))?;
         Ok(Simulation::Passed { calls })
     }
+}
+
+fn send_refusal(error: ClientError) -> Result<(), RingRpcError> {
+    let ClientError::SolanaRpcTransaction { source, .. } = &error else {
+        return Err(error.into());
+    };
+    match source.get_transaction_error() {
+        Some(TransactionError::AlreadyProcessed) => Ok(()),
+        _ if surfpool_already_processed(source) => Ok(()),
+        Some(refused) => Err(RelayError::SendRefused {
+            reason: refused.to_string(),
+        }
+        .into()),
+        None => Err(error.into()),
+    }
+}
+
+/// Surfpool names a resent landed transaction only in the text of its preflight failure.
+fn surfpool_already_processed(error: &RpcClientError) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::RpcError(RpcError::RpcResponseError { code, message, .. })
+            if *code == JSON_RPC_SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE
+                && message.contains("already been processed")
+    )
 }
 
 fn finalized_outcome(status: TransactionStatus) -> Option<ChainOutcome> {
@@ -488,6 +507,22 @@ mod tests {
                 Landing::Landed(expected),
             );
         }
+    }
+
+    #[test]
+    fn a_surfpool_resend_of_a_landed_transaction_counts_as_sent() {
+        let preflight = |message: &str| ClientError::SolanaRpcTransaction {
+            operation: "send_transaction_with_config",
+            source: ErrorKind::RpcError(RpcError::RpcResponseError {
+                code: JSON_RPC_SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE,
+                message: message.to_owned(),
+                data: solana_rpc_client_api::request::RpcResponseErrorData::Empty,
+            })
+            .into(),
+        };
+        let landed = r#"Transaction verification failed for transaction Internal error: "Transaction error: This transaction has already been processed""#;
+        assert!(send_refusal(preflight(landed)).is_ok());
+        assert!(send_refusal(preflight("Transaction simulation failed")).is_err());
     }
 
     #[tokio::test]
