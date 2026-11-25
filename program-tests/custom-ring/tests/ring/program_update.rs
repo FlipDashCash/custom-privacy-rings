@@ -455,12 +455,18 @@ fn a_program_updates_its_ring_note_under_a_ring_rpc_approval() -> Result<()> {
         transfer: approved.transfer,
     };
     let message = swapped.message(env, payer.pubkey())?;
-    assert!(
-        updated
-            .ring_rpc
-            .co_sign(swapped.co_sign_request(updated.ring, &message)?)
-            .is_err(),
-        "Ring RPC signs no approval of another call"
+    let refusal = co_sign_once_read(
+        &updated.ring_rpc,
+        &swapped.co_sign_request(updated.ring, &message)?,
+    )
+    .err()
+    .context("a co-signature over another call")?;
+    ensure!(
+        refusal.to_string().contains(&format!(
+            "{:#x}",
+            CustomRingError::TransferApprovalOtherCall as u32
+        )),
+        "{refusal}"
     );
     let refused = |message: VersionedMessage| -> Result<spr_client::ClientError> {
         let transaction = sign_transaction(message, &[payer, &updated.co_signer])?;
