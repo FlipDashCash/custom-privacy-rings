@@ -143,7 +143,10 @@ impl RingRpcSpec<'_> {
         approval: CoSignerApproval,
     ) -> Result<CoSigningRingRpc> {
         let address = co_signer.pubkey();
-        let mut server = ServerParts::new(Arc::new(self.env.payer.insecure_clone()))?;
+        let server = ServerParts::new(Arc::new(self.env.payer.insecure_clone()))?;
+        // The relay services mount `coSignTransaction`.
+        let relay = self.relay_services(Keypair::new(), server.store.clone());
+        let mut server = server.with_relay(relay);
         server.co_signer = Some(CoSignerParts {
             signer: co_signer,
             approval,
@@ -166,16 +169,7 @@ impl RingRpcSpec<'_> {
         let fee_payer_address = fee_payer.pubkey();
         self.env.fund(fee_payer_address, ACTOR_AIRDROP)?;
         let store = server.store.clone();
-        let server = server.with_relay(
-            RelayServicesInit {
-                fee_payer: Arc::new(fee_payer),
-                store: store.clone(),
-                rpc_url: &self.env.rpc_url,
-                indexer_url: &self.env.indexer_url,
-                prover_url: &prover_url(),
-            }
-            .build(),
-        );
+        let server = server.with_relay(self.relay_services(fee_payer, store.clone()));
         let ring = self.ring;
         let Served {
             rpc,
@@ -197,6 +191,17 @@ impl RingRpcSpec<'_> {
             },
             merge,
         })
+    }
+
+    fn relay_services(&self, fee_payer: Keypair, store: Store) -> RelayServices {
+        RelayServicesInit {
+            fee_payer: Arc::new(fee_payer),
+            store,
+            rpc_url: &self.env.rpc_url,
+            indexer_url: &self.env.indexer_url,
+            prover_url: &prover_url(),
+        }
+        .build()
     }
 
     fn start(self, server: ServerParts) -> Result<Served> {

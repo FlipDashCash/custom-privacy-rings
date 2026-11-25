@@ -16,9 +16,9 @@ use zk_ring_program::{
     },
     client::{owner, ProvenInstruction},
 };
-use zolana_ring_client::rpc::CoSignTransactionRequest;
+use zolana_ring_client::rpc::{CoSignTransactionRequest, CoSignTransactionResponse};
 use zolana_ring_policy::AssetLimits;
-use zolana_ring_rpc::{ApproveClass, CoSignError, CoSignerApproval};
+use zolana_ring_rpc::{ApproveClass, CoSignError, CoSignerApproval, MAX_LIMIT_WINDOW_SLOTS};
 
 use super::*;
 
@@ -28,7 +28,8 @@ const PAID: u64 = 500_000_000;
 const COSIGN_ABOVE: u64 = 100_000_000;
 /// Ring RPC co-signs no more of one sender inside its window.
 const SENDER_CAP: u64 = 1_000_000_000;
-const SENDER_WINDOW_SLOTS: u64 = 100;
+/// No slot of a run leaves the window.
+const SENDER_WINDOW_SLOTS: u64 = MAX_LIMIT_WINDOW_SLOTS;
 const CHANGE_SLOT: usize = 0;
 const STATE_SLOT: usize = 1;
 
@@ -227,7 +228,7 @@ impl ProvenStep {
             return send(env.client.rpc(), payer, &self.instructions);
         }
         let message = self.message(env, payer.pubkey())?;
-        let co_signed = ring_rpc.co_sign(self.co_sign_request(ring, &message)?)?;
+        let co_signed = co_sign_once_read(ring_rpc, &self.co_sign_request(ring, &message)?)?;
         CoSigned {
             payer,
             message,
@@ -236,6 +237,23 @@ impl ProvenStep {
         }
         .send(env.client.rpc())
     }
+}
+
+/// Ring RPC refuses an input it has not ingested yet, the wallet asks again.
+fn co_sign_once_read(
+    ring_rpc: &CoSigningRingRpc,
+    request: &CoSignTransactionRequest,
+) -> Result<CoSignTransactionResponse> {
+    let unread = (CoSignError::LimitsUnavailable as i32).to_string();
+    wait_for("Ring RPC to read the inputs", || {
+        match ring_rpc.co_sign(request.clone()) {
+            Ok(co_signed) => Ok(Probe::Ready(co_signed)),
+            Err(refusal) if refusal.to_string().contains(&unread) => {
+                Ok(Probe::Retry(refusal.into()))
+            }
+            Err(refusal) => Err(refusal.into()),
+        }
+    })
 }
 
 /// A ring that demands Ring RPC's co-signature, the program's counter created then updated once.
@@ -361,6 +379,12 @@ impl Updated {
             "the update asks the co-signer"
         );
         let signature = updated.land(&env, ring, &ring_rpc, payer)?;
+        assert_transaction_compute_units(
+            rpc,
+            &signature,
+            "Xark program update, approved CPI",
+            u64::from(compute_unit_limit(InstructionTag::Transfer)),
+        )?;
         let outputs = updated.transfer.outputs;
         Ok(Self {
             token: pda_output(&env, &outputs[CHANGE_SLOT], &address)?,
@@ -441,11 +465,12 @@ fn a_program_updates_its_ring_note_under_a_ring_rpc_approval() -> Result<()> {
     // 2. Ring RPC signs no outflow that takes the sender above its window cap.
     let above = updated.step(SENDER_CAP)?.prove(env, payer.pubkey())?;
     let message = above.message(env, payer.pubkey())?;
-    let refusal = updated
-        .ring_rpc
-        .co_sign(above.co_sign_request(updated.ring, &message)?)
-        .err()
-        .context("a co-signature above the cap")?;
+    let refusal = co_sign_once_read(
+        &updated.ring_rpc,
+        &above.co_sign_request(updated.ring, &message)?,
+    )
+    .err()
+    .context("a co-signature above the cap")?;
     ensure!(
         refusal
             .to_string()

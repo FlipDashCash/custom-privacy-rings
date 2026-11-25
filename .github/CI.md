@@ -18,6 +18,8 @@ A pull request that changes a lockfile saves its own entry, the jobs of that pul
 
 The localnet matrix runs each shape and full capacity sweep of `program-tests/custom-ring/tests/ring_shapes.rs` as its own job.
 Those sweeps prove every catalog key.
+The lifecycle slices run `program_owner` with `enrollment_vault.so` from the `ring_program` artifact.
+The nextest archive is built without the `proofs` feature, so `one_key` and `program_update` run only from `just one-key-validation` and `just test-custom-ring-program-update`.
 The localnet and TypeScript live jobs start `tools/localnet-kms.mjs`, a local KMS emulator, on the pinned Node.
 A failed localnet job prints the end of the Photon and ring indexer logs, and a failed TypeScript live job prints the end of each service log under `target/ts-sdk-e2e`.
 CI omits prover logs from failure reports because proof errors can contain private witness values.
