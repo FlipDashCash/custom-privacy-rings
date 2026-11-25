@@ -2,11 +2,11 @@
 # The ring devnet stack on ECS, every AWS name and tag under zolana-ring-devnet.
 #
 #   tools/ring-devnet-deploy.sh up [--dry-run]               build missing images, then create or update the stack
-#   tools/ring-devnet-deploy.sh status [--dry-run]           endpoints, keys and readiness
-#   tools/ring-devnet-deploy.sh down [--purge] [--dry-run]   delete the stack, --purge also its keys and images
+#   tools/ring-devnet-deploy.sh status [--dry-run]           endpoints, custody keys, demo env and readiness
+#   tools/ring-devnet-deploy.sh down [--purge] [--dry-run]   delete the stack, --purge also its KMS keys, secrets and images
 #
 # --dry-run prints each aws call, runs none and changes nothing. tools/ring-devnet.md
-# describes the stack. Needs aws (with write access), docker, jq, openssl, python3, git.
+# describes the stack. Needs aws (with write access), docker, jq, openssl, python3, git, curl.
 #
 # Environment
 #   RING_DEVNET_PHOTON_START_SLOT       first slot Photon indexes, required while its database is absent
@@ -64,6 +64,7 @@ tag_spec="Key=$prefix,Value=1"
 ecs_tag_spec="key=$prefix,value=1"
 cluster="$prefix"
 role="$prefix-exec"
+task_role="$prefix-ring-rpc-task"
 log_group="/$prefix"
 load_balancer="$prefix"
 security_group="$prefix-sg"
@@ -78,9 +79,12 @@ ring_indexer_port=8786
 prover_url="http://127.0.0.1:3001"
 public_rpc="${RING_DEVNET_PUBLIC_RPC_URL:-https://api.devnet.solana.com}"
 rpc_secret="$prefix/solana-rpc-url"
-key_dir="$prefix/ring-rpc"
-# The ring's enrollmentWriter role key, outside key_dir.
-writer_secret="$prefix/enrollment-writer-keypair"
+custody_secret="$prefix/ring-rpc/custody"
+key_alias="alias/$prefix/ring-rpc"
+# Devnet, every wrapped secret binds it in its KMS encryption context.
+genesis="EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"
+signing_roles=(service storage_authority co_signer fee_payer enrollment_applier)
+storage_program="rnGSTosTQ9gToNQP44THEZph8xtBtuGa5FEwzhKrWjL"
 deployment="maximumPercent=100,minimumHealthyPercent=0"
 sha="$(git rev-parse HEAD)"
 zolana_sha="$(git -C zolana rev-parse HEAD)"
@@ -100,7 +104,7 @@ aws_() {
     aws --region "$region" "$@"
 }
 
-# A read answers None, so every create a fresh stack needs prints too.
+# Answers as an empty account for up and as a whole stack for down and status, so every call prints.
 dry_run_answer() {
     case "$1 $2" in
         "sts get-caller-identity") echo 000000000000; return ;;
@@ -108,8 +112,21 @@ dry_run_answer() {
         "ec2 describe-subnets") printf 'subnet-dry-run-a\tsubnet-dry-run-b\n'; return ;;
     esac
     [[ " $* " == *" --query "* ]] || return 0
-    case "$2" in
-        describe-* | list-* | get-*) echo None ;;
+    if [[ "$command" == up ]]; then
+        case "$2" in
+            describe-* | list-* | get-*) echo None ;;
+            *) echo "dry-run-$2" ;;
+        esac
+        return
+    fi
+    case "$1 $2" in
+        "ecs describe-services") echo ACTIVE ;;
+        "cloudfront list-tags-for-resource" | "kms list-resource-tags") echo 1 ;;
+        "kms describe-key") printf 'arn:aws:kms:%s:000000000000:key/dry-run\tEnabled\n' "$region" ;;
+        "secretsmanager get-secret-value") echo '{}' ;;
+        "secretsmanager list-secrets") echo "$prefix/dry-run" ;;
+        "cloudfront get-distribution-config")
+            if [[ " $* " == *" --output json "* ]]; then echo '{}'; else echo dry-run-etag; fi ;;
         *) echo "dry-run-$2" ;;
     esac
 }
@@ -119,39 +136,16 @@ registry="$account.dkr.ecr.$region.amazonaws.com"
 
 secret_file() { (umask 077; mktemp "$work/secret.XXXXXX"); }
 
-# Base58 Ed25519 public key of the hex seed in a file, the key Solana and the Ring RPC derive.
-ed25519_public() {
+# Base58 address of a KMS GetPublicKey reply, the 32 key bytes after the fixed Ed25519 SPKI header.
+spki_address() {
     python3 -I - "$1" <<'PY'
-import hashlib, sys
-p = 2**255 - 19
-d = -121665 * pow(121666, p - 2, p) % p
-def recover_x(y):
-    xx = (y * y - 1) * pow(d * y * y + 1, p - 2, p) % p
-    x = pow(xx, (p + 3) // 8, p)
-    if (x * x - xx) % p:
-        x = x * pow(2, (p - 1) // 4, p) % p
-    return p - x if x & 1 else x
-def add(P, Q):
-    a = (P[1] - P[0]) * (Q[1] - Q[0]) % p
-    b = (P[1] + P[0]) * (Q[1] + Q[0]) % p
-    c = 2 * P[3] * Q[3] * d % p
-    e = 2 * P[2] * Q[2] % p
-    return ((b - a) * (e - c) % p, (e + c) * (b + a) % p, (e - c) * (e + c) % p, (b - a) * (b + a) % p)
-gy = 4 * pow(5, p - 2, p) % p
-gx = recover_x(gy)
-point, acc = (gx, gy, 1, gx * gy % p), (0, 1, 1, 0)
-seed = bytes.fromhex(open(sys.argv[1]).read().strip())
-if len(seed) != 32:
-    sys.exit("the seed is not 32 bytes of hex")
-digest = hashlib.sha512(seed).digest()
-scalar = (int.from_bytes(digest[:32], "little") & ((1 << 254) - 8)) | (1 << 254)
-while scalar:
-    if scalar & 1:
-        acc = add(acc, point)
-    point, scalar = add(point, point), scalar >> 1
-zi = pow(acc[2], p - 2, p)
-x, y = acc[0] * zi % p, acc[1] * zi % p
-key = (y | (x & 1) << 255).to_bytes(32, "little")
+import base64, sys
+spec, der = sys.argv[1].split()
+key = base64.b64decode(der, validate=True)
+header = bytes.fromhex("302a300506032b6570032100")
+if spec != "ECC_NIST_EDWARDS25519" or len(key) != 44 or not key.startswith(header):
+    sys.exit("the KMS key is not an Ed25519 signing key")
+key = key[len(header):]
 alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 n, out = int.from_bytes(key, "big"), ""
 while n:
@@ -313,30 +307,70 @@ secret_arn() {
     aws_ secretsmanager describe-secret --secret-id "$1" --query ARN --output text 2>/dev/null || true
 }
 
-public_key_tag() {
-    aws_ secretsmanager describe-secret --secret-id "$1" --query "Tags[?Key=='public-key'].Value | [0]" --output text 2>/dev/null || true
+# Sets key_arn to the enabled key under the stack alias of $1, None while the alias is absent.
+existing_key() {
+    local state
+    read -r key_arn state <<< "$(aws_ kms describe-key --key-id "$key_alias/$1" \
+        --query 'KeyMetadata.[Arn,KeyState]' --output text 2>/dev/null || true)"
+    key_arn="${key_arn:-None}"
+    absent "$key_arn" || [[ "$state" == Enabled ]] || die "KMS key $key_alias/$1 is $state"
 }
 
-public_key() {
+# Sets key_arn, a key is never rotated because the manifest pins its ARN.
+ensure_kms_key() {
+    local name="$1" spec="$2" usage="$3"
+    existing_key "$name"
+    absent "$key_arn" || return 0
+    key_arn="$(aws_ kms create-key --key-spec "$spec" --key-usage "$usage" --description "$prefix ring-rpc $name" \
+        --tags "TagKey=$prefix,TagValue=1" --query KeyMetadata.Arn --output text)"
+    ((dry_run)) && key_arn="arn:aws:kms:$region:$account:key/dry-run-$name"
+    aws_ kms create-alias --alias-name "$key_alias/$name" --target-key-id "$key_arn"
+}
+
+# Empty when the secret is absent or unreadable.
+custody_manifest() {
     local value
-    value="$(public_key_tag "$1")"
-    absent "$value" && echo "-" || echo "$value"
+    value="$(aws_ secretsmanager get-secret-value --secret-id "$custody_secret" --query SecretString --output text 2>/dev/null || true)"
+    absent "$value" || echo "$value"
 }
 
-# A key is created once and never rotated here, a new root secret orphans every ring and a new service key every pin.
-ensure_key_secret() {
-    local name="$1" kind="$2" file tags
-    file="$(secret_file)"
-    if absent "$(secret_arn "$name")"; then
-        openssl rand -hex 32 | tr -d '\n' > "$file"
-        tags=("$tag_spec")
-        [[ "$kind" != ed25519 ]] || tags+=("Key=public-key,Value=$(ed25519_public "$file")")
-        aws_ secretsmanager create-secret --name "$name" --secret-string "file://$file" --tags "${tags[@]}" >/dev/null
-    elif [[ "$kind" == ed25519 ]] && absent "$(public_key_tag "$name")"; then
-        aws_ secretsmanager get-secret-value --secret-id "$name" --query SecretString --output text | tr -d '\n' > "$file"
-        aws_ secretsmanager tag-resource --secret-id "$name" --tags "Key=public-key,Value=$(ed25519_public "$file")"
+# Sets custody, the manifest is written once because a new wrapped root orphans every ring.
+ensure_custody() {
+    local role name reply address wrapping ciphertext file
+    custody="$(custody_manifest)"
+    if [[ -n "$custody" ]]; then
+        for role in wrapping "${signing_roles[@]}"; do
+            name="${role//_/-}"
+            existing_key "$name"
+            jq -e --arg role "$role" --arg arn "$key_arn" 'if $role == "wrapping"
+                then .auditor.key_arn == $arn and .grant_rows.key_arn == $arn else .[$role].key_arn == $arn end' \
+                <<< "$custody" >/dev/null || die "$custody_secret pins a key other than $key_alias/$name"
+        done
+        return 0
     fi
-    secret_arn "$name"
+    custody='{}'
+    for role in "${signing_roles[@]}"; do
+        ensure_kms_key "${role//_/-}" ECC_NIST_EDWARDS25519 SIGN_VERIFY
+        reply="$(aws_ kms get-public-key --key-id "$key_arn" --query '[KeySpec,PublicKey]' --output text)"
+        if ((dry_run)); then address="${key_arn##*/}-address"; else address="$(spki_address "$reply")"; fi
+        custody="$(jq -c --arg role "$role" --arg key_arn "$key_arn" --arg address "$address" \
+            '.[$role] = {$key_arn, $address}' <<< "$custody")"
+    done
+    ensure_kms_key wrapping SYMMETRIC_DEFAULT ENCRYPT_DECRYPT
+    wrapping="$key_arn"
+    for role in auditor-root grant-rows; do
+        # Ring RPC opens the secret only under an identical context.
+        ciphertext="$(aws_ kms generate-data-key-without-plaintext --key-id "$wrapping" --key-spec AES_256 \
+            --encryption-context "$(jq -cn --arg deployment "$prefix" --arg genesis "$genesis" --arg purpose "$role" \
+                '{application: "zolana-custom-rings-v1", $deployment, $genesis, $purpose}')" \
+            --query CiphertextBlob --output text)"
+        custody="$(jq -c --arg role "${role%-root}" --arg key_arn "$wrapping" --arg ciphertext "$ciphertext" \
+            '.[$role | sub("-"; "_")] = {$key_arn, $ciphertext}' <<< "$custody")"
+    done
+    file="$(secret_file)"
+    printf '%s' "$custody" > "$file"
+    ((dry_run)) && printf '# %s holds %s\n' "$custody_secret" "$custody" >&3
+    aws_ secretsmanager create-secret --name "$custody_secret" --secret-string "file://$file" --tags "$tag_spec" >/dev/null
 }
 
 # The URL can carry a provider key, it moves through a 077 file and never a command line.
@@ -386,26 +420,46 @@ database_host() {
     aws_ rds describe-db-instances --db-instance-identifier "$prefix-$1" --query 'DBInstances[0].Endpoint.Address' --output text
 }
 
+# Sets created_role, the trust policy in $2 applies only to a new role.
 ensure_role() {
-    local arn
-    arn="$(aws_ iam get-role --role-name "$role" --query Role.Arn --output text 2>/dev/null || true)"
-    if absent "$arn"; then
-        aws_ iam create-role --role-name "$role" --tags "$tag_spec" --assume-role-policy-document '{
-            "Version": "2012-10-17",
-            "Statement": [{"Effect": "Allow", "Principal": {"Service": "ecs-tasks.amazonaws.com"}, "Action": "sts:AssumeRole"}]
-        }' >/dev/null
-        aws_ iam attach-role-policy --role-name "$role" \
-            --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-        ((dry_run)) || { log "waiting for the role to propagate"; sleep 15; }
-    fi
+    local name="$1" trust="$2"
+    created_role="$(aws_ iam get-role --role-name "$name" --query Role.Arn --output text 2>/dev/null || true)"
+    absent "$created_role" || return 0
+    created_role="$(aws_ iam create-role --role-name "$name" --tags "$tag_spec" --assume-role-policy-document "$trust" \
+        --query Role.Arn --output text)"
+    ((dry_run)) || { log "waiting for $name to propagate"; sleep 15; }
+}
+
+ensure_roles() {
+    local trust='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs-tasks.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
+    ensure_role "$role" "$trust"
+    role_arn="$created_role"
+    aws_ iam attach-role-policy --role-name "$role" \
+        --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
     # Only the secrets the tasks read, any other secret under the prefix stays out of reach.
-    aws_ iam put-role-policy --role-name "$role" --policy-name secrets --policy-document "$(jq -n \
+    aws_ iam put-role-policy --role-name "$role" --policy-name secrets --policy-document "$(jq -cn \
         --arg base "arn:aws:secretsmanager:$region:$account:secret:$prefix" '{
         Version: "2012-10-17",
         Statement: [{Effect: "Allow", Action: "secretsmanager:GetSecretValue",
-            Resource: [($base + "/ring-rpc/*"), ($base + "/photon/*"), ($base + "/ring-indexer/*"),
-                       ($base + "/enrollment-writer-keypair-??????"), ($base + "/solana-rpc-url-??????")]}]}')"
-    aws_ iam get-role --role-name "$role" --query Role.Arn --output text
+            Resource: [$base + ("/ring-rpc/custody", "/solana-rpc-url", "/photon/database-password",
+                "/ring-indexer/database-password", "/ring-rpc/database-password") + "-??????"]}]}')"
+
+    ensure_role "$task_role" "$(jq -c --arg account "$account" --arg source "arn:aws:ecs:$region:$account:*" \
+        '.Statement[0].Condition = {StringEquals: {"aws:SourceAccount": $account}, ArnLike: {"aws:SourceArn": $source}}' \
+        <<< "$trust")"
+    task_role_arn="$created_role"
+    aws_ iam put-role-policy --role-name "$task_role" --policy-name custody --policy-document "$(jq -c \
+        --arg deployment "$prefix" --arg genesis "$genesis" '
+        ([.service, .storage_authority, .co_signer, .fee_payer, .enrollment_applier] | map(.key_arn)) as $signers
+        | ([.auditor, .grant_rows] | map(.key_arn) | unique) as $wrapping
+        | {Version: "2012-10-17", Statement: [
+            {Effect: "Allow", Action: "kms:GetPublicKey", Resource: $signers},
+            {Effect: "Allow", Action: "kms:Sign", Resource: $signers,
+             Condition: {StringEquals: {"kms:SigningAlgorithm": "ED25519_SHA_512", "kms:MessageType": "RAW"}}},
+            {Effect: "Allow", Action: "kms:Decrypt", Resource: $wrapping,
+             Condition: {StringEquals: {"kms:EncryptionContext:application": "zolana-custom-rings-v1",
+                 "kms:EncryptionContext:deployment": $deployment, "kms:EncryptionContext:genesis": $genesis,
+                 "kms:EncryptionContext:purpose": ["auditor-root", "grant-rows"]}}}]}' <<< "$custody")"
 }
 
 # A JSON object of the alternating key and value arguments.
@@ -460,17 +514,8 @@ exec ring-indexer --rpc-url "$SOLANA_RPC_URL" --photon-url "$PHOTON_URL" --bind 
 
 # shellcheck disable=SC2016
 ring_rpc_script='set -eu
-umask 077
-cd /var/lib/ring-rpc
-printf %s "$ROOT_SECRET" > root.key
-printf %s "$SERVICE_KEY" > service.key
-printf %s "$STORAGE_AUTHORITY_KEY" > storage-authority.key
-printf %s "$CO_SIGNER_KEY" > co-signer.key
-printf %s "$FEE_PAYER_KEY" > fee-payer.key
-printf %s "$GRANT_ROWS_KEY" > grant-rows.key
-printf %s "$ENROLLMENT_WRITER_KEY" > enrollment-writer.key
 export RING_RPC_STORE_URL="postgres://ring_rpc:$DB_PASSWORD@$DB_HOST:5432/ring_rpc?sslmode=require"
-unset ROOT_SECRET SERVICE_KEY STORAGE_AUTHORITY_KEY CO_SIGNER_KEY FEE_PAYER_KEY GRANT_ROWS_KEY ENROLLMENT_WRITER_KEY DB_PASSWORD
+unset DB_PASSWORD
 exec ring-rpc serve'
 
 # Postgres has no table before the migration, and Photon migrates only its own SQLite.
@@ -553,30 +598,27 @@ up() {
     publish "$root" ring-prover "$prover_tag"
     publish "$root/zolana" photon "$photon_tag"
 
-    log "== network, load balancer, role, logs, cluster"
+    log "== network, load balancer, logs, cluster"
     local network vpc cidr subnets sg db_sg dns
     network="$(vpc_and_subnets)"
     read -r vpc cidr subnets <<< "$network"
     sg="$(ensure_security_group "$vpc" "$cidr")"
     db_sg="$(ensure_db_security_group "$vpc" "$sg")"
     dns="$(ensure_load_balancer "$vpc" "$subnets")"
-    role_arn="$(ensure_role)"
     absent "$(aws_ logs describe-log-groups --log-group-name-prefix "$log_group" \
         --query "logGroups[?logGroupName=='$log_group'].logGroupName | [0]" --output text)" \
         && aws_ logs create-log-group --log-group-name "$log_group" --tags "$prefix=1"
     absent "$(aws_ ecs describe-clusters --clusters "$cluster" --query "clusters[?status=='ACTIVE'].clusterName | [0]" --output text)" \
         && aws_ ecs create-cluster --cluster-name "$cluster" --tags "$ecs_tag_spec" >/dev/null
 
+    log "== custody and roles"
+    ensure_custody
+    ensure_roles
+
     log "== secrets"
-    local rpc_arn root_arn service_arn storage_arn co_signer_arn fee_payer_arn grant_rows_arn writer_arn
+    local rpc_arn custody_arn
     rpc_arn="$(ensure_rpc_secret)"
-    root_arn="$(ensure_key_secret "$key_dir/root-secret" secret)"
-    service_arn="$(ensure_key_secret "$key_dir/service-key" ed25519)"
-    storage_arn="$(ensure_key_secret "$key_dir/storage-authority-key" ed25519)"
-    co_signer_arn="$(ensure_key_secret "$key_dir/co-signer-key" ed25519)"
-    fee_payer_arn="$(ensure_key_secret "$key_dir/fee-payer-key" ed25519)"
-    grant_rows_arn="$(ensure_key_secret "$key_dir/grant-rows-key" secret)"
-    writer_arn="$(ensure_key_secret "$writer_secret" ed25519)"
+    custody_arn="$(secret_arn "$custody_secret")"
     local photon_password ring_indexer_password ring_rpc_password
     photon_password="$(ensure_password_secret photon)"
     ring_indexer_password="$(ensure_password_secret ring-indexer)"
@@ -617,41 +659,37 @@ up() {
             "$(json_object DB_PASSWORD "$ring_indexer_password" SOLANA_RPC_URL "$rpc_arn")" \
             "$(json_object DB_HOST "$ring_indexer_db" PHOTON_URL "$photon_url" RUST_LOG info \
                 START_SLOT "${RING_DEVNET_RING_INDEXER_START_SLOT:-latest}")" "$ring_indexer_port")]")"
+    # A core dump would write the memory of either container, opened secrets included, to the task disk.
+    local no_core='{"ulimits": [{"name": "core", "softLimit": 0, "hardLimit": 0}]}'
     # The prover binds loopback, the Rust prover client accepts plain HTTP only there.
     prover="$(jq -n --arg image "$registry/$prefix-ring-prover:$prover_tag" --arg indexer "$ring_indexer_url" \
-        --arg prover "${prover_url#http://}" --arg group "$log_group" --arg region "$region" '
+        --arg prover "${prover_url#http://}" --arg group "$log_group" --arg region "$region" --argjson no_core "$no_core" '
         {name: "prover", image: $image, essential: true,
          command: ["start", "--require-optimized-build", "--keys-dir", "/proving-keys/", "--auto-download=true",
                    "--prover-address", $prover, "--metrics-address", "127.0.0.1:9998", "--indexer-url", $indexer],
          logConfiguration: {logDriver: "awslogs",
-             options: {"awslogs-group": $group, "awslogs-region": $region, "awslogs-stream-prefix": "prover"}}}')"
+             options: {"awslogs-group": $group, "awslogs-region": $region, "awslogs-stream-prefix": "prover"}}}
+        + $no_core')"
     # Every client arrives from a balancer node address and shares its rate buckets, ten times the defaults.
     ring_rpc="$(shell_container ring-rpc "$registry/$prefix-ring-rpc:$ring_rpc_tag" "$ring_rpc_script" \
-        "$(json_object ROOT_SECRET "$root_arn" SERVICE_KEY "$service_arn" STORAGE_AUTHORITY_KEY "$storage_arn" \
-            CO_SIGNER_KEY "$co_signer_arn" FEE_PAYER_KEY "$fee_payer_arn" GRANT_ROWS_KEY "$grant_rows_arn" \
-            ENROLLMENT_WRITER_KEY "$writer_arn" DB_PASSWORD "$ring_rpc_password" RING_RPC_SOLANA_RPC_URL "$rpc_arn")" \
-        "$(json_object DB_HOST "$ring_rpc_db" \
+        "$(json_object RING_RPC_CUSTODY_JSON "$custody_arn" DB_PASSWORD "$ring_rpc_password" \
+            RING_RPC_SOLANA_RPC_URL "$rpc_arn")" \
+        "$(json_object DB_HOST "$ring_rpc_db" AWS_REGION "$region" RING_RPC_DEPLOYMENT "$prefix" \
             RING_RPC_BIND 0.0.0.0 RING_RPC_INSECURE_PUBLIC_BIND true RING_RPC_PORT "$ring_rpc_port" \
             RING_RPC_INDEXER_URL "$ring_indexer_url" RING_RPC_PROVER_URL "$prover_url" \
             RING_RPC_REPLICA_ID "$prefix-ring-rpc" \
-            RING_RPC_ROOT_SECRET_FILE /var/lib/ring-rpc/root.key \
-            RING_RPC_SERVICE_KEY_FILE /var/lib/ring-rpc/service.key \
-            RING_RPC_STORAGE_AUTHORITY_KEY_FILE /var/lib/ring-rpc/storage-authority.key \
-            RING_RPC_CO_SIGNER_KEY_FILE /var/lib/ring-rpc/co-signer.key \
             RING_RPC_CO_SIGNER_APPROVE "${RING_DEVNET_CO_SIGNER_APPROVE:-outflow,withdrawal,transfers,deposits,withdrawals}" \
-            RING_RPC_FEE_PAYER_KEY_FILE /var/lib/ring-rpc/fee-payer.key \
             RING_RPC_RELAY_BUDGET_LAMPORTS "$budget" RING_RPC_RELAY_SIGNER_BUDGET_LAMPORTS "$signer_budget" \
-            RING_RPC_GRANT_ROWS_KEY_FILE /var/lib/ring-rpc/grant-rows.key RING_RPC_READER_GRANTS "$grants" \
-            RING_RPC_ENROLLMENT_APPLIER_KEY_FILE /var/lib/ring-rpc/enrollment-writer.key \
+            RING_RPC_READER_GRANTS "$grants" \
             RING_RPC_ENROLLMENT_BUDGET_LAMPORTS "$enrollment_budget" \
             RING_RPC_ENROLLMENT_RING_BUDGET_LAMPORTS "$ring_budget" RING_RPC_ENROLLMENT_MAX_RINGS "$max_rings" \
             RING_RPC_ALLOW_ORIGINS "$origins" RING_RPC_WEBAUTHN_RP_ID "$rp" \
             RING_RPC_PUBLIC_READS_PER_MINUTE 6000 RING_RPC_PUBLIC_READ_BURST 600 \
             RING_RPC_SIGNED_READS_PER_MINUTE 1200 RING_RPC_SIGNED_READ_BURST 200 \
             RING_RPC_SIGNED_WRITES_PER_MINUTE 300 RING_RPC_SIGNED_WRITE_BURST 100)" "$ring_rpc_port" \
-        | jq '. + {dependsOn: [{containerName: "prover", condition: "START"}]}')"
+        | jq --argjson no_core "$no_core" '. + {dependsOn: [{containerName: "prover", condition: "START"}]} + $no_core')"
     ring_rpc_td="$(register_task ring-rpc "${RING_DEVNET_RING_RPC_CPU:-4096}" "${RING_DEVNET_RING_RPC_MEMORY:-16384}" \
-        "[$prover,$ring_rpc]" --ephemeral-storage sizeInGiB=40)"
+        "[$prover,$ring_rpc]" --ephemeral-storage sizeInGiB=40 --task-role-arn "$task_role_arn")"
     ensure_service photon "$photon_td" "$subnets" "$sg" "$photon_port"
     ensure_service ring-indexer "$ring_indexer_td" "$subnets" "$sg" "$ring_indexer_port"
     ensure_service ring-rpc "$ring_rpc_td" "$subnets" "$sg" "$ring_rpc_port"
@@ -675,27 +713,65 @@ probe() {
     printf '%-18s %s\n' "$name" "$([[ "$code" == 200 ]] && echo ready || echo "not ready ($code)")"
 }
 
+address() {
+    local value
+    value="$(jq -r --arg role "$2" '.[$role].address // empty' <<< "$1" 2>/dev/null || true)"
+    echo "${value:--}"
+}
+
+# A task reads the manifest only at start, a later manifest differs until the next task.
+served_keys() {
+    local url="$1" manifest="$2" served
+    if ((dry_run)) || [[ "$url" == - || -z "$manifest" ]]; then
+        echo -
+        return
+    fi
+    served="$(curl -s --max-time 15 -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"health"}' \
+        "$url/health" | jq -c '.result | [.servicePubkey, .storageAuthorityPubkey, .coSignerPubkey,
+            .feePayerPubkey, .enrollmentWriterPubkey]' 2>/dev/null || true)"
+    if [[ -z "$served" ]]; then
+        echo "not ready"
+    elif [[ "$served" == "$(jq -c '[.service, .storage_authority, .co_signer, .fee_payer, .enrollment_applier]
+        | map(.address)' <<< "$manifest")" ]]; then
+        echo "match custody"
+    else
+        echo "differ from custody"
+    fi
+}
+
 status() {
-    local photon ring_indexer ring_rpc
+    local photon ring_indexer ring_rpc manifest service co_signer storage fee_payer writer
     photon="$(distribution_url "$prefix-photon")"
     ring_indexer="$(distribution_url "$prefix-ring-indexer")"
     ring_rpc="$(distribution_url "$prefix-ring-rpc")"
+    manifest="$(custody_manifest)"
+    service="$(address "$manifest" service)"
+    co_signer="$(address "$manifest" co_signer)"
+    storage="$(address "$manifest" storage_authority)"
+    fee_payer="$(address "$manifest" fee_payer)"
+    writer="$(address "$manifest" enrollment_applier)"
     printf '%-18s %s\n' \
         "solana rpc" "$public_rpc" \
         "photon" "$photon" \
         "ring indexer" "$ring_indexer" \
         "ring rpc" "$ring_rpc" \
-        "service key" "$(public_key "$key_dir/service-key")" \
-        "co-signer key" "$(public_key "$key_dir/co-signer-key")" \
-        "enrollment writer" "$(public_key "$writer_secret")"
+        "service key" "$service" \
+        "co-signer key" "$co_signer" \
+        "enrollment writer" "$writer"
     echo
-    printf '%-18s %s   (fund it, it pays every records write)\n' "storage authority" "$(public_key "$key_dir/storage-authority-key")"
-    printf '%-18s %s   (fund it above the relay budget)\n' "fee payer" "$(public_key "$key_dir/fee-payer-key")"
-    printf '%-18s %s   (fund it above the enrollment budget)\n' "enrollment writer" "$(public_key "$writer_secret")"
+    printf '%-18s %s   (fund it, it pays every records write)\n' "storage authority" "$storage"
+    printf '%-18s %s   (fund it above the relay budget)\n' "fee payer" "$fee_payer"
+    printf '%-18s %s   (fund it above the enrollment budget)\n' "enrollment writer" "$writer"
+    echo
+    echo "demo env, RING_PROVER_URL is the loopback prover of just ring-devnet-prover"
+    printf '%s\n' "RING_SOLANA_RPC_URL=$public_rpc" "RING_INDEXER_URL=$ring_indexer" "RING_PROVER_URL=$prover_url" \
+        "RING_RPC_URL=$ring_rpc" "RING_GENESIS_HASH=$genesis" "RING_RPC_SERVICE_KEY=$service" \
+        "RING_RPC_COSIGNER=$co_signer" "RING_ENROLLMENT_WRITER=$writer" "RING_STORAGE_PROGRAM_ID=$storage_program"
     echo
     probe "photon" "$([[ "$photon" == - ]] && echo - || echo "$photon/liveness")"
     probe "ring indexer" "$([[ "$ring_indexer" == - ]] && echo - || echo "$ring_indexer/ready")"
     probe "ring rpc" "$([[ "$ring_rpc" == - ]] && echo - || echo "$ring_rpc/ready")"
+    printf '%-18s %s\n' "ring rpc keys" "$(served_keys "$ring_rpc" "$manifest")"
     echo "logs               aws logs tail $log_group --region $region --follow"
 }
 
@@ -723,6 +799,20 @@ remove_distributions() {
 
 delete_secret() {
     absent "$(secret_arn "$1")" || aws_ secretsmanager delete-secret --secret-id "$1" --force-delete-without-recovery >/dev/null
+}
+
+retire_kms_key() {
+    local name="$key_alias/$1" arn state tagged
+    read -r arn state <<< "$(aws_ kms describe-key --key-id "$name" \
+        --query 'KeyMetadata.[Arn,KeyState]' --output text 2>/dev/null || true)"
+    absent "${arn:-None}" && return 0
+    tagged="$(aws_ kms list-resource-tags --key-id "$arn" --query "Tags[?TagKey=='$prefix'].TagValue | [0]" --output text)"
+    if [[ "$tagged" != 1 ]]; then
+        log "kept $name, its key carries no $prefix tag"
+        return 0
+    fi
+    aws_ kms delete-alias --alias-name "$name"
+    [[ "$state" == PendingDeletion ]] || aws_ kms schedule-key-deletion --key-id "$arn" --pending-window-in-days 7 >/dev/null
 }
 
 down() {
@@ -786,16 +876,24 @@ down() {
         delete_secret "$prefix/$service/database-password"
     done
     if ((purge)); then
-        for name in root-secret service-key storage-authority-key co-signer-key fee-payer-key grant-rows-key; do
-            delete_secret "$key_dir/$name"
+        for name in "${signing_roles[@]}" wrapping; do
+            retire_kms_key "${name//_/-}"
         done
-        delete_secret "$writer_secret"
-        delete_secret "$rpc_secret"
+        # The name filter ignores case, each name is checked again.
+        for name in $(aws_ secretsmanager list-secrets --filters "Key=name,Values=$prefix/" "Key=tag-key,Values=$prefix" \
+            --query "SecretList[?Tags[?Key=='$prefix' && Value=='1']].Name" --output text); do
+            [[ "$name" == "$prefix/"* ]] || continue
+            delete_secret "$name"
+        done
         for service in ring-rpc ring-indexer ring-prover photon; do
             absent "$(aws_ ecr describe-repositories --repository-names "$prefix-$service" \
                 --query 'repositories[0].repositoryName' --output text 2>/dev/null || true)" \
                 || aws_ ecr delete-repository --repository-name "$prefix-$service" --force >/dev/null
         done
+    fi
+    if ! absent "$(aws_ iam get-role --role-name "$task_role" --query Role.Arn --output text 2>/dev/null || true)"; then
+        aws_ iam delete-role-policy --role-name "$task_role" --policy-name custody 2>/dev/null || true
+        aws_ iam delete-role --role-name "$task_role"
     fi
     if ! absent "$(aws_ iam get-role --role-name "$role" --query Role.Arn --output text 2>/dev/null || true)"; then
         aws_ iam detach-role-policy --role-name "$role" \
@@ -804,9 +902,9 @@ down() {
         aws_ iam delete-role --role-name "$role"
     fi
     if ((purge)); then
-        echo "removed every $prefix resource"
+        echo "removed every $prefix resource, KMS deletes its keys after 7 days"
     else
-        echo "removed the $prefix stack, kept its keys, its images and the final Ring RPC store snapshot"
+        echo "removed the $prefix stack, kept its KMS keys, its custody manifest, its images and the final Ring RPC store snapshot"
     fi
 }
 
