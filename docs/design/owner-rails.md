@@ -46,6 +46,16 @@ A zero-key note has `nullifier_secret = 0`. Anyone who knows its opening compute
 - A wallet reports such a note as exposed if spent and never selects it automatically. `spend_public` names the wallet that becomes public.
 - A program-owned note uses the zero key, and its program signs through CPI.
 
+## Program owners
+
+- A program owns ring notes under a PDA. The notes use the zero key, or a nonzero key the PDA enrolled through its program. The PDA signs only inside its program's CPI into the ring's `Transfer`.
+- A PDA spends on the signer rail of a confidential ring and on the public-owner rail of an anonymous ring. It has no Ed25519 key, so it signs on neither the in-proof nor the hidden rail.
+- `RingTransferCpi` forwards the frame and raises the one PDA to a signer. The called program receives the PDA's signature and can forward it, so the program must fix the ring it calls. `zk-ring-program` puts the ring program id in the PDA's seeds, and `enrollment-vault` reads the ring from the vault's own account.
+- A program with its own proof binds that proof to the frame's `private_tx_hash`. The Rust SDK's `plan_for_program` returns the sealed transfer's hashes before the ring proof exists. The program proves over the plan, and `with_program` stages the ring transfer under that commitment and refuses another one.
+- A signature a program forwards covers every call that program makes. A co-signer therefore approves a call with a top-level `ApproveTransfer`, which names the instruction's position and the digest of the ring call. The ring program checks that position and digest and counts no calls. Ring RPC's simulation refuses a call made other than once. The transfer's co-signer pair names `[co_signer_record, instructions_sysvar]`.
+- The call chain is the program, the ring's `Transfer`, SPP and SPP's own calls.
+- `test-vectors/proof/ring-frame-fit.md` measures the wrapped transfer in its `full+data+program` and `full+data+ring+program` rows.
+
 ## Merge authority
 
 - A merge under a nonzero key runs on the ring PDA's authority, so the holder of the owner's secret and openings can merge. The merge proof admits the owner as the payer, and the SDKs refuse it, since that payer names the owner.

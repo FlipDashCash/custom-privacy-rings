@@ -43,9 +43,9 @@ The head has 10 elements:
 | 5, 6 | `pack_be(auditor_pubkey)` | ring account |
 | 7 | `Poseidon(digest(envelope_ct), digest(keys_ct), hash_bytes(voucher_ct))` | frame, the auditor stream's envelope, recipient keys and voucher key, zero in the last place off a vouched frame |
 | 8 | `right_align(salt)` | frame, SPP salt, 16 bytes |
-| 9 | `right_align(vouched \| entry << 1)` | frame header flags |
+| 9 | `right_align(vouched \| entry << 1 \| data << 2 \| ring_data << 3)` | frame header flags |
 
-The auditor stream seals under `tx_viewing_sk`, so `txpk` is also the stream's ephemeral key and no separate ephemeral key enters the head. `entry` must match the key's shape, `vouched` follows the frame, and every other layout bit is refused. The frame's `HAS_DATA` flag enters no element, and no constraint reads a data hash but the UTXO hash.
+The auditor stream seals under `tx_viewing_sk`, so `txpk` is also the stream's ephemeral key and no separate ephemeral key enters the head. `entry` must match the key's shape, `vouched`, `data` and `ring_data` follow the frame, and every other layout bit is refused. The frame's `HAS_DATA` and `RING_DATA` flags set `data` and `ring_data`, see [layout](disclosure.md#layout).
 
 The rail bits:
 
@@ -71,7 +71,7 @@ The rail bits:
 - A public slot holds SPP's asset field, the signed net and the gross public withdrawal of the asset. The net is `right_align(net)` when positive and `q - |net|` when negative. The gross is `right_align` of a `u128`, deposits excluded. Slots past the used ones are zeros.
 - `withdrawal_hash` is the policy withdrawal hash below. The count closes the chain, so a statement of another length hashes apart.
 
-`record_chain = HashChain4(hash_bytes(record_ct_i))`, zero past `m`. `record_ct_i` is slot `i`'s 137-byte [record](disclosure.md#records) ciphertext, read from the slot's body or, on an exit, from the auditor message.
+`record_chain = HashChain4(Poseidon(exit_i, hash_bytes(record_ct_i)))`, zero past `m`. `record_ct_i` is the published prefix of slot `i`'s [record](disclosure.md#records) ciphertext, read from the slot's body or, on an exit, from the auditor message. `exit_i` is `1` on a slot the frame's exit bitmap names.
 
 `withdrawal_hash = HashChain4([CRPW, right_align(count), (owner, asset, right_align(amount)) per withdrawal leg])`, in settlement order. A SOL leg's owner is `solana_owner_identity(recipient)`, and an SPL leg's owner is the identity of the token account's owner. The program reads both from the live settlement accounts, and each amount from the u64 settlement leg. The circuit range checks no leg amount, since a leg at or past `2^64` opens no digest the program builds. The list is empty on a ring without own records and on the delegate rails.
 

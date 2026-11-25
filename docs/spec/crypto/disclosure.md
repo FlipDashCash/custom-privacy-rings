@@ -8,7 +8,7 @@ Every published slot of a transfer whose proof verifies has one record the audit
 
 - A ring output, an exit and a dummy each have one record. An exit's record opens the created default-ring note, its owner key included.
 - The auditor reads each slot's recipient key from its own stream. A key the sender chose wrongly changes what the recipient can open and leaves the auditor's reading unchanged.
-- The record names the owner key, amount, mint, nullifier key and blinding. A note that commits a data hash rebuilds its commitment only with the hashes its payload carries. A malformed payload loses those hashes for the recipient and the auditor. The auditor still traces that note's spend from the published hash, the record's blinding and the owner's secret.
+- The record names the owner key, amount, mint and blinding, an exit's nullifier key, and the data hashes the frame's flags name. The proof holds each hash to the note, so a malformed payload loses the application data and not the commitment.
 - A spent ring note has no record. The auditor links its nullifier from an opening it already holds and the owner's enrolled secret. A note the auditor never opened stays unlinked until its opening arrives, and it withholds no output slot.
 - A spent default-ring note has an entry record in the envelope of an entry key. It names the owner, nullifier key, amount, mint and spent commitment, and discloses no blinding, data hash or secret.
 - Ring RPC serves an owner its opening from the record, see [auditor fallback](../../design/audit-and-recovery.md#auditor-fallback).
@@ -37,9 +37,9 @@ The auditor message is SPP's last message, under the auditor's `u` as its view t
 0x04 || tx_viewing_u || envelope_ct || keys_ct || exit_record_ct of each exit in slot order
 ```
 
-`tx_viewing_u` is SPP's `tx_viewing_pk` without its tag. `keys_ct` holds 32 bytes per published slot. Each exit record ciphertext is 137 bytes.
+`tx_viewing_u` is SPP's `tx_viewing_pk` without its tag. `keys_ct` holds 32 bytes per published slot. Each exit record ciphertext is the exit's [published prefix](#records), 137 bytes or 169 under `HAS_DATA`.
 
-`n` is the published input count, the frame's nullifier count. It is never the key capacity and never a private live count. The entry flag, `n`, `m` and the exit bitmap fix the auditor message's length. The frame's flags, shape and counts fix every other length, and the program refuses trailing bytes.
+`n` is the published input count, the frame's nullifier count. It is never the key capacity and never a private live count. The entry flag, the `vouched` flag, `HAS_DATA`, `n`, `m` and the exit bitmap fix the auditor message's length. The frame's flags, shape and counts fix every other length, and the program refuses trailing bytes.
 
 ## Stream regions
 
@@ -79,8 +79,16 @@ Bit `k` of `default_note_bits` is set exactly when note `k` is a default-ring no
 ## Records
 
 ```text
-record = u8(kind) || u64be(amount) || owner_key || mint || fe32(nullifier_pk) || fe32(blinding)   137 bytes
+head   = u8(kind) || u64be(amount) || owner_key || mint || fe32(blinding)     bytes 0 .. 105
+record = head || cell_1 || cell_2                                              169 bytes sealed
 ```
+
+| Slot | `cell_1`, bytes 105 .. 137 | `cell_2`, bytes 137 .. 169 | Published prefix |
+|---|---|---|---|
+| Exit | `fe32(nullifier_pk)` | `data_hash` | `137 + 32 DATA` |
+| Ring output, dummy | `data_hash` under `DATA`, else `ring_data_hash` | `ring_data_hash` | `105 + 32 (DATA + RING_DATA)` |
+
+`DATA` and `RING_DATA` are the frame's `HAS_DATA` and `RING_DATA` flags, each `0` or `1`. Every slot seals the 169 bytes, and the frame carries the published prefix alone. A ring output therefore publishes the head, then `data_hash` under `DATA`, then `ring_data_hash` under `RING_DATA`. An exit publishes the head, its nullifier key, then `data_hash` under `DATA`.
 
 | `kind` | Slot | Plaintext |
 |---|---|---|
@@ -88,13 +96,17 @@ record = u8(kind) || u64be(amount) || owner_key || mint || fe32(nullifier_pk) ||
 | `1` | ring output | the slot's opening |
 | `2` | exit | the slot's opening |
 
-The proof holds every slot `i < N` to the UTXO or the dummy domain, dummies last. A dummy's owner, asset, amount, data hash, ring data hash and ring id are zero, and SPP derives its blinding. No real output sits at or past `m`. The proof derives `kind` from the domain and ring id the slot's hash commits, so no prover choice passes a note as a dummy. `owner_key` is the raw key whose `solana_owner_identity` the commitment hashes, and `mint` the raw mint whose `hash_bytes` is its asset. The auditor names an owner and an asset with no directory. `blinding` is the slot's blinding, which `private_tx_hash` and SPP's derivation fix. The record holds no data hash, and the data hashes enter no ring constraint but the UTXO hash.
+Bit value 4 of the kind byte is set exactly when a live slot's nullifier key is the zero key. A ring output's record carries no nullifier key. A recipient takes the zero key under that bit and otherwise rebuilds under its own key with no registry lookup. The auditor reads a nonzero key from the owner's enrolled row. The proof derives the bit from the key the commitment hashes.
+
+The proof holds every slot `i < N` to the UTXO or the dummy domain, dummies last. A dummy's owner, asset, amount, data hash, ring data hash and ring id are zero, and SPP derives its blinding. No real output sits at or past `m`. The proof derives `kind` from the domain and ring id the slot's hash commits, so no prover choice passes a note as a dummy. `owner_key` is the raw key whose `solana_owner_identity` the commitment hashes, and `mint` the raw mint whose `hash_bytes` is its asset. The auditor names an owner and an asset with no directory. `blinding` is the slot's blinding, which `private_tx_hash` and SPP's derivation fix. The proof holds `data_hash` and `ring_data_hash` to the slot's note. A clear flag holds that hash to zero on every slot, and an exit holds no ring data hash.
+
+The statement chains one cell per published record, `Poseidon(exit_i, hash_bytes(record_ct_i))`, see [public inputs](public-inputs.md#transfer). `exit_i` is `1` on a slot the frame's exit bitmap names, so a ring record never reads as an exit's at the same length.
 
 Each record is sealed from the transaction viewing secret to the slot's recipient key `V_i`:
 
 ```text
 dh_i        = X25519(tx_viewing_sk, V_i)          V_i canonical, dh_i nonzero
-record_ct_i = CRING/rcp stream under CRDS_i from counter 2, plaintext bytes 0 .. 137
+record_ct_i = CRING/rcp stream under CRDS_i from counter 2, the published prefix of the plaintext
 ```
 
 | Slot | `V_i` |
@@ -108,19 +120,18 @@ No constraint ties `V_i` to the intended recipient. A record sealed to another k
 
 ## Slot body
 
-A non-exit slot's body is one `CRING/rcp` stream under `CRDS_i`. The payload continues the record's stream at plaintext byte 137.
+A non-exit slot's body is one `CRING/rcp` stream under `CRDS_i`. The payload continues the record's stream at the record's published length.
 
 ```text
 body    = record_ct || payload_ct                        payload_ct only under the frame's HAS_DATA
-payload = u16be(len) || u8(has_ring_data) || ring_data_hash? || data || zero_padding
-data    = empty, or data_hash || application_data
+payload = u16be(len) || application_data || zero_padding
 ```
 
-`len` counts the presence byte and everything after it up to the padding, so an empty payload is `u16be(1) || 0`. `has_ring_data` is `0` or `1`, and its `1` form carries the 32-byte `ring_data_hash`. A nonzero `data_hash` adds that hash and its application data. The commitment covers both hashes. The decoder refuses `len = 0` and nonzero bytes after the declared payload. No proof reads the payload.
+`len` counts the application data alone, so an empty payload is `u16be(0)`. The record carries the hashes the commitment covers. The decoder refuses nonzero bytes after the declared data. No proof reads the payload.
 
-Under `HAS_DATA` every non-exit payload in a frame has one width, and the program refuses unequal widths. Without it every non-exit body is the 137-byte record alone.
+Under `HAS_DATA` every non-exit body in a frame has one width, and the program refuses unequal widths. Without it every non-exit body is the published record alone.
 
-SPP output data of a non-exit slot is scheme 10, `u16le(body_len) || body || reply`. SPP's external data hash binds its bytes. An exit keeps SPP's scheme 3 body, and its record travels in the auditor message. A recipient accepts a note only when the record names its own owner key as a ring output and the commitment rebuilds from the record, the payload's data hashes and the frame's tree id. The record's nullifier key is taken as written, and the note spends only once that key is the owner's enrolled one.
+SPP output data of a non-exit slot is scheme 10, `u16le(body_len) || body || reply`. SPP's external data hash binds its bytes. An exit keeps SPP's scheme 3 body, and its record travels in the auditor message. A recipient accepts a note only when the record names its own owner key as a ring output and the commitment rebuilds from the record and the frame's tree id, with zero for a hash the flags leave out. A reader without the frame tries each form the body's length admits. The note spends only once its nullifier key is the zero key or the owner's enrolled one.
 
 ## Reply metadata
 
@@ -137,16 +148,16 @@ viewing_u || owner_key || nullifier_pk || wincode(Data), zero padded to reply_le
 Scheme 9 is the first SPP message of an anonymous frame, under `CRING/snd` and the slot secret at `i = m` of the sender's viewing key:
 
 ```text
-output_seed || recipient_u * m                                                  32 + 32 m bytes
+output_seed                                                                     32 bytes
 ```
 
-Key `k` is slot `k`'s `V_k`, the sender's own viewing `u` on change, and zero on an exit or a dummy. The bundle carries no count. The sender opens each slot whose key is its own at that slot's secret, and lists the other keys as its payments. `output_seed` is `TXOS(n0, CRBS(tx_viewing_sk, salt))`.
+The bundle has one length at every `m`, and it carries no recipient key and no count. The sender selects its bundle by the message tag, and a bundle that opens marks the transfer as the sender's own. The sender then tries each ring body it has not found at that slot's secret, and accepts as change only a commitment that rebuilds. `output_seed` is `TXOS(n0, CRBS(tx_viewing_sk, salt))`.
 
 ## Opening a transfer
 
 1. The auditor computes `X25519(auditor_sk, tx_viewing_u)`, the salted [stream secret](envelope.md#shared-secret) and the stream. It recovers `tx_viewing_sk`, `R` and any entry records from the envelope, `V_i` from each key region, and on a vouched frame the voucher's key from the voucher region.
 2. It derives `CRDS_i` from `tx_viewing_sk` and `V_i`, and decrypts slot `i`'s record from the slot's body. An exit's record comes from the auditor message.
-3. It rebuilds slot `i`'s commitment from the record, the payload's data hashes when present and the frame's tree id. The ring id enters on kind `1`, and zero on kind `2`. It accepts the slot only when that commitment equals the published hash at `i`. A kind `0` slot rebuilds as SPP's dummy hash under `TXOB(n0, TXOS(n0, CRBS(tx_viewing_sk, salt)), i)`. A record moved to another slot rebuilds nothing.
+3. It rebuilds slot `i`'s commitment from the record and the frame's tree id, with zero for a hash the flags leave out. The ring id enters on kind `1`, and zero on kind `2`. It accepts the slot only when that commitment equals the published hash at `i`. A kind `0` slot rebuilds as SPP's dummy hash under `TXOB(n0, TXOS(n0, CRBS(tx_viewing_sk, salt)), i)`. A record moved to another slot rebuilds nothing.
 4. It links the nullifier of each spent note, see [spent notes](#spent-notes).
 
 ## Layout
@@ -155,8 +166,10 @@ Key `k` is slot `k`'s `V_k`, the sender's own viewing `u` on change, and zero on
 |---|---|---|
 | 1 | `vouched` | the frame publishes the voucher region |
 | 2 | `entry` | the frame selects a key with entry capacity |
+| 4 | `data` | the frame sets `HAS_DATA`, every record publishes `data_hash` |
+| 8 | `ring_data` | the frame sets `RING_DATA`, every non-exit record publishes `ring_data_hash` |
 
-The layout value is `vouched | entry << 1`. The circuit decomposes it, binds `entry` to the key and refuses every bit past the two. `vouched` switches the voucher's record read and its region in the stream. The frame's `HAS_DATA` flag sets no layout bit, and a data hash needs none.
+The layout value is `vouched | entry << 1 | data << 2 | ring_data << 3`. The circuit decomposes it, binds `entry` to the key and refuses every bit past the four. `vouched` switches the voucher's record read and its region in the stream. `data` and `ring_data` fix each record's published prefix.
 
 ## Merges
 
@@ -164,7 +177,7 @@ A merge seals one record of its output, followed by the seed, to the merged owne
 
 ```text
 merge_envelope  = eph_sk || V                                    64 bytes, CRING/mrg under the shared secret to the auditor
-merge_record    = record || fe32(seed)                           169 bytes, kind 1, blinding TMOB(seed, n0)
+merge_record    = head || fe32(nullifier_pk) || fe32(seed)       169 bytes, kind 1, blinding TMOB(seed, n0)
 merge_record_ct = CRING/mro stream under the slot secret of eph_sk and V, salt zero, index 0, the merge's n0
 ```
 
