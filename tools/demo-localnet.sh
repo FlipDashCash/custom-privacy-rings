@@ -93,7 +93,10 @@ solana airdrop 100 "$localnet_authority" --url "$RING_SOLANA_RPC_URL" >/dev/null
 ring_dir="$workdir/ring-rpc"
 # Ring RPC reads finalized ring history on Surfpool only under the fixture.
 export ZOLANA_RING_SURFPOOL_FIXTURE=1
-tools/ring-rpc-local.sh keys "$ring_dir" "$RING_SOLANA_RPC_URL" fee-payer co-signer enrollment-writer
+# Ring RPC signs through the local KMS, which keeps every key only while it runs.
+RING_RPC_LOCALNET_KMS="$(tools/ring-rpc-local.sh kms "$(setting localnet-kms-port)" "$workdir/kms.log")"
+export RING_RPC_LOCALNET_KMS
+tools/ring-rpc-local.sh custody "$ring_dir" "$RING_SOLANA_RPC_URL" co-signer enrollment-writer
 # The writer serves a ring only after its policy authority calls registerEnrollmentRing.
 tools/ring-rpc-local.sh serve "$ring_dir" "$ring_rpc_port" "$workdir/ring-rpc.log" \
     --indexer-url "$RING_INDEXER_URL" --rpc-url "$RING_SOLANA_RPC_URL" \
@@ -103,10 +106,11 @@ tools/ring-rpc-local.sh serve "$ring_dir" "$ring_rpc_port" "$workdir/ring-rpc.lo
     --allow-origin "${DEMO_ALLOW_ORIGINS:-http://localhost:3000,http://localhost:3043,http://localhost:3044}" \
     --enrollment-ring-budget-lamports "$enrollment_ring_budget_lamports" \
     --enrollment-max-rings "$enrollment_max_rings"
-RING_RPC_SERVICE_KEY="$(tools/ring-rpc-local.sh pubkey "$ring_dir/service.key")"
-RING_RPC_COSIGNER="$(tools/ring-rpc-local.sh pubkey "$ring_dir/co-signer.key")"
-RING_ENROLLMENT_WRITER="$(tools/ring-rpc-local.sh pubkey "$ring_dir/enrollment-writer.key")"
+RING_RPC_SERVICE_KEY="$(tools/ring-rpc-local.sh address "$ring_dir" service)"
+RING_RPC_COSIGNER="$(tools/ring-rpc-local.sh address "$ring_dir" co_signer)"
+RING_ENROLLMENT_WRITER="$(tools/ring-rpc-local.sh address "$ring_dir" enrollment_applier)"
 write_env
 echo "  test mint $RING_TEST_MINT, authority wallet $mint_wallet"
 echo "  ring rpc  $RING_RPC_URL, log $workdir/ring-rpc.log"
+echo "  kms       $RING_RPC_LOCALNET_KMS, log $workdir/kms.log"
 echo "stop with 'just ring-localnet-stop'"

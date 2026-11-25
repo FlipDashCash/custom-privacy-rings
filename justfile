@@ -422,13 +422,14 @@ ring-localnet: check-custom-ring-keys build-programs zolana::build-cli zolana::e
 demo-localnet:
     tools/demo-localnet.sh
 
-# Stops the validator, photon, the ring indexer, the prover and a ring RPC a ring's `just pipeline` left.
+# Stops the validator, photon, the ring indexer, the prover, a ring RPC and the local KMS a ring's `just pipeline` or `just demo-localnet` left.
 ring-localnet-stop:
     lsof -ti "tcp:{{localnet-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti "tcp:{{localnet-photon-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti "tcp:{{localnet-ring-indexer-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
     lsof -ti "tcp:{{localnet-prover-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti "tcp:{{localnet-ring-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
+    pkill -f 'localnet-kms\.mjs {{localnet-kms-port}}$' 2>/dev/null || true
     {{stop-localnet-backends}}
 
 # Photon, the ring indexer and the prover against a cluster from its current slot, RING_INDEXER_START_SLOT moves the ring indexer start.
