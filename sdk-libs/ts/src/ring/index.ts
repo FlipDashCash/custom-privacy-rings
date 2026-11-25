@@ -15,6 +15,8 @@ export { ringAuthAddress, ringCoSignerAddress, ringPolicyAddress } from "../prot
 export {
   CUSTOM_RING_PROOF_LENGTH,
   GRACE_SLOTS,
+  RING_COSIGN_APPROVE_OUTFLOW,
+  RING_COSIGN_APPROVE_WITHDRAWAL,
   RING_COSIGN_DEPOSITS,
   RING_COSIGN_SCOPE_MASK,
   RING_COSIGN_TRANSFERS,
@@ -44,9 +46,11 @@ export {
   BPF_LOADER_UPGRADEABLE_ID,
   fetchRingCoSignerRecord,
   fetchRingPolicy,
+  fetchSppRingConfig,
   fetchStorageRegistry,
   requireActiveRing,
   ringProgramDataAddress,
+  type SppRingConfig,
 } from "../protocol/membership/config.js";
 export { ringRole, type RingRole } from "../protocol/membership/role.js";
 export { listRegisteredRings, type RegisteredRing } from "../rpc/ring-directory.js";
@@ -81,6 +85,7 @@ export {
   RENT_SYSVAR,
   RingProgramBinary,
   closeBufferInstruction,
+  closeRingProgramInstruction,
   decodeRingProgramData,
   deployRingProgram,
   deployWithMaxDataLenInstruction,
