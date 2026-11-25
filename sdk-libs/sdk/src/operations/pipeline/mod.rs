@@ -57,7 +57,7 @@ use zolana_ring_client::{
 };
 use zolana_ring_policy::{ApprovalTotals, Member, OwnerDebit};
 use zolana_ring_transaction::{
-    published_outputs, BodyForm, PublishedSlot, RingDelivery, RingOutputRail,
+    published_outputs, BodyForm, PublishedSlot, RingDelivery, RingOutputRail, ShapedSeal,
 };
 use zolana_ring_transaction::{random_field_element, ClassifiedInput};
 
@@ -441,7 +441,7 @@ impl<R: Rail> RingTransfer<R> {
         let salt = Some(random_salt());
         let sealed = match self.rail.kind() {
             RailKind::Owner(owner) => owner.seal(config, salt)?,
-            RailKind::PublicOwners(public) => public.seal(self.ring, config, salt)?,
+            RailKind::PublicOwners(public) => public.seal(config, salt)?,
             RailKind::Anonymous(_) | RailKind::Delegated(_) | RailKind::Relayed(_) => {
                 return Err(RingError::ProgramRailUnsupported);
             }
@@ -520,16 +520,14 @@ impl<R: Rail> RingTransfer<R> {
             RailKind::Owner(owner) => {
                 boxed(|| owner.stage(self.ring, client, &config, program_salt)).await?
             }
-            RailKind::Anonymous(rail) => boxed(|| rail.stage(self.ring, client, &config)).await?,
+            RailKind::Anonymous(rail) => boxed(|| rail.stage(client, &config)).await?,
             RailKind::Delegated(delegated) => {
                 boxed(|| delegated.stage(self.ring, client, &config)).await?
             }
             RailKind::Relayed(relayed) => {
                 boxed(|| relayed.stage(self.ring, client, &config)).await?
             }
-            RailKind::PublicOwners(public) => {
-                boxed(|| public.stage(self.ring, &config, program_salt)).await?
-            }
+            RailKind::PublicOwners(public) => boxed(|| public.stage(&config, program_salt)).await?,
         };
         if let Some(program) = &self.program {
             program.check(&program_commitment::CommittedHashes::of(
@@ -1802,8 +1800,12 @@ impl OutputSeal<'_> {
             Some(salt) => RingOutputRail::sealed(tx_viewing_key, salt, self.auditor, self.delivery),
             None => RingOutputRail::new(tx_viewing_key, self.auditor, self.delivery),
         };
-        let transaction = pad_under_rail(transaction, &rail, self.shape, self.sender)?;
-        let proof_inputs = rail.encrypt(transaction, self.sender)?;
+        let proof_inputs = ShapedSeal {
+            rail: &rail,
+            shape: self.shape,
+            sender: self.sender,
+        }
+        .encrypt(transaction)?;
         Ok(SealedOutputs { rail, proof_inputs })
     }
 }
@@ -1813,21 +1815,8 @@ pub(crate) fn canonical_shape(
     transaction: &ConfidentialTransaction,
     sender: &ShieldedAddress,
 ) -> Result<Shape, RingError> {
-    let finalized = transaction.clone().finalize(sender)?;
-    Ok(Shape::new(
-        finalized.input_utxos().len(),
-        finalized.output_utxos().len(),
-    ))
-}
-
-/// The blinding seed is fixed once padded, the rail's goes in first.
-pub(crate) fn pad_under_rail(
-    transaction: ConfidentialTransaction,
-    rail: &RingOutputRail,
-    shape: Shape,
-    sender: &ShieldedAddress,
-) -> Result<ConfidentialTransaction, RingError> {
-    let mut transaction = transaction.with_blinding_seed(rail.blinding_seed()?)?;
-    transaction.pad_utxos(shape, sender)?;
-    Ok(transaction)
+    Ok(zolana_ring_transaction::canonical_shape(
+        transaction,
+        sender,
+    )?)
 }

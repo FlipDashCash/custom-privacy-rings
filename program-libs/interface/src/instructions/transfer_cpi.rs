@@ -48,6 +48,7 @@ mod cpi {
 
     #[must_use]
     pub struct RingTransferCpi<'a> {
+        /// Fixed by the caller's signer seeds or its own state, never taken from the caller's accounts alone.
         pub ring_program: &'a Address,
         /// The PDA the signer seeds derive.
         pub owner: &'a Address,

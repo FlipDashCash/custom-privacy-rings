@@ -372,10 +372,10 @@ impl TransactAccounts {
             }
         };
         if self.called_by_program().is_ok() {
-            // A program owner signs inside its program's call, the payer signs the transaction.
+            // An owner off the curve signs inside its program's call alone, every other owner signs the transaction.
             spp.iter_mut()
-                .filter(|meta| meta.pubkey != self.payer)
                 .filter(|meta| self.owner_signers.contains(&meta.pubkey))
+                .filter(|meta| !meta.pubkey.is_on_curve())
                 .for_each(|meta| meta.is_signer = false);
         }
         if spp.len() > MAX_SPP_CPI_ACCOUNTS {

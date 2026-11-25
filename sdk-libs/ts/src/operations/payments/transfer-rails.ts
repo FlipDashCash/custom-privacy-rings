@@ -2,7 +2,6 @@
 import { getBase64Decoder } from "@solana/kit";
 
 import {
-  encodeBase58,
   equalBytes,
   ownerSignerAddresses,
   prepareRingAuthorityTransfer,
@@ -1183,9 +1182,9 @@ export class PublicOwnerTransfer {
   > {
     const { ringProgramId, keys, program } = this.#owner;
     const sender = keys.address();
-    if (encodeBase58(sender.signingPublicKey.ed25519()) !== this.#wallet)
+    if (sender.solanaAddress() !== this.#wallet)
       throw new RingError("RING_PUBLIC_SPEND_WALLET_MISMATCH", {
-        details: { named: this.#wallet, sender: encodeBase58(sender.signingPublicKey.ed25519()) },
+        details: { named: this.#wallet, sender: sender.solanaAddress() },
       });
     if (this.#inProofOwner) throw new RingError("RING_PUBLIC_SPEND_IN_PROOF_OWNER");
     const config = await activeConfig(client, ringProgramId, context);
@@ -1208,12 +1207,16 @@ export class PublicOwnerTransfer {
       planSalt ?? program?.salt,
     );
     try {
+      const spent = prepared.inputs.find((input) => input.utxo.amount > 0n)?.utxo.asset;
       const proofInputs = rail.encrypt({
         prepared,
         sender,
         assets: this.#owner.assets,
         auditor: config.auditorPublicKey,
         instructionDiscriminator: InstructionTag.ringTransact,
+        ...((planSalt ?? program) === undefined || spent === undefined
+          ? {}
+          : { zeroChangeAsset: spent }),
       });
       checkCoOwnerKeys(proofInputs, sender, this.#coOwners);
       const ownerSigners = ownerSignerAddresses(proofInputs.inputUtxos, proofInputs.outputs);

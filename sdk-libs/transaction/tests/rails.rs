@@ -18,7 +18,7 @@ use zolana_ring_transaction::{
     open_recipient_body, open_reply, open_sender_bundle, random_tag_preimage, record_key,
     seal_reply, AnonymousOutput, AnonymousPlan, AnonymousSlot, BodyForm, OpenedBody, OpenedNote,
     OpenedRecipientBody, OutputBlindings, PayloadRead, PublishedSlot, RecipientBody, ReplyMetadata,
-    RingAssets, RingDelivery, RingOutputRail, RingRailError as E,
+    RingAssets, RingDelivery, RingOutputRail, RingRailError as E, ShapedSeal,
 };
 
 const RING: Address = Address::new_from_array([42; 32]);
@@ -324,7 +324,7 @@ fn a_delivered_output_opens_only_for_the_key_its_owner_tag_names() {
         "a resent attempt draws a fresh salt"
     );
     assert_eq!(
-        proof.external_data.outputs[0].owner_tag,
+        proof.external_data.outputs[1].owner_tag,
         OwnerTag::Inline(custom_ring_interface::stream::slot_tag(
             recipient.viewing_pubkey.u()
         ))
@@ -335,23 +335,99 @@ fn a_delivered_output_opens_only_for_the_key_its_owner_tag_names() {
         .iter()
         .all(|slot| slot.anonymous.is_none() && matches!(slot.body, SlotBody::Recipient(_))));
     let assets = RingAssets::new([]).unwrap();
-    let body = decrypt(&receiver.viewing_key, &rail, &proof, &published[0], 0);
+    let body = decrypt(&receiver.viewing_key, &rail, &proof, &published[1], 1);
     let opened = note(
-        reader(&recipient, &assets, &proof, 0)
+        reader(&recipient, &assets, &proof, 1)
             .open_body(&body)
             .unwrap(),
     );
     assert_eq!(
         (opened.amount, opened.blinding),
-        (3, proof.output_utxos[0].blinding)
+        (3, proof.output_utxos[1].blinding)
     );
-    assert_eq!(proof.output_utxos[0].ring_data_hash, None);
-    let stranger = try_decrypt(&keypair(3).viewing_key, &rail, &proof, &published[0], 0);
+    assert_eq!(proof.output_utxos[1].ring_data_hash, None);
+    let stranger = try_decrypt(&keypair(3).viewing_key, &rail, &proof, &published[1], 1);
     assert!(stranger
-        .and_then(|body| reader(&recipient, &assets, &proof, 0)
+        .and_then(|body| reader(&recipient, &assets, &proof, 1)
             .open_body(&body)
             .unwrap())
         .is_none());
+}
+
+/// SOL spent first, the SPL change still leads, a change the caller declared first stays put.
+#[test]
+fn a_delivered_transfer_leads_with_its_change_the_spl_ahead_of_the_sol() {
+    let sender = keypair(1);
+    let receiver = keypair(2);
+    let recipient = address(&receiver);
+    let spend = || {
+        ring_spend(
+            &sender,
+            vec![input(&sender, Mint::SOL, 5, 1), input(&sender, USDC, 10, 2)],
+            false,
+        )
+    };
+    let (mut appended, tx_key) = spend();
+    appended
+        .transfer_with_ring(&recipient, USDC, 4, Some(RING))
+        .unwrap();
+    let (mut declared, _) = spend();
+    for (asset, amount) in [(USDC, 6), (Mint::SOL, 5)] {
+        declared
+            .transfer_with_ring(&address(&sender), asset, amount, Some(RING))
+            .unwrap();
+    }
+    declared
+        .transfer_with_ring(&recipient, USDC, 4, Some(RING))
+        .unwrap();
+    let rail = delivered(tx_key);
+    let order = |proof: &SppProofInputs| -> Vec<(Mint, u64)> {
+        proof.output_utxos[..3]
+            .iter()
+            .map(|output| (output.asset, output.amount))
+            .collect()
+    };
+    let proof = rail.encrypt(appended, &address(&sender)).unwrap();
+    assert_eq!(order(&proof), [(USDC, 6), (Mint::SOL, 5), (USDC, 4)]);
+    let again = rail.clone().encrypt(declared, &address(&sender)).unwrap();
+    assert_eq!(again.output_utxos, proof.output_utxos);
+    assert_eq!(again.external_data.outputs, proof.external_data.outputs);
+
+    let blindings =
+        OutputBlindings::new(&proof.first_nullifier().unwrap(), &proof.blinding_seed).unwrap();
+    for (slot, (output, framed)) in proof
+        .output_utxos
+        .iter()
+        .zip(&proof.external_data.outputs)
+        .enumerate()
+    {
+        assert_eq!(output.blinding, blindings.at(slot as u32).unwrap());
+        assert_eq!(framed.utxo_hash, output.hash(TREE).unwrap());
+    }
+    let published = rail.published_slots(&proof, &address(&sender)).unwrap();
+    let assets = RingAssets::new([USDC]).unwrap();
+    let body = decrypt(&receiver.viewing_key, &rail, &proof, &published[2], 2);
+    let paid = note(
+        reader(&recipient, &assets, &proof, 2)
+            .open_body(&body)
+            .unwrap(),
+    );
+    assert_eq!((paid.asset, paid.amount), (USDC, 4));
+    for (slot, change) in [(0, (USDC, 6)), (1, (Mint::SOL, 5))] {
+        let body = decrypt(
+            &sender.viewing_key,
+            &rail,
+            &proof,
+            &published[slot],
+            slot as u32,
+        );
+        let kept = note(
+            reader(&address(&sender), &assets, &proof, slot)
+                .open_body(&body)
+                .unwrap(),
+        );
+        assert_eq!((kept.asset, kept.amount), change);
+    }
 }
 
 /// The change leads under the sender tag with no data.
@@ -785,11 +861,13 @@ fn a_dummy_publishes_the_tag_of_its_preimage_and_a_recipient_length_body() {
         tx_key.clone(),
         AnonymousPlan::new().with_payment(payment(&recipient)),
     );
-    let mut tx = tx
-        .with_blinding_seed(rail.blinding_seed().unwrap())
-        .unwrap();
-    tx.pad_utxos(Shape::IN1_OUT4, &address(&sender)).unwrap();
-    let proof = rail.encrypt(tx, &address(&sender)).unwrap();
+    let proof = ShapedSeal {
+        rail: &rail,
+        shape: Shape::IN1_OUT4,
+        sender: &address(&sender),
+    }
+    .encrypt(tx)
+    .unwrap();
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
     for dummy in &published[2..] {
         let Some(AnonymousSlot::Dummy { preimage }) = dummy.anonymous else {
@@ -821,7 +899,7 @@ fn a_dummy_publishes_the_tag_of_its_preimage_and_a_recipient_length_body() {
 }
 
 #[test]
-fn a_transfer_with_no_change_leads_with_its_payment_and_the_bundle_stays() {
+fn a_transfer_that_returns_nothing_leads_with_a_zero_change_in_its_spare_slot() {
     let sender = keypair(1);
     let receiver = keypair(2);
     let recipient = address(&receiver);
@@ -833,16 +911,22 @@ fn a_transfer_with_no_change_leads_with_its_payment_and_the_bundle_stays() {
     );
     let proof = rail.encrypt(tx, &address(&sender)).unwrap();
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
-    assert!(matches!(
-        published[0].anonymous,
-        Some(AnonymousSlot::Payment { .. })
-    ));
+    assert_eq!(published[0].anonymous, Some(AnonymousSlot::Change));
+    assert_eq!(
+        (proof.output_utxos[0].asset, proof.output_utxos[0].amount),
+        (Mint::SOL, 0)
+    );
     // The bundle opens to the sender, the keys come from the auditor stream.
     bundle(&sender.viewing_key, &rail, &proof);
     let keys = sealed_keys(&rail, &proof);
-    assert!(!keys.contains(&address(&sender).viewing_pubkey.u()));
-    assert_eq!(keys[0], recipient.viewing_pubkey.u());
-    let body = decrypt(&receiver.viewing_key, &rail, &proof, &published[0], 0);
+    assert_eq!(
+        keys[..2],
+        [
+            address(&sender).viewing_pubkey.u(),
+            recipient.viewing_pubkey.u()
+        ]
+    );
+    let body = decrypt(&receiver.viewing_key, &rail, &proof, &published[1], 1);
     assert_eq!(body.record.amount, 10);
 }
 
@@ -927,11 +1011,13 @@ fn compact_padding_omits_a_suffix_and_keeps_every_index() {
         tx_key,
         AnonymousPlan::new().with_payment(payment(&recipient)),
     );
-    let mut tx = tx
-        .with_blinding_seed(rail.blinding_seed().unwrap())
-        .unwrap();
-    tx.pad_utxos(Shape::IN1_OUT4, &address(&sender)).unwrap();
-    let proof = rail.encrypt(tx, &address(&sender)).unwrap();
+    let proof = ShapedSeal {
+        rail: &rail,
+        shape: Shape::IN1_OUT4,
+        sender: &address(&sender),
+    }
+    .encrypt(tx)
+    .unwrap();
     assert_eq!(proof.output_utxos.len(), 4);
     assert_eq!(proof.external_data.outputs.len(), 2);
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
@@ -960,8 +1046,13 @@ fn a_delivered_rail_omits_compact_padding_from_the_frame() {
         .with_blinding_seed(rail.blinding_seed().unwrap())
         .unwrap();
     tx.transfer_sol(&recipient, 3).unwrap();
-    tx.pad_utxos(Shape::IN1_OUT4, &address(&sender)).unwrap();
-    let proof = rail.encrypt(tx, &address(&sender)).unwrap();
+    let proof = ShapedSeal {
+        rail: &rail,
+        shape: Shape::IN1_OUT4,
+        sender: &address(&sender),
+    }
+    .encrypt(tx)
+    .unwrap();
     assert_eq!(proof.external_data.outputs.len(), 2);
     assert_eq!(
         rail.published_slots(&proof, &address(&sender))
@@ -1012,11 +1103,13 @@ fn a_reply_frame_gives_every_body_one_length() {
             .with_reply(reply_of(&address(&sender)))
             .with_payment(payment(&other)),
     );
-    let mut tx = tx
-        .with_blinding_seed(rail.blinding_seed().unwrap())
-        .unwrap();
-    tx.pad_utxos(Shape::IN1_OUT4, &address(&sender)).unwrap();
-    let proof = rail.encrypt(tx, &address(&sender)).unwrap();
+    let proof = ShapedSeal {
+        rail: &rail,
+        shape: Shape::IN1_OUT4,
+        sender: &address(&sender),
+    }
+    .encrypt(tx)
+    .unwrap();
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
     // The change at slot 0 carries random reply bytes too.
     for slot in &published {
@@ -1198,8 +1291,13 @@ fn a_dataless_delivered_slot_takes_the_plain_body_length() {
         .with_blinding_seed(rail.blinding_seed().unwrap())
         .unwrap();
     tx.transfer_sol(&recipient, 3).unwrap();
-    tx.pad_utxos(Shape::IN1_OUT4, &address(&sender)).unwrap();
-    let proof = rail.encrypt(tx, &address(&sender)).unwrap();
+    let proof = ShapedSeal {
+        rail: &rail,
+        shape: Shape::IN1_OUT4,
+        sender: &address(&sender),
+    }
+    .encrypt(tx)
+    .unwrap();
     let published = rail.published_slots(&proof, &address(&sender)).unwrap();
     assert!(published.iter().any(|slot| slot.output.is_dummy()));
     for slot in &published {
@@ -1335,13 +1433,13 @@ fn data_padding_hides_real_ring_body_lengths_on_both_rails() {
             .add_output_utxo(data_note(address(&receiver)))
             .unwrap();
         let rail = RingOutputRail::new(tx_key, auditor(), delivery);
-        let mut transaction = transaction
-            .with_blinding_seed(rail.blinding_seed().unwrap())
-            .unwrap();
-        transaction
-            .pad_utxos(Shape::new(1, 8), &address(&sender))
-            .unwrap();
-        let proof = rail.encrypt(transaction, &address(&sender)).unwrap();
+        let proof = ShapedSeal {
+            rail: &rail,
+            shape: Shape::new(1, 8),
+            sender: &address(&sender),
+        }
+        .encrypt(transaction)
+        .unwrap();
         let slots = rail.published_slots(&proof, &address(&sender)).unwrap();
         let widths: Vec<_> = slots
             .iter()

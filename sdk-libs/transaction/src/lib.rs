@@ -31,7 +31,8 @@ use spr_keypair::{
 };
 use spr_transaction::{
     instructions::transact::{
-        ConfidentialTransaction, OutputEncoder, OutputEncryption, ResolvedOwnerTag, SppProofInputs,
+        ConfidentialTransaction, OutputEncoder, OutputEncryption, ResolvedOwnerTag, Shape,
+        SppProofInputs,
     },
     serialization::confidential::{Confidential, ConfidentialEncode, ConfidentialOutputPlaintext},
     SppProofOutputUtxo, TransactionError, UtxoSerialization,
@@ -78,6 +79,83 @@ pub struct RingOutputRail {
     delivery: RingDelivery,
 }
 
+/// The rail pads, a padded transaction no longer tells the added change from a declared output.
+#[must_use]
+pub struct ShapedSeal<'a> {
+    pub rail: &'a RingOutputRail,
+    pub shape: Shape,
+    pub sender: &'a ShieldedAddress,
+}
+
+impl ShapedSeal<'_> {
+    /// SPP's encryption pads and blinds, the rail then leads with the change and re-encodes every slot.
+    pub fn encrypt(
+        self,
+        transaction: ConfidentialTransaction,
+    ) -> Result<SppProofInputs, RingRailError> {
+        let Self {
+            rail,
+            shape,
+            sender,
+        } = self;
+        let mut transaction = transaction.with_blinding_seed(rail.blinding_seed()?)?;
+        let declared = transaction.outputs().to_vec();
+        if let RingDelivery::Anonymous(plan) = &rail.delivery {
+            let mut padded = transaction.clone();
+            padded.pad_utxos(shape, sender)?;
+            let returns = padded
+                .outputs()
+                .iter()
+                .filter(|output| !output.is_dummy())
+                .count()
+                > declared.iter().filter(|output| !output.is_dummy()).count();
+            // The last slot is padding whenever one is spare, it names the transaction's ring.
+            let ring = padded
+                .outputs()
+                .last()
+                .filter(|_| !returns && declared.len() < shape.n_outputs())
+                .and_then(|padding| padding.ring_program_id);
+            if let Some(ring) = ring {
+                transaction.add_output_utxo(SppProofOutputUtxo {
+                    owner_address: Some(*sender),
+                    asset: plan.change_asset(),
+                    ring_program_id: Some(ring),
+                    ..Default::default()
+                })?;
+            }
+        }
+        transaction.pad_utxos(shape, sender)?;
+        let mut inputs = match &rail.delivery {
+            RingDelivery::Delivered => rail.spp_encrypt(transaction, sender)?,
+            RingDelivery::Anonymous(_) => OutputEncryption {
+                sender,
+                tx_viewing_key: &rail.tx_viewing_key,
+                encoder: &Confidential,
+            }
+            .encrypt(transaction)?,
+        };
+        lead_change(&mut inputs, sender, &declared)?;
+        match &rail.delivery {
+            RingDelivery::Delivered => rail.reencode_delivered(&mut inputs)?,
+            RingDelivery::Anonymous(plan) => rail.reencode_anonymous(plan, &mut inputs, sender)?,
+        }
+        inputs.external_data.salt = rail.salt;
+        Ok(inputs)
+    }
+}
+
+/// The shape SPP's own finalization pads to.
+pub fn canonical_shape(
+    transaction: &ConfidentialTransaction,
+    sender: &ShieldedAddress,
+) -> Result<Shape, RingRailError> {
+    let finalized = transaction.clone().finalize(sender)?;
+    Ok(Shape::new(
+        finalized.input_utxos().len(),
+        finalized.output_utxos().len(),
+    ))
+}
+
 #[derive(Clone, Copy)]
 enum Slot {
     Ring { owner: ShieldedAddress },
@@ -106,39 +184,20 @@ impl RingOutputRail {
         }
     }
 
-    /// SPP's encryption fixes the slots and blindings, the rail then re-encodes every slot.
+    /// Seals in SPP's own shape, [`ShapedSeal`] takes another.
     pub fn encrypt(
         &self,
         transaction: ConfidentialTransaction,
         sender: &ShieldedAddress,
     ) -> Result<SppProofInputs, RingRailError> {
-        let blinding_seed = self.blinding_seed()?;
-        let transaction = match transaction.blinding_seed() == &blinding_seed {
-            true => transaction,
-            false => transaction.with_blinding_seed(blinding_seed)?,
-        };
-        let mut inputs = match &self.delivery {
-            RingDelivery::Delivered => self.spp_encrypt(transaction, sender)?,
-            RingDelivery::Anonymous(_) => {
-                let mut inputs = OutputEncryption {
-                    sender,
-                    tx_viewing_key: &self.tx_viewing_key,
-                    encoder: &Confidential,
-                }
-                .encrypt(transaction)?;
-                lead_change(&mut inputs, sender)?;
-                inputs
-            }
-        };
-        match &self.delivery {
-            RingDelivery::Delivered => self.reencode_delivered(&mut inputs)?,
-            RingDelivery::Anonymous(plan) => self.reencode_anonymous(plan, &mut inputs, sender)?,
+        ShapedSeal {
+            rail: self,
+            shape: canonical_shape(&transaction, sender)?,
+            sender,
         }
-        inputs.external_data.salt = self.salt;
-        Ok(inputs)
+        .encrypt(transaction)
     }
 
-    /// A transaction padded before [`Self::encrypt`] takes the seed before its padding.
     pub fn blinding_seed(&self) -> Result<[u8; 32], RingRailError> {
         Ok(ring_blinding_seed(
             &self.tx_viewing_key.secret_bytes(),

@@ -46,6 +46,7 @@ import {
   X25519PublicKey,
 } from "@heliuslabs/spr/keypair";
 import type { ShieldedAddress, ShieldedKeypair } from "@heliuslabs/spr/keypair";
+import type { ShieldedPda } from "@heliuslabs/spr/program";
 import {
   AssetRegistry,
   SOL_MINT,
@@ -177,6 +178,9 @@ export interface RingFixtureOptions {
   }>;
   readonly slot?: bigint;
   readonly registration?: Readonly<{ activated: boolean; paused: boolean }>;
+  /** Fixed by a shared vector, random otherwise. */
+  readonly ringProgramId?: Address;
+  readonly authority?: Address;
 }
 
 export const trackingEntry = enrolledEntry;
@@ -211,9 +215,9 @@ function pinnedRail(
 
 /** A ring the chain, Photon and the prover serve from memory, every proof request recorded. */
 export async function ringFixture(options: RingFixtureOptions = {}) {
-  const ringProgramId = randomAddress();
+  const ringProgramId = options.ringProgramId ?? randomAddress();
   const auditor = X25519Keypair.generate();
-  const authority = randomAddress();
+  const authority = options.authority ?? randomAddress();
   const accounts = new Map<Address, RpcAccount>();
   const ownRecords = new Map(
     (options.records ?? []).map((record) => [hex(record.member), record] as const),
@@ -520,8 +524,24 @@ export function walletKeys(keypair: ShieldedKeypair): LocalKeys & RingKeys {
 }
 
 /** A spendable note of `keypair` in `ring`, or in the default ring without one. */
+/** Role keys of a program's PDA owner, no signing secret. */
+export function pdaKeys(holder: ShieldedPda): LocalKeys & RingKeys {
+  const viewing = holder.viewingKey();
+  const nullifierKey = holder.nullifierKey();
+  try {
+    const roles = { address: holder.shieldedAddress(), viewingKeys: [viewing], nullifierKey };
+    return ringWalletKeys(
+      LocalKeys.fromKeys(roles, PROOF_SERVICE),
+      LocalRingKeys.fromKeys({ ...roles, listRoot: viewing }),
+    );
+  } finally {
+    viewing.destroy();
+    nullifierKey.destroy();
+  }
+}
+
 export function noteInput(
-  keypair: ShieldedKeypair,
+  keypair: Pick<ShieldedKeypair, "signingPublicKey" | "nullifierKey">,
   amount: bigint,
   ring?: Address,
   asset: Address = SOL_MINT,

@@ -1,10 +1,24 @@
-import { AccountRole, getBase58Decoder, getBase64Encoder, type Address } from "@solana/kit";
+import {
+  AccountRole,
+  getBase58Decoder,
+  getBase64Encoder,
+  getProgramDerivedAddress,
+  isOffCurveAddress,
+  type Address,
+} from "@solana/kit";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
 
 import { TransactWithdrawal } from "@heliuslabs/spr/interface";
-import { ShieldedKeypair, SigningKey } from "@heliuslabs/spr/keypair";
+import {
+  NullifierKey,
+  ShieldedKeypair,
+  SigningKey,
+  ViewingKey,
+  type Bytes31,
+} from "@heliuslabs/spr/keypair";
+import { ShieldedPda } from "@heliuslabs/spr/program";
 import {
   AssetRegistry,
   ConfidentialTransfer,
@@ -17,6 +31,7 @@ import {
 import { RingAddress } from "../../../src/crypto/keys/ring-address.js";
 import { signingKeySpendSigner } from "../../../src/operations/payments/anonymous.js";
 import { CustomRingTransfer } from "../../../src/operations/payments/transfer-rails.js";
+import { ringTransactInstruction } from "../../../src/operations/workflow/pipeline.js";
 import { transactionHash } from "../../../src/operations/workflow/program-commitment.js";
 import { RING_COSIGN_TRANSFERS } from "../../../src/protocol/codec/ring-codecs.js";
 import { INSTRUCTIONS_SYSVAR, ringCoSignerAddress } from "../../../src/protocol/pda/index.js";
@@ -29,6 +44,7 @@ import {
   filled,
   hex,
   noteInput,
+  pdaKeys,
   randomAddress,
   ringError,
   ringFixture,
@@ -170,7 +186,7 @@ describe("program transfer", () => {
       role: AccountRole.READONLY,
     });
     expect(roleOf(accounts, approver)).toBeUndefined();
-    expect(roleOf(accounts, wallet)).toBe(AccountRole.READONLY);
+    expect(roleOf(accounts, wallet)).toBe(AccountRole.READONLY_SIGNER);
     expect(roleOf(accounts, fixture.authority)).toBe(AccountRole.WRITABLE_SIGNER);
     const approval = { position: 3, digest: TransferApproval.digest(approvedTransferCall(call)) };
     expect(await committed.approveTransfer(3)).toEqual([
@@ -191,6 +207,55 @@ describe("program transfer", () => {
     const outside = ringError("RING_APPROVAL_OUTSIDE_PROGRAM");
     await expect(direct.approveTransfer(3)).rejects.toThrow(outside);
     await expect(direct.approvedTransfer()).rejects.toThrow(outside);
+  });
+
+  it("spends a PDA's note and keeps the signature of a wallet co-owner", async () => {
+    const fixture = await ringFixture();
+    const [pda] = await getProgramDerivedAddress({
+      programAddress: randomAddress(),
+      seeds: ["owner"],
+    });
+    expect(isOffCurveAddress(pda)).toBe(true);
+    const holder = ShieldedPda.withViewingKey(
+      pda,
+      NullifierKey.fromSecret(new Uint8Array(31).fill(3) as Bytes31),
+      ViewingKey.generate(),
+    );
+    const paid = ShieldedKeypair.generate();
+    fixture.enroll(holder.shieldedAddress());
+    fixture.enroll(paid.shieldedAddress());
+    const to = new RingAddress({
+      recipient: paid.shieldedAddress(),
+      ringProgramId: fixture.ringProgramId,
+      listSalt: filled(1),
+    });
+    const note = noteInput(holder, 10n, fixture.ringProgramId);
+    const transfer = () =>
+      CustomRingTransfer.new({
+        ringProgramId: fixture.ringProgramId,
+        keys: pdaKeys(holder),
+        transfer: new ConfidentialTransfer(holder.shieldedAddress(), [note], fixture.authority),
+        assets,
+      })
+        .spendPublic(pda)
+        .withPayment({ to, asset: SOL_MINT, amount: 4n, reply: null });
+
+    const plan = await transfer().planForProgram(fixture.client);
+    const proven = await transfer().withProgram(plan.commitment()).prove(fixture.client);
+    expect(proven.accounts.ownerSigners).toEqual([pda]);
+    const roles = async (ownerSigners: readonly Address[]) => {
+      const call = await ringTransactInstruction(
+        proven.ringProgramId,
+        { ...proven.accounts, ownerSigners },
+        proven.data,
+      );
+      return ownerSigners.map(
+        (owner) => call.accounts?.find((account) => account.address === owner)?.role,
+      );
+    };
+    expect(await roles([pda])).toEqual([AccountRole.READONLY]);
+    const wallet = ShieldedKeypair.generate().shieldedAddress().solanaAddress();
+    expect(await roles([pda, wallet])).toEqual([AccountRole.READONLY, AccountRole.READONLY_SIGNER]);
   });
 
   // Rust `transaction_hash` over the same legs.

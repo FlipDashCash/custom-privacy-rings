@@ -1190,18 +1190,18 @@ async fn a_sender_recovers_its_change_after_a_wipe() {
     assert_eq!(after_slot(scan.history()), Some(paid.slot));
 }
 
-/// With no change the bundle alone names the transfer, the sender still recovers its payment.
+/// A full spend leads with a zero change, the sender recovers it beside its payment.
 #[tokio::test]
-async fn a_sender_with_no_change_recovers_its_payment_row_after_a_wipe() {
+async fn a_sender_that_keeps_nothing_recovers_its_zero_change_and_payment_row_after_a_wipe() {
     let indexer = Indexer::default();
     let mut alice = Wallet::new(1);
     let bob = Wallet::new(2);
     let paid = alice.pay(&indexer, &[pay(&bob.address(), 100)]);
     let scan = alice.recover(&indexer).await;
-    assert!(scan.utxos.is_empty());
+    assert_eq!(found(&scan), [output(&paid, 0)]);
     assert_eq!(scan.sent.len(), 1);
     assert_eq!(scan.sent[0].amount, 100);
-    assert_eq!(scan.sent[0].utxo_hash, output(&paid, 0));
+    assert_eq!(scan.sent[0].utxo_hash, output(&paid, 1));
 }
 
 /// The second transfer spends the first change, the wiped sender restores the chain from its seed.

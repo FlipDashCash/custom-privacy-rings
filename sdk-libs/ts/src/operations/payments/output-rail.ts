@@ -186,38 +186,27 @@ export function anonymousTag(
   }
 }
 
-/** Moves the sender's change to the front, Rust `lead_change` before its reblinding. */
+/** The change at `added` leads, SPL ahead of SOL, then each dataless output declared to the sender, Rust `lead_change`. */
 export function leadChange(
   outputs: readonly ProofOutputUtxo[],
   sender: ShieldedAddress,
+  added: ReadonlySet<number>,
 ): readonly ProofOutputUtxo[] {
-  const rank = (output: ProofOutputUtxo): number => (isChange(output, sender) ? 0 : 1);
+  const rank = (output: ProofOutputUtxo, index: number): number => {
+    if (added.has(index)) return output.asset === SOL_MINT ? 1 : 0;
+    return isChange(output, sender) ? 2 : 3;
+  };
   return Object.freeze(
     outputs
-      .map((output, index) => ({ output, index }))
-      .sort((left, right) => rank(left.output) - rank(right.output) || left.index - right.index)
+      .map((output, index) => ({ output, index, rank: rank(output, index) }))
+      .sort((left, right) => left.rank - right.rank || left.index - right.index)
       .map(({ output }) => output),
   );
 }
 
-/** The first padding slot becomes a zero SOL change, a frame with no padding carries none. */
-export function withSenderChange(
-  outputs: readonly ProofOutputUtxo[],
-  sender: ShieldedAddress,
-): readonly ProofOutputUtxo[] {
-  if (outputs.some((output) => isChange(output, sender))) return outputs;
-  const slot = outputs.findIndex(
-    (output) => output.isDummy() && !output.isCompact() && output.ringProgramId !== undefined,
-  );
-  const padding = outputs[slot];
-  if (padding?.ringProgramId === undefined) return outputs;
-  const change = createProofOutput({
-    ownerAddress: sender,
-    asset: SOL_MINT,
-    amount: 0n,
-    ringProgramId: padding.ringProgramId,
-  });
-  return Object.freeze(outputs.map((output, index) => (index === slot ? change : output)));
+/** The first padding slot of a ring frame, where a zero change goes when nothing returns, `-1` with none spare. */
+export function spareSlot(outputs: readonly ProofOutputUtxo[]): number {
+  return outputs.findIndex((output) => output.isDummy() && output.ringProgramId !== undefined);
 }
 
 /** Ring change owned by the sender and carrying no data, it leads the anonymous frame. */
@@ -410,6 +399,8 @@ export class RingOutputRail {
       /** An exit's record seals to the auditor's key. */
       auditor: X25519PublicKey;
       instructionDiscriminator: number;
+      /** Set under a program commitment, its circuit keeps a zero change in the asset it spent. */
+      zeroChangeAsset?: Address;
     }>,
   ): SppProofInputs {
     const { prepared, sender, auditor } = input;
@@ -421,14 +412,33 @@ export class RingOutputRail {
       this.#paymentData,
     );
     checkCompactSuffix(proofOutputs);
+    // SPP leads with the change it adds, an anonymous frame takes a zero one when nothing returns.
+    const added = new Set(Array.from({ length: prepared.senderOutputCount }, (_, slot) => slot));
+    const spare = anonymous && added.size === 0 ? spareSlot(proofOutputs) : -1;
+    const ringProgramId = proofOutputs[spare]?.ringProgramId;
+    const zeroChange =
+      ringProgramId === undefined
+        ? undefined
+        : createProofOutput({
+            ownerAddress: sender,
+            asset: input.zeroChangeAsset ?? SOL_MINT,
+            amount: 0n,
+            ringProgramId,
+          });
+    if (zeroChange !== undefined) added.add(spare);
+    const led = leadChange(
+      proofOutputs.map((output, slot) => (slot === spare ? (zeroChange ?? output) : output)),
+      sender,
+      added,
+    );
     const planned = anonymous
-      ? leadChange(withSenderChange(proofOutputs, sender), sender).map((output) =>
+      ? led.map((output) =>
           // The anonymous circuit folds the zero tag into every padding owner.
           output.isDummy()
             ? withOutputFields(output, { ownerTag: new Uint8Array(32) as Bytes32 })
             : output,
         )
-      : proofOutputs;
+      : led;
     const outputs = ringBlindedOutputs({
       outputs: planned,
       firstNullifier: this.#firstNullifier,

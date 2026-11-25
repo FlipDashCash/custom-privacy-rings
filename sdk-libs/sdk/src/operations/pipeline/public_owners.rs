@@ -9,14 +9,12 @@ use spr_transaction::{utxo::SppProofInputUtxo, TransactionError};
 use zolana_ring_transaction::RingDelivery;
 
 use super::{
-    anonymous::{
-        anonymous_plan, check_payment_ring, payment_salts, AnonymousPayment, SenderChange,
-    },
+    anonymous::{anonymous_plan, check_payment_ring, payment_salts, AnonymousPayment},
     canonical_shape,
     owner::Owner,
     sealed, OutputSeal, Rail, RailKind, RingTransfer, SealedOutputs, Spend, Staged,
 };
-use crate::{CustomRing, CustomRingConfig, RingError};
+use crate::{CustomRingConfig, RingError};
 
 /// The named wallet becomes public, recipients stay hidden on an anonymous ring.
 pub struct PublicOwners<'a> {
@@ -97,7 +95,6 @@ impl RingTransfer<PublicOwners<'_>> {
 impl PublicOwners<'_> {
     pub(super) async fn stage(
         &self,
-        ring: CustomRing,
         config: &CustomRingConfig,
         program_salt: Option<Salt>,
     ) -> Result<Staged<'_>, RingError> {
@@ -106,7 +103,7 @@ impl PublicOwners<'_> {
             return self.owner.stage_signers(sender, config, program_salt);
         }
         let SealedOutputs { rail, proof_inputs } =
-            self.seal_anonymous(ring, &sender, config, program_salt)?;
+            self.seal_anonymous(&sender, config, program_salt)?;
         Ok(Staged {
             authority: self.owner.authority()?,
             owner_signers: proof_inputs.owner_signer_pubkeys()?,
@@ -122,13 +119,12 @@ impl PublicOwners<'_> {
 
     pub(super) fn seal(
         &self,
-        ring: CustomRing,
         config: &CustomRingConfig,
         program_salt: Option<Salt>,
     ) -> Result<SealedOutputs, RingError> {
         let sender = self.sender()?;
         match config.mode {
-            RingMode::Anonymous => self.seal_anonymous(ring, &sender, config, program_salt),
+            RingMode::Anonymous => self.seal_anonymous(&sender, config, program_salt),
             _ => self.owner.seal_signers(&sender, config, program_salt),
         }
     }
@@ -153,20 +149,21 @@ impl PublicOwners<'_> {
 
     fn seal_anonymous(
         &self,
-        ring: CustomRing,
         sender: &ShieldedAddress,
         config: &CustomRingConfig,
         program_salt: Option<Salt>,
     ) -> Result<SealedOutputs, RingError> {
         self.owner.check_settlement_accounts()?;
-        let change = SenderChange {
-            shape: self.owner.shape,
-            sender,
-            ring: ring.program_id(),
-        };
-        let transaction = match program_salt {
-            Some(_) => change.ensure_in_spent_asset(self.owner.transaction.clone())?,
-            None => change.ensure(self.owner.transaction.clone())?,
+        let transaction = self.owner.transaction.clone();
+        let plan = anonymous_plan(&self.payments);
+        // A program circuit keeps its zero change in the asset it spent.
+        let spent = transaction
+            .inputs()
+            .iter()
+            .find(|input| input.utxo.amount > 0);
+        let plan = match program_salt.and(spent) {
+            Some(input) => plan.with_change_asset(input.utxo.asset),
+            None => plan,
         };
         let shape = match self.owner.shape {
             Some(shape) => shape,
@@ -176,7 +173,7 @@ impl PublicOwners<'_> {
             keys: self.owner.sender,
             sender,
             auditor: config.auditor_pubkey,
-            delivery: RingDelivery::Anonymous(Box::new(anonymous_plan(&self.payments))),
+            delivery: RingDelivery::Anonymous(Box::new(plan)),
             shape,
             program_salt,
         }

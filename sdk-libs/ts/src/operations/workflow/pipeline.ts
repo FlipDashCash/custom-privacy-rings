@@ -5,6 +5,7 @@
 import {
   downgradeRoleToNonSigner,
   getBase64Decoder,
+  isOffCurveAddress,
   type AccountMeta,
   type Instruction,
 } from "@solana/kit";
@@ -888,9 +889,9 @@ export async function ringTransactInstruction(
     ];
   }
   if (accounts.coSignerForm === "approval")
-    // A program owner signs inside its program's call, the payer signs the transaction.
+    // An owner off the curve signs inside its program's call alone, every other owner signs the transaction.
     sppAccounts = sppAccounts.map((account) =>
-      account.address !== accounts.payer && accounts.ownerSigners.includes(account.address)
+      accounts.ownerSigners.includes(account.address) && isOffCurveAddress(account.address)
         ? { address: account.address, role: downgradeRoleToNonSigner(account.role) }
         : account,
     );

@@ -447,7 +447,6 @@ impl HiddenOwner {
 impl Anonymous<'_> {
     pub(super) async fn stage<R: AsyncRpc + ?Sized>(
         &self,
-        ring: CustomRing,
         client: &R,
         config: &CustomRingConfig,
     ) -> Result<Staged<'_>, RingError> {
@@ -475,12 +474,7 @@ impl Anonymous<'_> {
         }
         .owners(client)
         .await?;
-        let transaction = SenderChange {
-            shape: self.owner.shape,
-            sender: &sender,
-            ring: ring.program_id(),
-        }
-        .ensure(self.owner.transaction.clone())?;
+        let transaction = self.owner.transaction.clone();
         let shape = match self.owner.shape {
             Some(shape) => shape,
             None => canonical_shape(&transaction, &sender)?,
@@ -864,60 +858,5 @@ fn exit_refused(refusal: CustomRingError, destination: Address) -> RingError {
             destination,
             refusal,
         },
-    }
-}
-
-/// A zero SOL change fills a spare slot of a transfer that returns nothing, a change slot costs less than a dummy with a body.
-pub(super) struct SenderChange<'a> {
-    pub shape: Option<Shape>,
-    pub sender: &'a ShieldedAddress,
-    pub ring: Address,
-}
-
-impl SenderChange<'_> {
-    pub(super) fn ensure(
-        self,
-        transaction: ConfidentialTransaction,
-    ) -> Result<ConfidentialTransaction, RingError> {
-        self.ensure_in(Mint::SOL, transaction)
-    }
-
-    /// A program circuit keeps its zero change in the asset it spent.
-    pub(super) fn ensure_in_spent_asset(
-        self,
-        transaction: ConfidentialTransaction,
-    ) -> Result<ConfidentialTransaction, RingError> {
-        let spent = transaction
-            .inputs()
-            .iter()
-            .find(|input| input.utxo.amount > 0)
-            .map_or(Mint::SOL, |input| input.utxo.asset);
-        self.ensure_in(spent, transaction)
-    }
-
-    fn ensure_in(
-        self,
-        asset: Mint,
-        mut transaction: ConfidentialTransaction,
-    ) -> Result<ConfidentialTransaction, RingError> {
-        let declared = transaction.outputs().len();
-        let mut probe = transaction.clone();
-        let shape = match self.shape {
-            Some(shape) => shape,
-            None => canonical_shape(&probe, self.sender)?,
-        };
-        probe.pad_utxos(shape, self.sender)?;
-        let returns = probe.outputs()[declared..]
-            .iter()
-            .any(|output| output.owner_address == Some(*self.sender));
-        if !returns && declared < shape.n_outputs() {
-            transaction.add_output_utxo(SppProofOutputUtxo {
-                owner_address: Some(*self.sender),
-                asset,
-                ring_program_id: Some(self.ring),
-                ..Default::default()
-            })?;
-        }
-        Ok(transaction)
     }
 }
