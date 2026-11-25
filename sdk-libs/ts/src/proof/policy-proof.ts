@@ -326,7 +326,7 @@ export function relayListSalts(
 }
 
 /** An address and an explicit salt that differ for one owner are refused, neither wins. */
-function saltsByOwner(salts: readonly RingListSalt[]): ReadonlyMap<string, Bytes32> {
+export function saltsByOwner(salts: readonly RingListSalt[]): ReadonlyMap<string, Bytes32> {
   const byOwner = new Map<string, Bytes32>();
   for (const { owner, salt } of salts) {
     const held = byOwner.get(bytesKey(owner));

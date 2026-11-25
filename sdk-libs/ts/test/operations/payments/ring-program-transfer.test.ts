@@ -350,6 +350,89 @@ describe("builder lines", () => {
   );
 });
 
+describe("builder steps", () => {
+  beforeAll(initializePoseidon);
+
+  const address = (fixture: Fixture, paid: ShieldedKeypair, listSalt = filled(1)) => {
+    fixture.enroll(paid.shieldedAddress());
+    return new RingAddress({
+      recipient: paid.shieldedAddress(),
+      ringProgramId: fixture.ringProgramId,
+      listSalt,
+    });
+  };
+  const application = { hash: filled(0x11), bytes: Uint8Array.of(1, 2, 3) };
+
+  it("refuses a second line over a transfer that holds a ring payment", async () => {
+    const fixture = await ringFixture();
+    const owner = ShieldedKeypair.generate();
+    const { transfer, rail } = ownerRail(
+      fixture,
+      owner,
+      noteInput(owner, 10n, fixture.ringProgramId),
+    );
+    const paying = rail.spendPublic(owner.shieldedAddress().solanaAddress()).withPayment({
+      to: address(fixture, ShieldedKeypair.generate()),
+      asset: SOL_MINT,
+      amount: 4n,
+      reply: null,
+      data: { application },
+    });
+    expect(() =>
+      CustomRingTransfer.new({
+        ringProgramId: fixture.ringProgramId,
+        keys: walletKeys(owner),
+        transfer,
+        assets,
+      }),
+    ).toThrow(ringError("RING_TRANSFER_SUPERSEDED"));
+    const plan = await paying.planForProgram(fixture.client);
+    expect(plan.outputs.map((output) => hex(output.dataHash ?? new Uint8Array(32)))).toContain(
+      hex(application.hash),
+    );
+  });
+
+  it.each(["public", "hidden"] as const)(
+    "leaves a %s builder as it was when a payment is refused",
+    async (rail) => {
+      const fixture = await ringFixture({ mode: "anonymous" });
+      const signing = SigningKey.generate();
+      const owner = ShieldedKeypair.fromKeypair(signing);
+      const [paid, held] = [ShieldedKeypair.generate(), ShieldedKeypair.generate()];
+      const base = ownerRail(fixture, owner, noteInput(owner, 10n, fixture.ringProgramId)).rail;
+      const builder =
+        rail === "public"
+          ? base.spendPublic(owner.shieldedAddress().solanaAddress())
+          : base.withAnonymousSigner(signingKeySpendSigner(signing));
+      const to = address(fixture, paid);
+      const payment = { to, asset: SOL_MINT, amount: 4n, reply: null };
+      // A negative amount, a zero data hash and a salt the builder holds otherwise each write nothing.
+      expect(() => builder.withPayment({ ...payment, amount: -1n })).toThrow();
+      expect(() =>
+        builder.withPayment({
+          ...payment,
+          data: { application: { ...application, hash: small(0) } },
+        }),
+      ).toThrow(ringError("RING_NOTE_DATA_UNBOUND"));
+      const salted = builder.withPayment({ ...payment, to: address(fixture, held, filled(2)) });
+      expect(() =>
+        salted.withPayment({ ...payment, to: address(fixture, held, filled(3)) }),
+      ).toThrow(ringError("RING_ADDRESS_MISMATCH"));
+
+      const proven = await salted.withPayment(payment).prove(fixture.client);
+      const owners = proven.outputs
+        .filter((output) => output.ownerAddress !== undefined && output.amount > 0n)
+        .map((output) => hex(output.ownerAddress?.toBytes() ?? new Uint8Array()));
+      expect(owners).toEqual(
+        [owner, held, paid].map((keypair) => hex(keypair.shieldedAddress().toBytes())),
+      );
+      expect(proven.outputs.map((output) => output.amount).filter((amount) => amount > 0n)).toEqual(
+        [2n, 4n, 4n],
+      );
+    },
+  );
+});
+
 describe("payment address list salts", () => {
   beforeAll(initializePoseidon);
 
@@ -405,8 +488,7 @@ describe("payment address list salts", () => {
       if (request?.kind !== "transfer") throw new Error("a transfer request");
       expect(request.ownerEntries.map((entry) => hex(entry.listSalt))).toContain(hex(paidSalt));
 
-      const disagreeing = transfer([{ owner: member(paid), salt: filled(9) }]);
-      await expect(disagreeing.prove(fixture.client)).rejects.toThrow(
+      expect(() => transfer([{ owner: member(paid), salt: filled(9) }])).toThrow(
         ringError("RING_ADDRESS_MISMATCH"),
       );
     },

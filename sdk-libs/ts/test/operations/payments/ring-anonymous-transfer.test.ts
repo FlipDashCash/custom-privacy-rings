@@ -1254,22 +1254,21 @@ describe("anonymous ring exits and entries", () => {
       const fixture = await anonymousRing();
       const sender = anonymousSender();
       const to = await addressOf(fixture, ShieldedKeypair.generate());
-      await expect(
-        rail({ fixture, sender, transfer: spend(fixture, sender) })
-          .withPayment({
-            to,
-            asset: SOL_MINT,
-            amount: 400n,
-            reply: null,
-            data: {
-              application: {
-                hash: new Uint8Array(32) as Bytes32,
-                bytes: new TextEncoder().encode("app"),
-              },
+      const built = rail({ fixture, sender, transfer: spend(fixture, sender) });
+      expect(() =>
+        built.withPayment({
+          to,
+          asset: SOL_MINT,
+          amount: 400n,
+          reply: null,
+          data: {
+            application: {
+              hash: new Uint8Array(32) as Bytes32,
+              bytes: new TextEncoder().encode("app"),
             },
-          })
-          .prove(fixture.client),
-      ).rejects.toThrow(ringError("RING_NOTE_DATA_UNBOUND"));
+          },
+        }),
+      ).toThrow(ringError("RING_NOTE_DATA_UNBOUND"));
       noProofs(fixture);
     });
   });

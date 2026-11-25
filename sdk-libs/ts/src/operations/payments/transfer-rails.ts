@@ -79,7 +79,12 @@ import {
   type FrameExtensions,
 } from "../../protocol/transaction/transact.js";
 import { RingError, RingProgramError } from "../../protocol/error.js";
-import { chargedOutflowsOf, relayListSalts, type RingListSalt } from "../../proof/policy-proof.js";
+import {
+  chargedOutflowsOf,
+  relayListSalts,
+  saltsByOwner,
+  type RingListSalt,
+} from "../../proof/policy-proof.js";
 import { transferApprovalOf } from "../../proof/transfer-proof.js";
 import { isDefaultRingNote } from "../../proof/audit-proof.js";
 import { anonymousPartyIdentities } from "../../protocol/membership/parties.js";
@@ -174,10 +179,13 @@ export interface CustomRingTransferInput {
   readonly program?: ProgramCommitment;
 }
 
-/** One line of builder values per `ConfidentialTransfer`, a value behind `steps.taken` is superseded. */
-type Owned = CustomRingTransferInput & Readonly<{ steps: { taken: number }; step: number }>;
+/** `bound` once a ring step wrote into the transfer, its line alone then holds what the outputs carry. */
+type Steps = { taken: number; bound: boolean };
 
-const lines = new WeakMap<ConfidentialTransfer, { taken: number }>();
+/** One line of builder values per `ConfidentialTransfer`, a value behind `steps.taken` is superseded. */
+type Owned = CustomRingTransferInput & Readonly<{ steps: Steps; step: number }>;
+
+const lines = new WeakMap<ConfidentialTransfer, Steps>();
 
 /** Rust consumes a builder on each step, here a value another step has passed is refused. */
 function live<T extends Owned>(owner: T): T {
@@ -185,18 +193,21 @@ function live<T extends Owned>(owner: T): T {
   return owner;
 }
 
-/** Taken before a step changes the shared transfer, every earlier value is then superseded. */
+/** Taken once a step changed the shared transfer, every earlier value is then superseded. */
 function advanced<T extends Owned>(owner: T): T {
   owner.steps.taken += 1;
+  owner.steps.bound = true;
   return { ...owner, step: owner.steps.taken };
 }
 
-/** A payment's address carries its recipient's list salt, none under the zero key. */
+/** A payment's address carries its recipient's list salt, none under the zero key, a salt the builder holds otherwise is refused. */
 function withPaymentSalt<T extends Owned>(owner: T, payment: AnonymousPayment): T {
   const { recipient, listSalt } = payment.to;
   if (isZero(listSalt)) return owner;
   const salt = { owner: recipient.signingPublicKey.ownerProofInputHash(), salt: listSalt };
-  return { ...owner, listSalts: [...(owner.listSalts ?? []), salt] };
+  const listSalts = [...(owner.listSalts ?? []), salt];
+  saltsByOwner(listSalts);
+  return { ...owner, listSalts };
 }
 
 /** The confidential rail, the owner signs its spends in public or inside the proof, Rust `RingTransfer<Owner>`. */
@@ -223,16 +234,14 @@ export class CustomRingTransfer {
     return live(this.#held);
   }
 
-  /** A second line over one `transfer` supersedes the first. */
+  /** A second line supersedes the first until a ring step wrote into `transfer`, then it is refused. */
   static new(input: CustomRingTransferInput): CustomRingTransfer {
+    const steps = lines.get(input.transfer) ?? { taken: 0, bound: false };
+    if (steps.bound) throw new RingError("RING_TRANSFER_SUPERSEDED");
     input.transfer.withRingProgramId(input.ringProgramId);
-    const steps = lines.get(input.transfer) ?? { taken: 0 };
     lines.set(input.transfer, steps);
-    return new CustomRingTransfer(
-      advanced({ ...input, steps, step: steps.taken }),
-      undefined,
-      undefined,
-    );
+    steps.taken += 1;
+    return new CustomRingTransfer({ ...input, steps, step: steps.taken }, undefined, undefined);
   }
 
   /** The frame carries a digest of its totals, the opening reads as `approvalOpening`. */
@@ -699,11 +708,11 @@ export class AnonymousTransfer {
         details: { address: payment.to.ringProgramId, ring: this.#owner.ringProgramId },
       });
     const fields = this.#fields();
-    const owner = withPaymentSalt(advanced(fields.owner), payment);
-    const declared = declarePayment(owner.transfer, payment);
+    const salted = withPaymentSalt(fields.owner, payment);
+    const declared = declarePayment(salted.transfer, payment);
     return new AnonymousTransfer({
       ...fields,
-      owner,
+      owner: advanced(salted),
       payments: Object.freeze([...this.#payments, declared]),
     });
   }
@@ -729,9 +738,8 @@ export class AnonymousTransfer {
   /** Pads to `shape`, else the transfer takes the smallest supported shape. */
   withShape(shape: Shape): AnonymousTransfer {
     const fields = this.#fields();
-    const owner = advanced(fields.owner);
-    owner.transfer.withShape(shape);
-    return new AnonymousTransfer({ ...fields, owner, shape });
+    fields.owner.transfer.withShape(shape);
+    return new AnonymousTransfer({ ...fields, owner: advanced(fields.owner), shape });
   }
 
   /** A missing exit token account must be the owner's associated token account. */
@@ -1085,10 +1093,10 @@ export class PublicOwnerTransfer {
   /** Every ring output owner other than the wallet is paid here, Rust `with_payment`. */
   withPayment(payment: AnonymousPayment): PublicOwnerTransfer {
     checkPaymentRing(payment, this.#owner.ringProgramId);
-    const owner = withPaymentSalt(advanced(this.#owner), payment);
-    const declared = declarePayment(owner.transfer, payment);
+    const salted = withPaymentSalt(this.#owner, payment);
+    const declared = declarePayment(salted.transfer, payment);
     return new PublicOwnerTransfer({
-      owner,
+      owner: advanced(salted),
       withdrawal: this.#withdrawal,
       wallet: this.#wallet,
       inProofOwner: this.#inProofOwner,

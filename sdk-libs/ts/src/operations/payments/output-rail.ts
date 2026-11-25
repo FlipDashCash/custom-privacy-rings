@@ -252,18 +252,28 @@ export function outputRecord(output: ProofOutputUtxo): OutputRecord {
   });
 }
 
-/** Declares `payment` under an address object of its own, the output it becomes keeps that object as its owner. */
+/** Every check runs ahead of the one write, `payment` then holds an address object its output keeps as its owner. */
 export function declarePayment(
   transfer: ConfidentialTransfer,
   payment: AnonymousPayment,
 ): AnonymousPayment {
   const { ringProgramId, listSalt } = payment.to;
   const recipient = ShieldedAddress.fromBytes(payment.to.recipient.toBytes());
-  transfer.sendToRing(recipient, payment.asset, payment.amount, ringProgramId);
-  return Object.freeze({
+  const declared = Object.freeze({
     ...payment,
     to: new RingAddress({ recipient, ringProgramId, listSalt }),
   });
+  checkDataBound(payment.data);
+  transfer.sendToRing(recipient, payment.asset, payment.amount, ringProgramId);
+  return declared;
+}
+
+/** SPP commits the application hash unchecked, a zero one binds no data. */
+function checkDataBound(data: AnonymousPayment["data"], slotIndex?: number): void {
+  if (data?.application !== undefined && isZero(data.application.hash))
+    throw new RingError("RING_NOTE_DATA_UNBOUND", {
+      details: slotIndex === undefined ? {} : { slotIndex },
+    });
 }
 
 /** Each payment's data goes to the output that holds its owner object, whatever slot the frame gives it. */
@@ -274,9 +284,8 @@ function withPaymentData(
   const bound = outputs.map((output, slot) => {
     const data = payments.find((payment) => payment.to.recipient === output.ownerAddress)?.data;
     if (data === undefined) return output;
+    checkDataBound(data, slot);
     const { ringDataHash, application } = data;
-    if (application !== undefined && isZero(application.hash))
-      throw new RingError("RING_NOTE_DATA_UNBOUND", { details: { slotIndex: slot } });
     const hashed = ringDataHash === undefined ? output : withOutputFields(output, { ringDataHash });
     return application === undefined
       ? hashed
