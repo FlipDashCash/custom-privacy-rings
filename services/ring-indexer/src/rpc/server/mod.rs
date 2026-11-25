@@ -51,10 +51,7 @@ pub const RING_METHODS: [&str; 8] = [
 ];
 
 const MAX_BODY_BYTES: u32 = TEN_MB_SIZE_BYTES;
-const PHOTON_LIMITS: ForwardLimits = ForwardLimits {
-    request_bytes: MAX_BODY_BYTES as usize,
-    timeout: Duration::from_secs(90),
-};
+const PHOTON_TIMEOUT: Duration = Duration::from_secs(90);
 
 struct Photon(UpstreamUrl);
 
@@ -92,7 +89,14 @@ impl Server {
                 inner,
                 readiness: readiness.clone(),
             }))
-            .layer(ForwardLayer::new(Photon(photon), PHOTON_LIMITS)?)
+            .layer(ForwardLayer::new(
+                Photon(photon),
+                ForwardLimits {
+                    request_bytes: MAX_BODY_BYTES as usize,
+                    timeout: PHOTON_TIMEOUT,
+                    concurrent: max_connections as usize,
+                },
+            )?)
             .layer(MethodPathLayer {
                 max_body_size: MAX_BODY_BYTES as usize,
             });
