@@ -75,6 +75,7 @@ Added
 - `TransferApproval` digests, encodes and parses a transfer approval and `approveTransferInstruction` builds its instruction, `RingProgramError` names `missingTransferApproval`, `transferApprovalOtherCall`, `transferApprovalOtherPosition` and `approvalNotTopLevel` at 8270 to 8273, and `RingRpcRefusal` names `approvedCallNotOnce` at -32176.
 - `fetchSppRingConfig` reads a ring's `activated`, `paused` and `ringAuthorityTransactIsEnabled` flags, `closeRingProgramInstruction` closes a ring program with its program data, and the main entry exports `RING_COSIGN_APPROVE_OUTFLOW` and `RING_COSIGN_APPROVE_WITHDRAWAL`.
 - `ringCapabilities(client)` reports for each `RING_FEATURES` entry whether the prover serves its pinned keys and the reason when it does not, `enroll` names the owner's register key and the apply enrollments keys Ring RPC proves with, and `merge` also needs SPP's `merge_ring` keys.
+- `buildRingTransferTransaction`, `createRingTransferSubmission` and `prepareRingTransferRelay` take up to `MAX_RING_TRANSFER_PAYMENTS` (15) `payments` that the approval handler sees as one `ringMultiTransfer` intent, and an anonymous spend past seven payments selects at most the four inputs of the sixteen-output key.
 
 Changed
 

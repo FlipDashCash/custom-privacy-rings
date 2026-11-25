@@ -2,6 +2,7 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 
 import type { Address, Bytes32 } from "@heliuslabs/spr";
+import { ShieldedAddress } from "@heliuslabs/spr/keypair";
 import {
   addressBytes,
   checkIntentApproval,
@@ -31,7 +32,21 @@ export type RingAnonymousTransferIntent = Readonly<{
   defaultFunding: bigint;
 }>;
 
-export type RingTransactionIntent = TransactionIntent | RingAnonymousTransferIntent;
+/** Several payments of one asset inside the ring, each one output of the transfer. */
+export type RingMultiTransferIntent = Readonly<{
+  kind: "ringMultiTransfer";
+  ringProgramId: Address;
+  asset: Address;
+  /** In the order the caller named them, at least two. */
+  payments: readonly Readonly<{ recipient: ShieldedAddress | RingAddress; amount: bigint }>[];
+  /** Default-ring UTXO value the payments move into the ring. */
+  defaultFunding: bigint;
+}>;
+
+export type RingTransactionIntent =
+  | TransactionIntent
+  | RingAnonymousTransferIntent
+  | RingMultiTransferIntent;
 
 export type RingApprovalRequest = Omit<ApprovalRequest, "intent"> &
   Readonly<{ intent: RingTransactionIntent }>;
@@ -41,12 +56,15 @@ export type RingApprovalHandler = (request: RingApprovalRequest) => Promise<Inte
 /** Separates ring intent hashes from core's `"zolana/intent/v1"` and its kind tags. */
 const RING_INTENT_DOMAIN = "zolana-custom-rings/intent/v1";
 const RING_ANONYMOUS_TRANSFER_TAG = 1;
+const RING_MULTI_TRANSFER_TAG = 2;
+const MAX_U64 = (1n << 64n) - 1n;
 
 export const approveRingUnattended: RingApprovalHandler = (request) =>
   Promise.resolve(Object.freeze({ intentHash: ringIntentHash(request.intent) }));
 
 /** The pinned `intentHash` for every SPP kind. */
 export function ringIntentHash(intent: RingTransactionIntent): Bytes32 {
+  if (intent.kind === "ringMultiTransfer") return multiTransferHash(intent);
   if (intent.kind !== "ringAnonymousTransfer") return intentHash(intent);
   if (
     !(intent.recipient instanceof RingAddress) ||
@@ -71,7 +89,7 @@ export function checkRingIntentApproval(
   intent: RingTransactionIntent,
   mismatch: (field: string) => Error,
 ): void {
-  if (intent.kind !== "ringAnonymousTransfer") {
+  if (intent.kind !== "ringAnonymousTransfer" && intent.kind !== "ringMultiTransfer") {
     checkIntentApproval(approval, intent, mismatch);
     return;
   }
@@ -86,6 +104,10 @@ export function checkRingPreparedTransfer(
   intent: RingTransactionIntent,
   mismatch: (field: string) => Error,
 ): void {
+  if (intent.kind === "ringMultiTransfer") {
+    checkPaymentOutputs(prepared, intent, mismatch);
+    return;
+  }
   // The ring binds an entry's change to itself, so the approved amount counts the change as entered value.
   if (intent.kind === "ringEntry") {
     checkPreparedTransfer({ ...prepared, senderOutputCount: 0 }, intent, mismatch);
@@ -106,4 +128,62 @@ export function checkRingPreparedTransfer(
       : intent,
     mismatch,
   );
+}
+
+/** Every payment names a recipient of the ring and a nonzero u64 amount. */
+function multiTransferHash(intent: RingMultiTransferIntent): Bytes32 {
+  const { payments } = intent;
+  if (payments.length < 2 || payments.length > 0xff)
+    throw new RingError("RING_INTENT_MISMATCH", { details: { field: "payments" } });
+  const hash = sha256.create();
+  hash.update(new TextEncoder().encode(RING_INTENT_DOMAIN));
+  hash.update(Uint8Array.of(RING_MULTI_TRANSFER_TAG));
+  hash.update(addressBytes(intent.ringProgramId, "ringProgramId"));
+  hash.update(addressBytes(intent.asset, "asset"));
+  hash.update(Uint8Array.of(payments.length));
+  for (const { recipient, amount } of payments) {
+    if (amount <= 0n || amount > MAX_U64)
+      throw new RingError("RING_INTENT_MISMATCH", { details: { field: "amount" } });
+    let bytes: Uint8Array;
+    if (recipient instanceof ShieldedAddress) bytes = recipient.toBytes();
+    else if (recipient instanceof RingAddress && recipient.ringProgramId === intent.ringProgramId)
+      bytes = recipient.toBytes();
+    else throw new RingError("RING_INTENT_MISMATCH", { details: { field: "recipient" } });
+    hash.update(Uint8Array.of(recipient instanceof RingAddress ? 1 : 0));
+    hash.update(Uint8Array.of(bytes.length >> 8, bytes.length & 0xff));
+    hash.update(bytes);
+    hash.update(u64be(amount));
+  }
+  hash.update(u64be(intent.defaultFunding));
+  return hash.digest() as Bytes32;
+}
+
+/** Each payment takes one output of the ring in any order, and nothing else leaves the sender. */
+function checkPaymentOutputs(
+  prepared: PreparedTransfer,
+  intent: RingMultiTransferIntent,
+  mismatch: (field: string) => Error,
+): void {
+  if (prepared.interfaceTransfers.length > 0) throw mismatch("settlements");
+  const unmatched = prepared.outputs
+    .slice(prepared.senderOutputCount)
+    .filter((output) => !output.isDummy());
+  if (unmatched.length !== intent.payments.length) throw mismatch("payments");
+  for (const { recipient, amount } of intent.payments) {
+    const owner = (recipient instanceof RingAddress ? recipient.recipient : recipient).toBytes();
+    const index = unmatched.findIndex(
+      (output) =>
+        output.ownerAddress !== undefined &&
+        equalBytes(output.ownerAddress.toBytes(), owner) &&
+        output.amount === amount &&
+        output.asset === intent.asset &&
+        output.ringProgramId === intent.ringProgramId,
+    );
+    if (index < 0) throw mismatch("payments");
+    unmatched.splice(index, 1);
+  }
+  const defaultFunding = prepared.inputs
+    .filter((input) => !input.isDummy() && input.utxo.ringProgramId === undefined)
+    .reduce((sum, input) => sum + input.utxo.amount, 0n);
+  if (defaultFunding !== intent.defaultFunding) throw mismatch("defaultFunding");
 }

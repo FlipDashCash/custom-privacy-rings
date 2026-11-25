@@ -207,6 +207,7 @@ export type {
 export { approveRingUnattended, ringIntentHash } from "../protocol/transaction/intent.js";
 export type {
   RingAnonymousTransferIntent,
+  RingMultiTransferIntent,
   RingApprovalHandler,
   RingApprovalRequest,
   RingTransactionIntent,
@@ -344,6 +345,7 @@ export type {
 } from "../operations/workflow/pipeline.js";
 export type { BoundPolicy, BoundRoot, PolicyReadClient } from "../proof/policy-proof.js";
 export {
+  MAX_RING_TRANSFER_PAYMENTS,
   buildRingEntryTransaction,
   buildRingExitTransaction,
   buildRingTransferTransaction,
@@ -373,9 +375,11 @@ export type {
   RingRelaySpendParams,
   RingEntryTransactionParams,
   RingExitTransactionParams,
+  RingMultiTransferParams,
   RingSpendParams,
   RingTransferClient,
   RingTransfersInput,
+  RingTransferPayment,
   RingTransferTransactionParams,
   RingWithdrawalTransactionParams,
 } from "../operations/payments/transfer.js";
