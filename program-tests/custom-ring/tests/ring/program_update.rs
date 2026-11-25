@@ -240,16 +240,23 @@ impl ProvenStep {
     }
 }
 
-/// Ring RPC refuses an input it has not ingested yet, the wallet asks again.
+/// Ring RPC refuses an input it has not ingested yet and a client above its rate, the wallet asks again.
 fn co_sign_once_read(
     ring_rpc: &CoSigningRingRpc,
     request: &CoSignTransactionRequest,
 ) -> Result<CoSignTransactionResponse> {
-    let unread = (CoSignError::LimitsUnavailable as i32).to_string();
+    let retried = [
+        (CoSignError::LimitsUnavailable as i32).to_string(),
+        "429 Too Many Requests".to_owned(),
+    ];
     wait_for("Ring RPC to read the inputs", || {
         match ring_rpc.co_sign(request.clone()) {
             Ok(co_signed) => Ok(Probe::Ready(co_signed)),
-            Err(refusal) if refusal.to_string().contains(&unread) => {
+            Err(refusal)
+                if retried
+                    .iter()
+                    .any(|sign| refusal.to_string().contains(sign)) =>
+            {
                 Ok(Probe::Retry(refusal.into()))
             }
             Err(refusal) => Err(refusal.into()),
