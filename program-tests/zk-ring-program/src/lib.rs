@@ -16,6 +16,11 @@ pub mod verifier;
 
 pub const OWNER_SEED: &[u8] = b"owner";
 
+/// One PDA per ring, a signature for one ring opens no note on another.
+pub fn owner_seeds(ring_program: &pinocchio::Address) -> [&[u8]; 2] {
+    [OWNER_SEED, ring_program.as_ref()]
+}
+
 pub mod tag {
     pub const CREATE: u8 = 0;
     pub const UPDATE: u8 = 1;

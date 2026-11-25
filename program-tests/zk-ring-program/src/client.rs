@@ -1,10 +1,11 @@
+use pinocchio::Address;
 use solana_instruction::{AccountMeta, Instruction};
 use spr_program::{CompressedProof, ProgramOwner};
 
-use crate::{tag, ID, OWNER_SEED};
+use crate::{owner_seeds, tag, ID};
 
-pub fn owner() -> ProgramOwner {
-    ProgramOwner::find(&[OWNER_SEED], &ID)
+pub fn owner(ring_program: &Address) -> ProgramOwner {
+    ProgramOwner::find(&owner_seeds(ring_program), &ID)
 }
 
 /// A ring transfer forwarded under the proof of `tag`.
@@ -52,5 +53,16 @@ impl ProvenInstruction {
             ]
             .concat(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_ring_has_its_own_owner() {
+        let [ring, other] = [42, 43].map(|byte| Address::new_from_array([byte; 32]));
+        assert_ne!(owner(&ring).pda(), owner(&other).pda());
     }
 }

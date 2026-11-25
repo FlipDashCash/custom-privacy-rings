@@ -150,7 +150,7 @@ struct Program {
 impl Program {
     fn new() -> Self {
         let viewer = keypair(1);
-        let owner = owner();
+        let owner = owner(&RING_PROGRAM);
         let address = owner.address(viewer.viewing_pubkey()).unwrap();
         let keys = LocalShieldedKeys::new(
             address,
@@ -243,8 +243,10 @@ impl Step {
 }
 
 struct Case {
-    /// An anonymous seal moves its own change to slot 0, a signer seal appends it last.
-    change_declared: bool,
+    /// A signer seal adds no zero change, the client declares the one the circuit outputs.
+    zero_change_declared: bool,
+    /// The circuit outputs the state ahead of the payment.
+    payment_first: bool,
     program: Program,
     recipient: ShieldedAddress,
     mint: Mint,
@@ -257,7 +259,8 @@ impl Case {
     fn new(mode: RingMode, mint: Mint, step: Step) -> Self {
         let program = Program::new();
         Self {
-            change_declared: mode == RingMode::Confidential,
+            zero_change_declared: mode == RingMode::Confidential && step.paid() == HELD,
+            payment_first: false,
             recipient: keypair(2).shielded_address().unwrap(),
             mint,
             state: program.note(mint, state_output(&Counter { count: 4 }), 0),
@@ -299,7 +302,7 @@ impl Case {
         }
     }
 
-    /// The ring transfer of the step, the change first on both rails.
+    /// The ring transfer of the step, the SDK leads with the change on both rails.
     fn transfer(&self) -> PublicOwnerTransfer<'_> {
         let (inputs, count) = match self.step {
             Step::Create => (vec![self.token.clone()], 0),
@@ -307,34 +310,37 @@ impl Case {
         };
         let mut transaction =
             ConfidentialTransaction::new_with_ring(inputs, PAYER, RING_PROGRAM).unwrap();
-        if self.change_declared {
+        if self.zero_change_declared {
             transaction
                 .add_output_utxo(SppProofOutputUtxo {
                     owner_address: Some(self.program.address),
                     asset: self.mint,
-                    amount: HELD - self.step.paid(),
                     ring_program_id: Some(RING_PROGRAM),
                     ..Default::default()
                 })
                 .unwrap();
         }
-        let transfer = CustomRingTransfer::new(CustomRingTransferInput {
-            ring: CustomRing::new(RING_PROGRAM),
-            sender: &self.program.keys,
-            nullifier_key: Some(&self.program.nullifier_key),
-            transaction,
-        })
-        .spend_public(*self.program.owner.pda())
-        .with_shape(SHAPE)
-        .unwrap()
-        .with_payment(self.pay(self.program.address, 0, state_output(&Counter { count })))
-        .unwrap();
-        match self.step.paid() {
-            0 => transfer,
-            paid => transfer
-                .with_payment(self.pay(self.recipient, paid, SppProofOutputUtxo::default()))
-                .unwrap(),
-        }
+        let state = self.pay(self.program.address, 0, state_output(&Counter { count }));
+        let paid = match self.step.paid() {
+            0 => None,
+            paid => Some(self.pay(self.recipient, paid, SppProofOutputUtxo::default())),
+        };
+        let payments: Vec<_> = match self.payment_first {
+            true => paid.into_iter().chain([state]).collect(),
+            false => [state].into_iter().chain(paid).collect(),
+        };
+        payments.into_iter().fold(
+            CustomRingTransfer::new(CustomRingTransferInput {
+                ring: CustomRing::new(RING_PROGRAM),
+                sender: &self.program.keys,
+                nullifier_key: Some(&self.program.nullifier_key),
+                transaction,
+            })
+            .spend_public(*self.program.owner.pda())
+            .with_shape(SHAPE)
+            .unwrap(),
+            |transfer, payment| transfer.with_payment(payment).unwrap(),
+        )
     }
 
     /// The program's own run over the plan's seed and output tree.
@@ -452,7 +458,7 @@ async fn the_program_circuits_commit_the_sealed_ring_transfer_on_both_rails() {
 }
 
 #[tokio::test]
-async fn a_commitment_under_another_seed_or_output_order_is_refused() {
+async fn a_commitment_under_another_seed_or_payment_order_is_refused() {
     let refused = |plan: &ProgramPlan, commitment: ProgramCommitment| {
         matches!(
             plan.check(&commitment),
@@ -470,23 +476,29 @@ async fn a_commitment_under_another_seed_or_output_order_is_refused() {
         }
     }
 
-    let appended = Case {
-        change_declared: false,
-        ..Case::new(RingMode::Confidential, Mint::SOL, Step::Update { paid: 4 })
-    };
-    let client = Chain::ring(RingMode::Confidential).client();
-    let plan = appended.transfer().plan_for_program(&client).await.unwrap();
     let amounts = |outputs: &[SppProofOutputUtxo]| -> Vec<u64> {
         outputs.iter().map(|output| output.amount).collect()
     };
-    assert_eq!(amounts(&plan.outputs), [0, 4, HELD - 4, 0]);
-    let Committed {
-        commitment,
-        finalized,
-        ..
-    } = appended.commit(plan.blinding_seed, &plan);
-    assert_eq!(amounts(finalized.output_utxos()), [HELD - 4, 0, 4, 0]);
-    assert!(refused(&plan, commitment));
+    for mode in MODES {
+        let swapped = Case {
+            payment_first: true,
+            ..Case::new(mode, Mint::SOL, Step::Update { paid: 4 })
+        };
+        let client = Chain::ring(mode).client();
+        let plan = swapped.transfer().plan_for_program(&client).await.unwrap();
+        assert_eq!(amounts(&plan.outputs), [HELD - 4, 4, 0, 0], "{mode:?}");
+        let Committed {
+            commitment,
+            finalized,
+            ..
+        } = swapped.commit(plan.blinding_seed, &plan);
+        assert_eq!(
+            amounts(finalized.output_utxos()),
+            [HELD - 4, 0, 4, 0],
+            "{mode:?}"
+        );
+        assert!(refused(&plan, commitment), "{mode:?}");
+    }
 }
 
 /// Each proof under its own test key, the hash from the sealed ring frame.

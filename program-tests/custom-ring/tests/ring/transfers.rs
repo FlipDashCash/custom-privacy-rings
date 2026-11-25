@@ -298,8 +298,8 @@ fn auditor_sees_every_ring_transfer() -> Result<()> {
     assert_eq!(
         opened(audited),
         vec![
+            change_note.opened(CHANGE_SLOT)?,
             recipient_utxo.opened(RECIPIENT_SLOT)?,
-            change_note.opened(CHANGE_SLOT)?
         ],
         "auditor-decrypted outputs equal what the sender sent, owners and blindings included"
     );
@@ -629,8 +629,8 @@ fn ring_value_leaves_and_enters_through_audited_transfers() -> Result<()> {
             .run(&env)?
         ),
         vec![
+            sender_change.opened(CHANGE_SLOT)?,
             recipient_ring_note.opened(RECIPIENT_SLOT)?,
-            sender_change.opened(CHANGE_SLOT)?
         ],
         "entry outputs"
     );
@@ -694,8 +694,8 @@ fn ring_value_leaves_and_enters_through_audited_transfers() -> Result<()> {
             .run(&env)?
         ),
         vec![
+            exit_change.opened(CHANGE_SLOT)?,
             recipient_default_note.opened(RECIPIENT_SLOT)?,
-            exit_change.opened(CHANGE_SLOT)?
         ],
         "exit outputs"
     );
@@ -852,8 +852,8 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
             .run(&env)?
         ),
         vec![
+            entry_change.opened(CHANGE_SLOT)?,
             recipient_ring_note.opened(RECIPIENT_SLOT)?,
-            entry_change.opened(CHANGE_SLOT)?
         ],
         "entry outputs"
     );
@@ -907,8 +907,8 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
             .run(&env)?
         ),
         vec![
+            hop_change.opened(CHANGE_SLOT)?,
             recipient_hop_note.opened(RECIPIENT_SLOT)?,
-            hop_change.opened(CHANGE_SLOT)?
         ],
         "hop outputs"
     );
@@ -995,8 +995,8 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
             .run(&env)?
         ),
         vec![
+            exit_change.opened(CHANGE_SLOT)?,
             recipient_default_note.opened(RECIPIENT_SLOT)?,
-            exit_change.opened(CHANGE_SLOT)?
         ],
         "exit outputs"
     );
@@ -1123,8 +1123,8 @@ fn usdc_crosses_the_ring_boundary_and_withdraws_through_a_ring_transact() -> Res
             .run(&env)?
         ),
         vec![
+            final_change.opened(CHANGE_SLOT)?,
             recipient_final_note.opened(RECIPIENT_SLOT)?,
-            final_change.opened(CHANGE_SLOT)?
         ],
         "withdrawal outputs"
     );

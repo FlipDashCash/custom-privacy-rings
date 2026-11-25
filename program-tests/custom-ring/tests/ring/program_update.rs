@@ -2,6 +2,7 @@
 
 use std::{path::Path, sync::Arc};
 
+use custom_ring_interface::TransferApproval;
 use custom_ring_sdk::{ApplicationData, NoteData, ProgramCommitment};
 use custom_ring_test_validator::{ring_rpc::CoSigningRingRpc, shared::CoSigned};
 use solana_message::VersionedMessage;
@@ -104,7 +105,7 @@ impl ProgramStep<'_> {
             nullifier_key: Some(self.zero_key),
             transaction,
         })
-        .spend_public(*owner().pda())
+        .spend_public(*owner(&ring_program).pda())
         .with_payment(self.payment(
             address,
             0,
@@ -331,7 +332,7 @@ impl Updated {
         .send()?;
 
         // 2. A wallet deposits to the program's PDA, the program then creates its counter.
-        let keys = pda_keys(owner().pda(), &env.recipient.keypair)?;
+        let keys = pda_keys(owner(&ring.program_id()).pda(), &env.recipient.keypair)?;
         let zero_key = NullifierKey::from_secret([0; 31]);
         let address = keys.address()?;
         let payer = &env.sender.keypair;
@@ -377,6 +378,15 @@ impl Updated {
         ensure!(
             updated.transfer.co_signers == [ring_rpc.co_signer],
             "the update asks the co-signer"
+        );
+        let size = spr_client::transaction_size(
+            &payer.pubkey(),
+            &updated.instructions,
+            ComputeBudgetConfig::new(compute_unit_limit(InstructionTag::Transfer)),
+        )?;
+        ensure!(
+            size.fits(),
+            "the approved update has {size:?} of {MAX_TRANSACTION_SIZE} bytes"
         );
         let signature = updated.land(&env, ring, &ring_rpc, payer)?;
         assert_transaction_compute_units(
@@ -445,22 +455,24 @@ fn a_program_updates_its_ring_note_under_a_ring_rpc_approval() -> Result<()> {
             .is_err(),
         "Ring RPC signs no approval of another call"
     );
-    let transaction = sign_transaction(message, &[payer, &updated.co_signer])?;
-    let rejection = match env
-        .client
-        .rpc()
-        .client()
-        .send_and_confirm_transaction(&transaction)
-    {
-        Ok(signature) => bail!("the swapped frame landed as {signature}"),
-        Err(source) => spr_client::ClientError::SolanaRpcTransaction {
-            operation: "send v1",
-            source,
-        },
+    let refused = |message: VersionedMessage| -> Result<spr_client::ClientError> {
+        let transaction = sign_transaction(message, &[payer, &updated.co_signer])?;
+        match env
+            .client
+            .rpc()
+            .client()
+            .send_and_confirm_transaction(&transaction)
+        {
+            Ok(signature) => bail!("the refused frame landed as {signature}"),
+            Err(source) => Ok(spr_client::ClientError::SolanaRpcTransaction {
+                operation: "send v1",
+                source,
+            }),
+        }
     };
     Rejection::custom(CustomRingError::TransferApprovalOtherCall as u32)
         .at(u8::try_from(approvals.len())?)
-        .assert_client(&rejection);
+        .assert_client(&refused(message)?);
 
     // 2. Ring RPC signs no outflow that takes the sender above its window cap.
     let above = updated.step(SENDER_CAP)?.prove(env, payer.pubkey())?;
@@ -477,6 +489,42 @@ fn a_program_updates_its_ring_note_under_a_ring_rpc_approval() -> Result<()> {
             .contains(&(CoSignError::OverLimit as i32).to_string()),
         "{refusal}"
     );
+
+    // 3. The program signs for the PDA of the called ring alone, the approval covers the call as sent.
+    let other_ring = owner(&Address::new_from_array([0x52; 32]));
+    let own = *owner(&updated.ring.program_id()).pda();
+    let ProvenStep {
+        transfer,
+        mut instructions,
+    } = updated.step(PAID / 2)?.prove(env, payer.pubkey())?;
+    let mut call = instructions.pop().context("the program's call")?;
+    let slot = call
+        .accounts
+        .iter_mut()
+        .find(|account| account.pubkey == own)
+        .context("the owner slot")?;
+    slot.pubkey = *other_ring.pda();
+    let (ring_program, forwarded) = call.accounts.split_first().context("the ring program")?;
+    let approval = TransferApproval {
+        position: u8::try_from(instructions.len())?,
+        digest: TransferApproval::digest(
+            &ring_program.pubkey,
+            &transfer.instruction()?.data,
+            forwarded.iter().map(|account| &account.pubkey),
+        )?,
+    };
+    for approve in &mut instructions {
+        approve.data = approval.encode().into();
+    }
+    let position = approval.position;
+    instructions.push(call);
+    let foreign = ProvenStep {
+        transfer,
+        instructions,
+    };
+    Rejection::custom(CustomRingError::MissingOwnerSigner as u32)
+        .at(position)
+        .assert_client(&refused(foreign.message(env, payer.pubkey())?)?);
     Ok(())
 }
 
@@ -518,7 +566,7 @@ fn the_auditor_checks_the_updated_note_commitment_without_its_payload() -> Resul
         env.tree_id(env.tree)?,
     )?;
     ensure!(
-        opened.owner_key == owner().pda().to_bytes(),
+        opened.owner_key == owner(&updated.ring.program_id()).pda().to_bytes(),
         "the record names the program's PDA"
     );
     ensure!(

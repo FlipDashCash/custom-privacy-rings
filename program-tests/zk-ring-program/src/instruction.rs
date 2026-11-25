@@ -13,9 +13,8 @@ use spr_hasher::primitives::hash_bytes;
 use spr_program::{program::PdaOwner, CompressedProof};
 
 use crate::{
-    tag,
+    owner_seeds, tag,
     verifier::{create, update},
-    OWNER_SEED,
 };
 
 pub const PROOF_LEN: usize = 32 + 64 + 32;
@@ -26,11 +25,12 @@ pub fn process_instruction(
     accounts: &mut [AccountView],
     data: &[u8],
 ) -> ProgramResult {
-    let (owner, bump) = Address::derive_program_address(&[OWNER_SEED], program_id)
-        .ok_or(ProgramError::InvalidSeeds)?;
     let [ring_program, transfer_accounts @ ..] = &*accounts else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
+    let owner_seeds = owner_seeds(ring_program.address());
+    let (owner, bump) = Address::derive_program_address(&owner_seeds, program_id)
+        .ok_or(ProgramError::InvalidSeeds)?;
     let (ix_tag, data) = data
         .split_first()
         .ok_or(ProgramError::InvalidInstructionData)?;
@@ -69,7 +69,11 @@ pub fn process_instruction(
     }
 
     let bump = [bump];
-    let seeds = [Seed::from(OWNER_SEED), Seed::from(&bump)];
+    let seeds = [
+        Seed::from(owner_seeds[0]),
+        Seed::from(owner_seeds[1]),
+        Seed::from(&bump),
+    ];
     RingTransferCpi {
         ring_program: ring_program.address(),
         owner: &owner,

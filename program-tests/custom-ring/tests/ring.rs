@@ -182,8 +182,8 @@ const MERGED_SPEND: u64 = 100_000_000;
 /// Output slot layout this test publishes: the sender's change first, the
 /// recipient second. A slot's index is what its ciphertext is bound to, so these
 /// are also the `slot_index` values the auditor must report.
-const CHANGE_SLOT: u32 = 1;
-const RECIPIENT_SLOT: u32 = 0;
+const CHANGE_SLOT: u32 = 0;
+const RECIPIENT_SLOT: u32 = 1;
 
 /// Every settled transfer stays at or under four fifths of the declared budget.
 const CUSTOM_RING_TRANSACT_CU_LIMIT: u64 =

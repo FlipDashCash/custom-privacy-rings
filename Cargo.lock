@@ -5454,6 +5454,7 @@ dependencies = [
  "spr-program",
  "spr-transaction",
  "xtask",
+ "zk-ring-program",
  "zolana-cli-common",
 ]
 
