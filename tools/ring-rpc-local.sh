@@ -7,7 +7,7 @@ ring_rpc="${RING_RPC_BIN:-$root/target/debug/ring-rpc}"
 
 usage() {
     cat >&2 <<'USAGE'
-tools/ring-rpc-local.sh keys DIR SOLANA_RPC_URL [fee-payer] [co-signer]
+tools/ring-rpc-local.sh keys DIR SOLANA_RPC_URL [fee-payer] [co-signer] [enrollment-writer]
 tools/ring-rpc-local.sh serve DIR PORT LOG [ring-rpc serve flag...]
 tools/ring-rpc-local.sh pubkey KEY_FILE
 RING_RPC_BIN names the ring-rpc binary, target/debug/ring-rpc by default.
@@ -36,6 +36,11 @@ keys() {
                 solana airdrop 100 "$payer" --url "$rpc_url" >/dev/null
                 ;;
             co-signer) keygen co-signer "$dir/co-signer.key" >/dev/null ;;
+            # The ring's enrollmentWriter role key signs and pays each enrollment batch.
+            enrollment-writer)
+                payer="$(keygen enrollment-applier "$dir/enrollment-writer.key" | sed -n 's/^enrollment applier *//p')"
+                solana airdrop 100 "$payer" --url "$rpc_url" >/dev/null
+                ;;
             *) usage ;;
         esac
     done
@@ -56,6 +61,10 @@ serve() {
     [[ ! -f "$dir/co-signer.key" ]] ||
         args+=(--co-signer-key-file "$dir/co-signer.key"
             --co-signer-approve "outflow,withdrawal,transfers,deposits,withdrawals")
+    # A zero budget refuses every enrollment write, the caller names the rings.
+    [[ ! -f "$dir/enrollment-writer.key" ]] ||
+        args+=(--enrollment-applier-key-file "$dir/enrollment-writer.key"
+            --enrollment-budget-lamports 1000000000)
     held() { lsof -t -i "tcp:$port" -s tcp:listen 2>/dev/null; }
     held | xargs kill 2>/dev/null || true
     for _ in $(seq 1 50); do

@@ -9,6 +9,7 @@
 - `RING_GENESIS_HASH`, the base58 genesis hash of the cluster, which every signed read and record update binds.
 - `RING_RPC_SERVICE_KEY`, the base58 public key of the Ring RPC service key, which the client pins and every signed read binds.
 - `RING_RPC_COSIGNER`, the base58 public key the Ring RPC co-signs with under the asset limits.
+- `RING_ENROLLMENT_WRITER`, the base58 public key the Ring RPC signs and pays enrollment batches with. A ring that names it as its `enrollmentWriter` role gets its enrollments written on chain after its policy authority registers the ring through `registerEnrollmentRing`.
 - `RING_STORAGE_PROGRAM_ID`, the base58 program id of the storage program on the cluster.
 - `RING_LOCALNET_AUTHORITY_SEED`, the lowercase hex of the 32-byte seed of the localnet SPP protocol authority, which signs ring activation.
 - `RING_TEST_MINT`, the base58 SPL token mint that `tools/demo-localnet.sh` creates for the demo.

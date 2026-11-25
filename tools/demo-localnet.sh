@@ -11,7 +11,7 @@ env_file="$workdir/demo.env"
 just_bin="${JUST:-just}"
 keys=(
     RING_SOLANA_RPC_URL RING_INDEXER_URL RING_PROVER_URL RING_RPC_URL
-    RING_GENESIS_HASH RING_RPC_SERVICE_KEY RING_RPC_COSIGNER
+    RING_GENESIS_HASH RING_RPC_SERVICE_KEY RING_RPC_COSIGNER RING_ENROLLMENT_WRITER
     RING_STORAGE_PROGRAM_ID RING_LOCALNET_AUTHORITY_SEED RING_TEST_MINT
 )
 unset "${keys[@]}"
@@ -20,6 +20,8 @@ RING_LOCALNET_AUTHORITY_SEED=7a6f6c616e61206c6f63616c6e657420736e617073686f74206
 localnet_authority=HF3DijLymE9gVYeG3kX1N19WZXu5BH5yWBgsvnVtm7tw
 relay_budget_lamports=50000000000
 relay_signer_budget_lamports=2000000000
+enrollment_ring_budget_lamports=100000000
+enrollment_max_rings=256
 
 write_env() {
     local key value
@@ -44,6 +46,7 @@ if [[ "${DEMO_LOCALNET_DRY_RUN:-}" == 1 ]]; then
     RING_GENESIS_HASH=2UGYmFi1AVQsAJqJEu2uYknLkgU79jRwYs83JLx9css3
     RING_RPC_SERVICE_KEY=F8Tm9XxR4WvJAhYZgggmmqAkfJPtp8TGrwKRRLoKrXaa
     RING_RPC_COSIGNER=FJPW8GJpc1Tv2NkuFB7S2Fi46QM9zjmskVDiNozJRGfc
+    RING_ENROLLMENT_WRITER=CGPp9KLbTy9K63rTQLHvrtMqqJmiXgYMRxuWFD1WJ6P6
     RING_STORAGE_PROGRAM_ID=rnGSTosTQ9gToNQP44THEZph8xtBtuGa5FEwzhKrWjL
     RING_TEST_MINT=AMcKFPiWHNHMhFx6NRJge9JRLY2yRAv6xdxsJHRWboiu
     write_env
@@ -90,15 +93,19 @@ solana airdrop 100 "$localnet_authority" --url "$RING_SOLANA_RPC_URL" >/dev/null
 ring_dir="$workdir/ring-rpc"
 # Ring RPC reads finalized ring history on Surfpool only under the fixture.
 export ZOLANA_RING_SURFPOOL_FIXTURE=1
-tools/ring-rpc-local.sh keys "$ring_dir" "$RING_SOLANA_RPC_URL" fee-payer co-signer
+tools/ring-rpc-local.sh keys "$ring_dir" "$RING_SOLANA_RPC_URL" fee-payer co-signer enrollment-writer
+# The writer serves a ring only after its policy authority calls registerEnrollmentRing.
 tools/ring-rpc-local.sh serve "$ring_dir" "$ring_rpc_port" "$workdir/ring-rpc.log" \
     --indexer-url "$RING_INDEXER_URL" --rpc-url "$RING_SOLANA_RPC_URL" \
     --prover-url "$RING_PROVER_URL" --store-url "sqlite://$PWD/$workdir/ring-rpc.sqlite?mode=rwc" \
     --relay-budget-lamports "$relay_budget_lamports" \
     --relay-signer-budget-lamports "$relay_signer_budget_lamports" \
-    --allow-origin "${DEMO_ALLOW_ORIGINS:-http://localhost:3000,http://localhost:3043,http://localhost:3044}"
+    --allow-origin "${DEMO_ALLOW_ORIGINS:-http://localhost:3000,http://localhost:3043,http://localhost:3044}" \
+    --enrollment-ring-budget-lamports "$enrollment_ring_budget_lamports" \
+    --enrollment-max-rings "$enrollment_max_rings"
 RING_RPC_SERVICE_KEY="$(tools/ring-rpc-local.sh pubkey "$ring_dir/service.key")"
 RING_RPC_COSIGNER="$(tools/ring-rpc-local.sh pubkey "$ring_dir/co-signer.key")"
+RING_ENROLLMENT_WRITER="$(tools/ring-rpc-local.sh pubkey "$ring_dir/enrollment-writer.key")"
 write_env
 echo "  test mint $RING_TEST_MINT, authority wallet $mint_wallet"
 echo "  ring rpc  $RING_RPC_URL, log $workdir/ring-rpc.log"
