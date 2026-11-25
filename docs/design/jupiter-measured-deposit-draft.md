@@ -296,6 +296,58 @@ bundle is not raw VK bytes. A successful byte match is not proof execution,
 approval of the derived Rust verifier or its runtime profile, or permission
 to register the tag.
 
+
+### Optional raw public verifier layout diagnostic
+
+`python3 tools/inspect_jupiter_descriptor_vk_layout.py FILE` is a separate
+read-only check of a **source prediction**, not a requirement for manifest
+intake or a verdict on a key. The existing byte-intake tool does not call it.
+It has not been measured with the pinned native codec.
+
+The draft has one caller-supplied public scalar plus the constant-one wire and
+one private commitment value injected by the verifier. Thus the pinned
+[gnark v0.16.4 setup shape](https://github.com/Consensys-Incorporated/gnark/blob/e974abb44722dd201a7f1949baeabca0fef5866e/backend/groth16/bn254/setup.go#L95-L106)
+predicts three K points. The
+[raw VK encoder](https://github.com/Consensys-Incorporated/gnark/blob/e974abb44722dd201a7f1949baeabca0fef5866e/backend/groth16/bn254/marshal.go#L95-L148),
+[gnark-crypto v0.22.0 curve encoding](https://github.com/Consensys-Incorporated/gnark-crypto/blob/550a513d798df79d8324697332e085498285bb63/ecc/bn254/marshal.go)
+and its [Pedersen encoder](https://github.com/Consensys-Incorporated/gnark-crypto/blob/550a513d798df79d8324697332e085498285bb63/ecc/bn254/fr/pedersen/pedersen.go#L316-L352)
+predict this 1,040-byte frame:
+
+| Zero-based offset | Encoding |
+| --- | --- |
+| 0 | 576 bytes: three raw G1 and three raw G2, in encoder order |
+| 576 | uint32 BE value 3, followed by 192 bytes for three raw G1 K points |
+| 772 | uint32 BE value 1, one commitment row |
+| 776 | uint32 BE value 0, no public indices in that row |
+| 780 | uint32 BE value 1, followed by two raw G2 commitment verifier points |
+
+The walk checks the uncompressed mode bits at all point starts, all four
+counts, and full consumption. A mode mismatch matters even with correct
+words at fixed offsets: `ReadFrom` accepts compressed points too, so its
+cursor can otherwise diverge before reading the slice counts. The Python
+walk does not check field elements, curve points, subgroups or provenance.
+
+Future offline native validation, once both exact pinned modules and a
+separately reviewed input are available:
+
+1. Measure this prediction with the pinned encoders using an in-memory
+   framing fixture built only from public curve generators, not a
+   circuit key, ceremony, setup or proof. Until measured, the prediction
+   is only diagnostic.
+2. Use a bounded immutable copy of the bytes. Before the allocating native
+   decoder, check the raw mode at every point offset and the exact
+   count framing on that **same buffer**. No filename re-open between steps.
+3. Decode into a fresh concrete BN254 Groth16 `VerifyingKey` with safe
+   `ReadFrom` (never `UnsafeReadFrom`). Check success, its reported bytes
+   read and reader exhaustion; inspect three K points, one empty commitment
+   row and one commitment verifier. `NbPublicWitness()` by itself includes the
+   injected commitment term and is not the caller-supplied count.
+4. `WriteRawTo` into a fresh buffer, check its reported length, and compare
+   exact bytes with the retained input. Point and encoding checks are
+   compatibility only. Independently reviewed release authority and
+   circuit-to-key provenance remain separate; no dispatch or admission
+   follows from this tool or a successful roundtrip.
+
 Before wiring an owned Custom handler, independently select and pin the exact
 guard and executable profile, Jupiter-specific descriptor transcript and
 matching verifier identity. They are **unprovisioned**. Reuse the checked
