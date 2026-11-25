@@ -418,6 +418,10 @@ ring-localnet: check-custom-ring-keys build-programs zolana::build-cli zolana::e
     echo "run 'just ring-localnet-kms' in a second terminal"
     echo "use 'just ring-localnet-custody single-ring' for a writable ring or 'just ring-localnet-custody derived' for 'just ring-rpc-derived'"
 
+# Ring localnet, a test mint and a ring RPC for the demo, then `demo.env` by tools/demo-env.md.
+demo-localnet:
+    tools/demo-localnet.sh
+
 # Stops the validator, photon, the ring indexer, the prover and a ring RPC a ring's `just pipeline` left.
 ring-localnet-stop:
     lsof -ti "tcp:{{localnet-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
@@ -467,6 +471,10 @@ ring-devnet-services rpc_url: check-custom-ring-keys build-prover-server build-p
     echo "  indexer   {{localnet-ring-indexer-url}}  (ring indexer, log $workdir/ring-indexer/ring-indexer.log)"
     echo "  photon    {{localnet-photon-url}}  (indexing {{rpc_url}}, log $workdir/photon.log)"
     echo "  prover    {{localnet-prover-url}}  (log $workdir/prover.log)"
+
+# Loopback prover for devnet that reads the hosted ring indexer.
+ring-devnet-prover:
+    tools/ring-devnet-prover.sh
 
 # Stops photon, the ring indexer, the prover and a ring RPC started for devnet.
 ring-devnet-services-stop:
@@ -520,6 +528,10 @@ ring-rpc-derived dir="target/ring-localnet/custody": build-ring-rpc
 # Release the ring and storage programs, ring keys, ring-rpc and zolana-ring, `--upload --prerelease` publishes.
 release tag *args: build-programs check-custom-ring-keys
     cargo run -p ring-xtask -- create-release --tag {{tag}} {{args}}
+
+# Pack both TS SDKs into dest and print the SHA-256 and length of each tarball.
+pack-ts dest="target/pack":
+    tools/pack-ts.sh {{dest}}
 
 # Build one service image of tools/images.json and publish it by zolana's rules.
 publish-image service *args:
