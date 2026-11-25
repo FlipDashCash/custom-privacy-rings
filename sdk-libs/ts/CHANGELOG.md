@@ -41,6 +41,7 @@ Breaking
 - An owner's list records sit under `publicListKey(owner)`, which `publicMember`, `ownerRecordKey` and `readerKeyRecordKey` derive, and `privateListKey` refuses a zero salt → rewrite each owner's records under its public key.
 - `RequestedAuthorityTransfer` states its requester as a `DelegateRequester`, `allowed` for the ring's delegate or `mint` for the permanent delegate of a Token-2022 mint, and `PreparedAuthorityTransfer` refuses a ring delegate that `DelegateRingConfig.delegate` does not name with `RING_DELEGATE_INVALID` → pass the ring's `delegate` in the config, and `mint` in place of `allowed` for a mint's permanent delegate, whose message is held to its output records only.
 - `ringRail` returns the delegate rail for a ring with no delegate and no longer throws `DelegateDisabled`, the ring program refuses the signer → read `RingPolicy.delegate` before a ring delegate's move.
+- A `CustomRingTransfer`, `PublicOwnerTransfer` or `AnonymousTransfer` value is superseded once `withPayment` or `withShape` returns its successor or a later `CustomRingTransfer.new` takes the same `ConfidentialTransfer`, and every step on a superseded value throws `RING_TRANSFER_SUPERSEDED`, where a second `withPayment` on one base put both recipients into one plan → keep the value each step returns and build each variant from a `ConfidentialTransfer` of its own. The `ConfidentialTransfer` handed to `CustomRingTransfer.new` stays the caller's object, and a change the caller makes to it afterwards reaches the transfer.
 
 Added
 
@@ -81,6 +82,7 @@ Changed
 
 Fixed
 
+- `PublicOwnerTransfer.withPayment` and `AnonymousTransfer.withPayment` left the recipient's list salt out of the policy read, and a registered recipient on a ring reading a salted list was refused with `RING_LIST_SALT_MISSING` unless `listSalts` named it again, now the salt of the payment's `RingAddress` reaches the proof on every rail and two different salts for one owner raise `RING_ADDRESS_MISMATCH`.
 - A spend of a zero-key or co-owner note on an `SprClient` whose prover reads the proof data, the default, raised `CLIENT_INVALID_PROOF_AUTHORITY`, now the ring spend authority also proves through `proveIndexed` and fills those slots there.
 - A confidential withdrawal of an SPL asset on a ring whose policy reads withdrawals raised `RING_ANONYMOUS_EXIT_TOKEN_ACCOUNT_INVALID` while the recipient had no token account, now the withdrawal builders name the recipient as its owner and `CustomRingTransfer.withWithdrawalAccounts` takes that owner.
 - A relayed spend on a ring reading a salted list left the sender's list salt out of the relay payload, and Ring RPC refused it with `transferRefused`, now the payload carries the sender's salt with the other owners'.

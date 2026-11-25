@@ -325,8 +325,18 @@ export function relayListSalts(
   return policySourceView(pinnedPolicy(config).sources).salted === 0 ? [] : salts;
 }
 
+/** An address and an explicit salt that differ for one owner are refused, neither wins. */
 function saltsByOwner(salts: readonly RingListSalt[]): ReadonlyMap<string, Bytes32> {
-  return new Map(salts.map(({ owner, salt }) => [bytesKey(owner), salt]));
+  const byOwner = new Map<string, Bytes32>();
+  for (const { owner, salt } of salts) {
+    const held = byOwner.get(bytesKey(owner));
+    if (held !== undefined && !equalBytes(held, salt))
+      throw new RingError("RING_ADDRESS_MISMATCH", {
+        details: { field: "listSalt", member: bytesKey(owner) },
+      });
+    byOwner.set(bytesKey(owner), salt);
+  }
+  return byOwner;
 }
 
 /** The withdrawals and the pools a key must hold, a salted read takes a row beside the public one. */

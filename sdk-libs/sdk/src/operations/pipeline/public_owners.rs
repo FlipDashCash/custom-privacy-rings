@@ -9,7 +9,7 @@ use spr_transaction::{utxo::SppProofInputUtxo, TransactionError};
 use zolana_ring_transaction::RingDelivery;
 
 use super::{
-    anonymous::{anonymous_plan, check_payment_ring, payment_salts, AnonymousPayment},
+    anonymous::{anonymous_plan, check_payment_ring, AnonymousPayment},
     canonical_shape,
     owner::Owner,
     sealed, OutputSeal, Rail, RailKind, RingTransfer, SealedOutputs, Spend, Staged,
@@ -23,7 +23,7 @@ pub struct PublicOwners<'a> {
     /// An unenrolled wallet's only key on a tracking root.
     zero_key_change: bool,
     /// In declared order, the order of their ring outputs.
-    payments: Vec<AnonymousPayment>,
+    pub(super) payments: Vec<AnonymousPayment>,
 }
 
 pub type PublicOwnerTransfer<'a> = RingTransfer<PublicOwners<'a>>;
@@ -113,7 +113,7 @@ impl PublicOwners<'_> {
             interface_transfer_accounts: self.owner.interface_transfer_accounts.clone(),
             spend: Spend::PublicOwners,
             presealed: None,
-            list_salts: payment_salts(&self.payments)?,
+            list_salts: Vec::new(),
         })
     }
 

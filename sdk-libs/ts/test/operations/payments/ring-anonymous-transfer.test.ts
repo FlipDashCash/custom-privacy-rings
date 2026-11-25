@@ -763,8 +763,8 @@ describe("anonymous delivery slots", () => {
       const { fixture, recipients, anonymous } = await paying([400n, 300n], {
         replies: [claim(sayer), null],
       });
-      anonymous.withShape({ inputs: 1, outputs: 4 });
-      const expand = await expanded(fixture, await anonymous.prove(fixture.client), "anonymous");
+      const shaped = anonymous.withShape({ inputs: 1, outputs: 4 });
+      const expand = await expanded(fixture, await shaped.prove(fixture.client), "anonymous");
       return { ...expand, recipients };
     };
     const { data, call, recipients } = await build();

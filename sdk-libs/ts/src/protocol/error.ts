@@ -229,6 +229,7 @@ export const RING_ERROR_CODES = [
   "RING_PROGRAM_TRANSACTION_HASH_MISMATCH",
   "RING_APPROVAL_OUTSIDE_PROGRAM",
   "RING_EXIT_RING_DATA",
+  "RING_TRANSFER_SUPERSEDED",
 ] as const;
 import { extractCauseCodes, hideCause, sanitizeDetails } from "@heliuslabs/spr/internal";
 import type { ErrorEnvelope } from "@heliuslabs/spr";

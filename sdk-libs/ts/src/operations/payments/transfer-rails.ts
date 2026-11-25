@@ -3,6 +3,7 @@ import { getBase64Decoder } from "@solana/kit";
 
 import {
   equalBytes,
+  isZero,
   ownerSignerAddresses,
   prepareRingAuthorityTransfer,
   addressBytes,
@@ -173,29 +174,65 @@ export interface CustomRingTransferInput {
   readonly program?: ProgramCommitment;
 }
 
+/** One line of builder values per `ConfidentialTransfer`, a value behind `steps.taken` is superseded. */
+type Owned = CustomRingTransferInput & Readonly<{ steps: { taken: number }; step: number }>;
+
+const lines = new WeakMap<ConfidentialTransfer, { taken: number }>();
+
+/** Rust consumes a builder on each step, here a value another step has passed is refused. */
+function live<T extends Owned>(owner: T): T {
+  if (owner.step !== owner.steps.taken) throw new RingError("RING_TRANSFER_SUPERSEDED");
+  return owner;
+}
+
+/** Taken before a step changes the shared transfer, every earlier value is then superseded. */
+function advanced<T extends Owned>(owner: T): T {
+  owner.steps.taken += 1;
+  return { ...owner, step: owner.steps.taken };
+}
+
+/** A payment's address carries its recipient's list salt, none under the zero key. */
+function withPaymentSalt<T extends Owned>(owner: T, payment: AnonymousPayment): T {
+  const { recipient, listSalt } = payment.to;
+  if (isZero(listSalt)) return owner;
+  const salt = { owner: recipient.signingPublicKey.ownerProofInputHash(), salt: listSalt };
+  return { ...owner, listSalts: [...(owner.listSalts ?? []), salt] };
+}
+
 /** The confidential rail, the owner signs its spends in public or inside the proof, Rust `RingTransfer<Owner>`. */
 export class CustomRingTransfer {
-  readonly #input: CustomRingTransferInput;
+  readonly #held: Owned;
   readonly #withdrawal: TransactWithdrawal | undefined;
   readonly #inProofOwner: AnonymousSpendSigner | undefined;
   readonly #coOwners: readonly CoOwner[];
 
   private constructor(
-    input: CustomRingTransferInput,
+    input: Owned,
     withdrawal: TransactWithdrawal | undefined,
     inProofOwner: AnonymousSpendSigner | undefined,
     coOwners: readonly CoOwner[] = [],
   ) {
-    this.#input = input;
+    this.#held = input;
     this.#withdrawal = withdrawal;
     this.#inProofOwner = inProofOwner;
     this.#coOwners = coOwners;
     Object.freeze(this);
   }
 
+  get #input(): Owned {
+    return live(this.#held);
+  }
+
+  /** A second line over one `transfer` supersedes the first. */
   static new(input: CustomRingTransferInput): CustomRingTransfer {
     input.transfer.withRingProgramId(input.ringProgramId);
-    return new CustomRingTransfer(input, undefined, undefined);
+    const steps = lines.get(input.transfer) ?? { taken: 0 };
+    lines.set(input.transfer, steps);
+    return new CustomRingTransfer(
+      advanced({ ...input, steps, step: steps.taken }),
+      undefined,
+      undefined,
+    );
   }
 
   /** The frame carries a digest of its totals, the opening reads as `approvalOpening`. */
@@ -597,7 +634,7 @@ function inProofOwnerKey(
 
 /** The hidden owner's spends on an anonymous ring, no transaction signer names the owner, Rust `RingTransfer<Anonymous>`. */
 export class AnonymousTransfer {
-  readonly #owner: CustomRingTransferInput;
+  readonly #held: Owned;
   readonly #withdrawal: TransactWithdrawal | undefined;
   readonly #signer: AnonymousSpendSigner;
   /** In declared order, the order of their ring outputs. */
@@ -609,7 +646,7 @@ export class AnonymousTransfer {
   readonly #exposure: OwnerExposure;
 
   private constructor(fields: AnonymousFields) {
-    this.#owner = fields.owner;
+    this.#held = fields.owner;
     this.#withdrawal = fields.withdrawal;
     this.#signer = fields.signer;
     this.#payments = fields.payments;
@@ -621,10 +658,14 @@ export class AnonymousTransfer {
     Object.freeze(this);
   }
 
+  get #owner(): Owned {
+    return live(this.#held);
+  }
+
   /** @internal */
   static of(
     input: Readonly<{
-      owner: CustomRingTransferInput;
+      owner: Owned;
       withdrawal?: TransactWithdrawal;
       signer: AnonymousSpendSigner;
       coOwners?: readonly CoOwner[];
@@ -657,9 +698,12 @@ export class AnonymousTransfer {
       throw new RingError("RING_FOREIGN_RING", {
         details: { address: payment.to.ringProgramId, ring: this.#owner.ringProgramId },
       });
-    const declared = declarePayment(this.#owner.transfer, payment);
+    const fields = this.#fields();
+    const owner = withPaymentSalt(advanced(fields.owner), payment);
+    const declared = declarePayment(owner.transfer, payment);
     return new AnonymousTransfer({
-      ...this.#fields(),
+      ...fields,
+      owner,
       payments: Object.freeze([...this.#payments, declared]),
     });
   }
@@ -684,8 +728,10 @@ export class AnonymousTransfer {
 
   /** Pads to `shape`, else the transfer takes the smallest supported shape. */
   withShape(shape: Shape): AnonymousTransfer {
-    this.#owner.transfer.withShape(shape);
-    return new AnonymousTransfer({ ...this.#fields(), shape });
+    const fields = this.#fields();
+    const owner = advanced(fields.owner);
+    owner.transfer.withShape(shape);
+    return new AnonymousTransfer({ ...fields, owner, shape });
   }
 
   /** A missing exit token account must be the owner's associated token account. */
@@ -984,7 +1030,7 @@ export class AnonymousTransfer {
 }
 
 interface AnonymousFields {
-  readonly owner: CustomRingTransferInput;
+  readonly owner: Owned;
   readonly withdrawal: TransactWithdrawal | undefined;
   readonly signer: AnonymousSpendSigner;
   readonly payments: readonly AnonymousPayment[];
@@ -997,7 +1043,7 @@ interface AnonymousFields {
 
 /** Every live owner signs in public, recipients stay hidden on an anonymous ring, Rust `RingTransfer<PublicOwners>`. */
 export class PublicOwnerTransfer {
-  readonly #owner: CustomRingTransferInput;
+  readonly #held: Owned;
   readonly #withdrawal: TransactWithdrawal | undefined;
   readonly #wallet: Address;
   readonly #inProofOwner: boolean;
@@ -1006,7 +1052,7 @@ export class PublicOwnerTransfer {
   readonly #payments: readonly AnonymousPayment[];
 
   private constructor(fields: PublicOwnerFields) {
-    this.#owner = fields.owner;
+    this.#held = fields.owner;
     this.#withdrawal = fields.withdrawal;
     this.#wallet = fields.wallet;
     this.#inProofOwner = fields.inProofOwner;
@@ -1015,10 +1061,14 @@ export class PublicOwnerTransfer {
     Object.freeze(this);
   }
 
+  get #owner(): Owned {
+    return live(this.#held);
+  }
+
   /** @internal */
   static of(
     input: Readonly<{
-      owner: CustomRingTransferInput;
+      owner: Owned;
       withdrawal?: TransactWithdrawal;
       wallet: Address;
       inProofOwner: boolean;
@@ -1035,9 +1085,10 @@ export class PublicOwnerTransfer {
   /** Every ring output owner other than the wallet is paid here, Rust `with_payment`. */
   withPayment(payment: AnonymousPayment): PublicOwnerTransfer {
     checkPaymentRing(payment, this.#owner.ringProgramId);
-    const declared = declarePayment(this.#owner.transfer, payment);
+    const owner = withPaymentSalt(advanced(this.#owner), payment);
+    const declared = declarePayment(owner.transfer, payment);
     return new PublicOwnerTransfer({
-      owner: this.#owner,
+      owner,
       withdrawal: this.#withdrawal,
       wallet: this.#wallet,
       inProofOwner: this.#inProofOwner,
@@ -1243,7 +1294,7 @@ export class PublicOwnerTransfer {
 }
 
 interface PublicOwnerFields {
-  readonly owner: CustomRingTransferInput;
+  readonly owner: Owned;
   readonly withdrawal: TransactWithdrawal | undefined;
   readonly wallet: Address;
   readonly inProofOwner: boolean;

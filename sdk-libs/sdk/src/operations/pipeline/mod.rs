@@ -192,6 +192,16 @@ pub enum RailKind<'a> {
     PublicOwners(&'a PublicOwners<'a>),
 }
 
+impl RailKind<'_> {
+    fn payments(&self) -> &[AnonymousPayment] {
+        match self {
+            Self::Anonymous(rail) => &rail.payments,
+            Self::PublicOwners(rail) => &rail.payments,
+            Self::Owner(_) | Self::Delegated(_) | Self::Relayed(_) => &[],
+        }
+    }
+}
+
 #[must_use = "prove or discard the transfer explicitly"]
 pub struct RingTransfer<R: Rail> {
     ring: CustomRing,
@@ -535,6 +545,10 @@ impl<R: Rail> RingTransfer<R> {
             )?)?;
         }
         check_ring_output_markers(&staged.proof_inputs)?;
+        // Each payment's address carries its recipient's salt, every rail reads it here.
+        staged
+            .list_salts
+            .extend(anonymous::payment_salts(self.rail.kind().payments())?);
         staged.list_salts.extend_from_slice(&self.list_salts);
         let voucher = match self.rail.kind() {
             RailKind::Owner(owner) => owner.voucher,

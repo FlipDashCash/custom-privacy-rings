@@ -201,7 +201,7 @@ pub struct Anonymous<'a> {
     pub(super) signer: OwnerSource<'a>,
     pub(super) exposure: OwnerExposure,
     /// In declared order, the order of their ring outputs.
-    payments: Vec<AnonymousPayment>,
+    pub(super) payments: Vec<AnonymousPayment>,
     pub(super) exit_token_owner: Option<Address>,
     co_owners: Vec<CoOwner<'a>>,
     read_cache: Option<ReadCache>,
@@ -525,7 +525,7 @@ impl Anonymous<'_> {
                 signer: self.signer,
             })),
             presealed: None,
-            list_salts: payment_salts(&self.payments)?,
+            list_salts: Vec::new(),
         })
     }
 }

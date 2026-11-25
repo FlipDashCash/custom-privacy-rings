@@ -5561,3 +5561,66 @@ async fn every_pinned_transfer_seals_to_the_plan_both_sdks_share() {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(pinned, built);
 }
+
+/// The address alone carries the recipient's salt, no rail asks for it a second time.
+#[tokio::test]
+async fn a_payment_address_gives_its_list_salt_to_the_policy_read_on_every_public_rail() {
+    use crate::tests::support::{keypair, Registry};
+    use custom_ring_interface::domain;
+    use zolana_ring_policy::{ListId, Rule, RuleTable, Subject};
+    let sender = keypair(1);
+    let recipient = keypair(2);
+    let wallet = sender.shielded_address().unwrap();
+    let paid = ring_address(&recipient);
+    let member = |address: &ShieldedAddress| {
+        Member::from_bytes(address.signing_pubkey.owner_proof_input_hash().unwrap()).unwrap()
+    };
+    let rules = RuleTable::builder()
+        .rule(Rule::forbid(Subject::OutputOwner, ListId::PrivateBlock))
+        .build();
+    for mode in [RingMode::Confidential, RingMode::Anonymous] {
+        let chain = Chain::ring(RingSettings::new(mode))
+            .with_registry(Registry::new(&[(&sender, 0), (&recipient, 0)]), &rules)
+            .with_tracking_tag(
+                &[wallet, paid.recipient],
+                domain::list_tag(&paid.list_salt).unwrap(),
+            );
+        let config = ring().require_config(&chain).await.unwrap();
+        let client = chain.clone().client();
+        let note = ring_utxo(&sender, Mint::SOL, 10, 0);
+        let transfer = || {
+            owner_transfer(&sender, ring_transaction(vec![note.clone()]))
+                .spend_public(wallet.solana_address().unwrap())
+                .with_payment(payment(&paid, 4))
+                .unwrap()
+                .with_list_salt(member(&wallet), paid.list_salt)
+        };
+        let direct = transfer();
+        let prepared = direct.prepare(&chain).await.ok().unwrap();
+        assert!(
+            prepared
+                .pipeline
+                .staged
+                .list_salts
+                .contains(&SubjectListSalt {
+                    member: *member(&paid.recipient).as_bytes(),
+                    list_salt: paid.list_salt,
+                }),
+            "{mode:?}"
+        );
+        assert!(direct.assemble(&client).await.is_ok(), "{mode:?}");
+        let plan = transfer().program_plan(&config).unwrap();
+        let called = transfer().with_program(plan.commitment());
+        assert!(called.assemble(&client).await.is_ok(), "{mode:?} program");
+
+        let disagreeing = transfer().with_list_salt(member(&paid.recipient), [9; 32]);
+        assert!(
+            matches!(
+                disagreeing.assemble(&client).await.err(),
+                Some(RingError::ListSaltMismatch { member: refused })
+                    if refused == *member(&paid.recipient).as_bytes()
+            ),
+            "{mode:?}"
+        );
+    }
+}

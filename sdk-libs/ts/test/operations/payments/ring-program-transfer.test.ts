@@ -32,8 +32,14 @@ import { RingAddress } from "../../../src/crypto/keys/ring-address.js";
 import { signingKeySpendSigner } from "../../../src/operations/payments/anonymous.js";
 import { CustomRingTransfer } from "../../../src/operations/payments/transfer-rails.js";
 import { ringTransactInstruction } from "../../../src/operations/workflow/pipeline.js";
-import { transactionHash } from "../../../src/operations/workflow/program-commitment.js";
+import {
+  transactionHash,
+  type ProgramCommitment,
+} from "../../../src/operations/workflow/program-commitment.js";
 import { RING_COSIGN_TRANSFERS } from "../../../src/protocol/codec/ring-codecs.js";
+import { listTagOf } from "../../../src/crypto/keys/list-salt.js";
+import { buildRuleTable, ListId } from "../../../src/protocol/membership/policy.js";
+import type { Bytes32 } from "@heliuslabs/spr/interface";
 import { INSTRUCTIONS_SYSVAR, ringCoSignerAddress } from "../../../src/protocol/pda/index.js";
 import {
   TransferApproval,
@@ -274,4 +280,135 @@ describe("program transfer", () => {
       "1fc63988477be7e64c70cadc6e4c05c14b72aefffafaec6d194dd3cac0c59d54",
     );
   });
+});
+
+describe("builder lines", () => {
+  beforeAll(initializePoseidon);
+
+  const forms = (["confidential", "anonymous"] as const).flatMap((mode) =>
+    ([false, true] as const).map((program) => ({ mode, program })),
+  );
+
+  it.each(forms)(
+    "refuses a value another step has passed on a $mode ring, program $program",
+    async ({ mode, program }) => {
+      const fixture = await ringFixture({ mode });
+      const owner = ShieldedKeypair.generate();
+      const [alice, bob] = [ShieldedKeypair.generate(), ShieldedKeypair.generate()];
+      const pay = (paid: ShieldedKeypair) => {
+        fixture.enroll(paid.shieldedAddress());
+        const to = new RingAddress({
+          recipient: paid.shieldedAddress(),
+          ringProgramId: fixture.ringProgramId,
+          listSalt: filled(1),
+        });
+        return { to, asset: SOL_MINT, amount: 2n, reply: null };
+      };
+      const superseded = ringError("RING_TRANSFER_SUPERSEDED");
+      const { rail } = ownerRail(fixture, owner, noteInput(owner, 10n, fixture.ringProgramId));
+      const base = rail.spendPublic(owner.shieldedAddress().solanaAddress());
+      const toAlice = base.withPayment(pay(alice));
+      // The base and the rail behind it hold no recipient and read nothing.
+      expect(() => base.withPayment(pay(bob))).toThrow(superseded);
+      const commitment = {
+        salt: new Uint8Array(16) as ProgramCommitment["salt"],
+        privateTxHash: small(1),
+        transactionHash: small(1),
+      };
+      expect(() => base.withProgram(commitment)).toThrow(superseded);
+      await expect(base.planForProgram(fixture.client)).rejects.toThrow(superseded);
+      await expect(base.prove(fixture.client)).rejects.toThrow(superseded);
+      await expect(rail.prove(fixture.client)).rejects.toThrow(superseded);
+      expect(fixture.sppCalls).toHaveLength(0);
+
+      const paid = (outputs: readonly ProofOutputUtxo[]) =>
+        outputs
+          .filter((output) => output.ownerAddress !== undefined)
+          .map((output) => hex(output.ownerAddress?.toBytes() ?? new Uint8Array()))
+          .filter((address) => address !== hex(owner.shieldedAddress().toBytes()));
+      const recipients = [alice, bob].map((keypair) => hex(keypair.shieldedAddress().toBytes()));
+      const live = toAlice.withPayment(pay(bob));
+      await expect(toAlice.prove(fixture.client)).rejects.toThrow(superseded);
+      const plan = await live.planForProgram(fixture.client);
+      expect(paid(plan.outputs)).toEqual(recipients);
+      const proven = await (program ? live.withProgram(plan.commitment()) : live).prove(
+        fixture.client,
+      );
+      expect(paid(proven.outputs)).toEqual(recipients);
+
+      // A second line over the same transfer supersedes the first.
+      const again = ownerRail(fixture, owner, noteInput(owner, 10n, fixture.ringProgramId));
+      const first = CustomRingTransfer.new({
+        ringProgramId: fixture.ringProgramId,
+        keys: walletKeys(owner),
+        transfer: again.transfer,
+        assets,
+      });
+      expect(() => again.rail.withExactApproval()).toThrow(superseded);
+      expect(first.withExactApproval()).toBeDefined();
+    },
+  );
+});
+
+describe("payment address list salts", () => {
+  beforeAll(initializePoseidon);
+
+  const forms = (["confidential", "anonymous"] as const).flatMap((mode) =>
+    ([false, true] as const).map((program) => ({ mode, program })),
+  );
+
+  it.each(forms)(
+    "reads the recipient's salt from the address on a $mode ring, program $program",
+    async ({ mode, program }) => {
+      const fixture = await ringFixture({
+        mode,
+        table: buildRuleTable({
+          rules: [
+            {
+              subject: "outputOwner",
+              source: { kind: "lists", present: [], absent: [ListId.privateBlock] },
+              guard: { kind: "always" },
+            },
+          ],
+        }),
+      });
+      const [owner, paid] = [ShieldedKeypair.generate(), ShieldedKeypair.generate()];
+      const [ownSalt, paidSalt] = [filled(3), filled(5)];
+      fixture.enroll(owner.shieldedAddress(), listTagOf(ownSalt));
+      fixture.enroll(paid.shieldedAddress(), listTagOf(paidSalt));
+      const member = (keypair: ShieldedKeypair) =>
+        keypair.shieldedAddress().signingPublicKey.ownerProofInputHash();
+      const note = noteInput(owner, 10n, fixture.ringProgramId);
+      const transfer = (listSalts: readonly { owner: Bytes32; salt: Bytes32 }[]) =>
+        CustomRingTransfer.new({
+          ringProgramId: fixture.ringProgramId,
+          keys: walletKeys(owner),
+          transfer: new ConfidentialTransfer(owner.shieldedAddress(), [note], fixture.authority),
+          assets,
+          listSalts: [{ owner: member(owner), salt: ownSalt }, ...listSalts],
+        })
+          .spendPublic(owner.shieldedAddress().solanaAddress())
+          .withPayment({
+            to: new RingAddress({
+              recipient: paid.shieldedAddress(),
+              ringProgramId: fixture.ringProgramId,
+              listSalt: paidSalt,
+            }),
+            asset: SOL_MINT,
+            amount: 4n,
+            reply: null,
+          });
+      const plan = await transfer([]).planForProgram(fixture.client);
+      const built = program ? transfer([]).withProgram(plan.commitment()) : transfer([]);
+      await built.prove(fixture.client);
+      const request = fixture.ringRequests.at(-1);
+      if (request?.kind !== "transfer") throw new Error("a transfer request");
+      expect(request.ownerEntries.map((entry) => hex(entry.listSalt))).toContain(hex(paidSalt));
+
+      const disagreeing = transfer([{ owner: member(paid), salt: filled(9) }]);
+      await expect(disagreeing.prove(fixture.client)).rejects.toThrow(
+        ringError("RING_ADDRESS_MISMATCH"),
+      );
+    },
+  );
 });
