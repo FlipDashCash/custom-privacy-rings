@@ -692,13 +692,13 @@ mod tests {
     fn localnet_ports_come_from_each_service_url() {
         let urls = Urls {
             rpc: "http://127.0.0.1:8899".to_owned(),
-            indexer: "http://127.0.0.1:8784".to_owned(),
+            indexer: "http://127.0.0.1:8786".to_owned(),
             prover: "http://127.0.0.1:3001".to_owned(),
             ring_rpc: "http://127.0.0.1:8785".to_owned(),
             ring_rpc_pubkey: None,
             prover_tee_policy: None,
         };
-        assert_eq!(ports(&urls).expect("ports"), [8899, 8784, 3001, 8785]);
+        assert_eq!(ports(&urls).expect("ports"), [8899, 8786, 3001, 8785]);
         let portless = Urls {
             ring_rpc: "http://localhost".to_owned(),
             ..urls
