@@ -17,6 +17,9 @@
 #   RING_DEVNET_WEBAUTHN_RP_ID          WebAuthn RP id over every origin, default the host of the first origin
 #   RING_DEVNET_RELAY_BUDGET_LAMPORTS   default 10000000000, zero is refused
 #   RING_DEVNET_RELAY_SIGNER_BUDGET_LAMPORTS  default 100000000, zero is refused
+#   RING_DEVNET_ENROLLMENT_BUDGET_LAMPORTS    default 1000000000, zero is refused
+#   RING_DEVNET_ENROLLMENT_RING_BUDGET_LAMPORTS  default 20000000 per ring, zero is refused
+#   RING_DEVNET_ENROLLMENT_MAX_RINGS    rings that may register, default 64, zero is refused
 #   RING_DEVNET_CO_SIGNER_APPROVE       default outflow,withdrawal,transfers,deposits,withdrawals
 #   RING_DEVNET_READER_GRANTS           tree or database, default database
 #   RING_DEVNET_PHOTON_BLOCK_FETCHES    blocks Photon fetches at once, default Photon's own
@@ -76,6 +79,8 @@ prover_url="http://127.0.0.1:3001"
 public_rpc="${RING_DEVNET_PUBLIC_RPC_URL:-https://api.devnet.solana.com}"
 rpc_secret="$prefix/solana-rpc-url"
 key_dir="$prefix/ring-rpc"
+# The ring's enrollmentWriter role key, outside key_dir.
+writer_secret="$prefix/enrollment-writer-keypair"
 deployment="maximumPercent=100,minimumHealthyPercent=0"
 sha="$(git rev-parse HEAD)"
 zolana_sha="$(git -C zolana rev-parse HEAD)"
@@ -314,13 +319,13 @@ public_key_tag() {
 
 public_key() {
     local value
-    value="$(public_key_tag "$key_dir/$1")"
+    value="$(public_key_tag "$1")"
     absent "$value" && echo "-" || echo "$value"
 }
 
 # A key is created once and never rotated here, a new root secret orphans every ring and a new service key every pin.
 ensure_key_secret() {
-    local name="$key_dir/$1" kind="$2" file tags
+    local name="$1" kind="$2" file tags
     file="$(secret_file)"
     if absent "$(secret_arn "$name")"; then
         openssl rand -hex 32 | tr -d '\n' > "$file"
@@ -399,7 +404,7 @@ ensure_role() {
         Version: "2012-10-17",
         Statement: [{Effect: "Allow", Action: "secretsmanager:GetSecretValue",
             Resource: [($base + "/ring-rpc/*"), ($base + "/photon/*"), ($base + "/ring-indexer/*"),
-                       ($base + "/solana-rpc-url-??????")]}]}')"
+                       ($base + "/enrollment-writer-keypair-??????"), ($base + "/solana-rpc-url-??????")]}]}')"
     aws_ iam get-role --role-name "$role" --query Role.Arn --output text
 }
 
@@ -463,8 +468,9 @@ printf %s "$STORAGE_AUTHORITY_KEY" > storage-authority.key
 printf %s "$CO_SIGNER_KEY" > co-signer.key
 printf %s "$FEE_PAYER_KEY" > fee-payer.key
 printf %s "$GRANT_ROWS_KEY" > grant-rows.key
+printf %s "$ENROLLMENT_WRITER_KEY" > enrollment-writer.key
 export RING_RPC_STORE_URL="postgres://ring_rpc:$DB_PASSWORD@$DB_HOST:5432/ring_rpc?sslmode=require"
-unset ROOT_SECRET SERVICE_KEY STORAGE_AUTHORITY_KEY CO_SIGNER_KEY FEE_PAYER_KEY GRANT_ROWS_KEY DB_PASSWORD
+unset ROOT_SECRET SERVICE_KEY STORAGE_AUTHORITY_KEY CO_SIGNER_KEY FEE_PAYER_KEY GRANT_ROWS_KEY ENROLLMENT_WRITER_KEY DB_PASSWORD
 exec ring-rpc serve'
 
 # Postgres has no table before the migration, and Photon migrates only its own SQLite.
@@ -526,9 +532,12 @@ up() {
     first="${first#*://}"
     rp="${RING_DEVNET_WEBAUTHN_RP_ID:-${first%%[:/]*}}"
     check_origins "$origins" "$rp"
-    local budget signer_budget grants="${RING_DEVNET_READER_GRANTS:-database}"
+    local budget signer_budget enrollment_budget ring_budget max_rings grants="${RING_DEVNET_READER_GRANTS:-database}"
     budget="$(positive RING_DEVNET_RELAY_BUDGET_LAMPORTS "${RING_DEVNET_RELAY_BUDGET_LAMPORTS:-10000000000}")"
     signer_budget="$(positive RING_DEVNET_RELAY_SIGNER_BUDGET_LAMPORTS "${RING_DEVNET_RELAY_SIGNER_BUDGET_LAMPORTS:-100000000}")"
+    enrollment_budget="$(positive RING_DEVNET_ENROLLMENT_BUDGET_LAMPORTS "${RING_DEVNET_ENROLLMENT_BUDGET_LAMPORTS:-1000000000}")"
+    ring_budget="$(positive RING_DEVNET_ENROLLMENT_RING_BUDGET_LAMPORTS "${RING_DEVNET_ENROLLMENT_RING_BUDGET_LAMPORTS:-20000000}")"
+    max_rings="$(positive RING_DEVNET_ENROLLMENT_MAX_RINGS "${RING_DEVNET_ENROLLMENT_MAX_RINGS:-64}")"
     [[ "$grants" == tree || "$grants" == database ]] || die "RING_DEVNET_READER_GRANTS is tree or database"
     if absent "$(db_instance photon)" && [[ -z "${RING_DEVNET_PHOTON_START_SLOT:-}" ]]; then
         die "a new Photon database needs RING_DEVNET_PHOTON_START_SLOT, without it Photon backfills devnet from slot 319998226"
@@ -559,14 +568,15 @@ up() {
         && aws_ ecs create-cluster --cluster-name "$cluster" --tags "$ecs_tag_spec" >/dev/null
 
     log "== secrets"
-    local rpc_arn root_arn service_arn storage_arn co_signer_arn fee_payer_arn grant_rows_arn
+    local rpc_arn root_arn service_arn storage_arn co_signer_arn fee_payer_arn grant_rows_arn writer_arn
     rpc_arn="$(ensure_rpc_secret)"
-    root_arn="$(ensure_key_secret root-secret secret)"
-    service_arn="$(ensure_key_secret service-key ed25519)"
-    storage_arn="$(ensure_key_secret storage-authority-key ed25519)"
-    co_signer_arn="$(ensure_key_secret co-signer-key ed25519)"
-    fee_payer_arn="$(ensure_key_secret fee-payer-key ed25519)"
-    grant_rows_arn="$(ensure_key_secret grant-rows-key secret)"
+    root_arn="$(ensure_key_secret "$key_dir/root-secret" secret)"
+    service_arn="$(ensure_key_secret "$key_dir/service-key" ed25519)"
+    storage_arn="$(ensure_key_secret "$key_dir/storage-authority-key" ed25519)"
+    co_signer_arn="$(ensure_key_secret "$key_dir/co-signer-key" ed25519)"
+    fee_payer_arn="$(ensure_key_secret "$key_dir/fee-payer-key" ed25519)"
+    grant_rows_arn="$(ensure_key_secret "$key_dir/grant-rows-key" secret)"
+    writer_arn="$(ensure_key_secret "$writer_secret" ed25519)"
     local photon_password ring_indexer_password ring_rpc_password
     photon_password="$(ensure_password_secret photon)"
     ring_indexer_password="$(ensure_password_secret ring-indexer)"
@@ -619,7 +629,7 @@ up() {
     ring_rpc="$(shell_container ring-rpc "$registry/$prefix-ring-rpc:$ring_rpc_tag" "$ring_rpc_script" \
         "$(json_object ROOT_SECRET "$root_arn" SERVICE_KEY "$service_arn" STORAGE_AUTHORITY_KEY "$storage_arn" \
             CO_SIGNER_KEY "$co_signer_arn" FEE_PAYER_KEY "$fee_payer_arn" GRANT_ROWS_KEY "$grant_rows_arn" \
-            DB_PASSWORD "$ring_rpc_password" RING_RPC_SOLANA_RPC_URL "$rpc_arn")" \
+            ENROLLMENT_WRITER_KEY "$writer_arn" DB_PASSWORD "$ring_rpc_password" RING_RPC_SOLANA_RPC_URL "$rpc_arn")" \
         "$(json_object DB_HOST "$ring_rpc_db" \
             RING_RPC_BIND 0.0.0.0 RING_RPC_INSECURE_PUBLIC_BIND true RING_RPC_PORT "$ring_rpc_port" \
             RING_RPC_INDEXER_URL "$ring_indexer_url" RING_RPC_PROVER_URL "$prover_url" \
@@ -632,6 +642,9 @@ up() {
             RING_RPC_FEE_PAYER_KEY_FILE /var/lib/ring-rpc/fee-payer.key \
             RING_RPC_RELAY_BUDGET_LAMPORTS "$budget" RING_RPC_RELAY_SIGNER_BUDGET_LAMPORTS "$signer_budget" \
             RING_RPC_GRANT_ROWS_KEY_FILE /var/lib/ring-rpc/grant-rows.key RING_RPC_READER_GRANTS "$grants" \
+            RING_RPC_ENROLLMENT_APPLIER_KEY_FILE /var/lib/ring-rpc/enrollment-writer.key \
+            RING_RPC_ENROLLMENT_BUDGET_LAMPORTS "$enrollment_budget" \
+            RING_RPC_ENROLLMENT_RING_BUDGET_LAMPORTS "$ring_budget" RING_RPC_ENROLLMENT_MAX_RINGS "$max_rings" \
             RING_RPC_ALLOW_ORIGINS "$origins" RING_RPC_WEBAUTHN_RP_ID "$rp" \
             RING_RPC_PUBLIC_READS_PER_MINUTE 6000 RING_RPC_PUBLIC_READ_BURST 600 \
             RING_RPC_SIGNED_READS_PER_MINUTE 1200 RING_RPC_SIGNED_READ_BURST 200 \
@@ -672,11 +685,13 @@ status() {
         "photon" "$photon" \
         "ring indexer" "$ring_indexer" \
         "ring rpc" "$ring_rpc" \
-        "service key" "$(public_key service-key)" \
-        "co-signer key" "$(public_key co-signer-key)"
+        "service key" "$(public_key "$key_dir/service-key")" \
+        "co-signer key" "$(public_key "$key_dir/co-signer-key")" \
+        "enrollment writer" "$(public_key "$writer_secret")"
     echo
-    printf '%-18s %s   (fund it, it pays every records write)\n' "storage authority" "$(public_key storage-authority-key)"
-    printf '%-18s %s   (fund it above the relay budget)\n' "fee payer" "$(public_key fee-payer-key)"
+    printf '%-18s %s   (fund it, it pays every records write)\n' "storage authority" "$(public_key "$key_dir/storage-authority-key")"
+    printf '%-18s %s   (fund it above the relay budget)\n' "fee payer" "$(public_key "$key_dir/fee-payer-key")"
+    printf '%-18s %s   (fund it above the enrollment budget)\n' "enrollment writer" "$(public_key "$writer_secret")"
     echo
     probe "photon" "$([[ "$photon" == - ]] && echo - || echo "$photon/liveness")"
     probe "ring indexer" "$([[ "$ring_indexer" == - ]] && echo - || echo "$ring_indexer/ready")"
@@ -774,6 +789,7 @@ down() {
         for name in root-secret service-key storage-authority-key co-signer-key fee-payer-key grant-rows-key; do
             delete_secret "$key_dir/$name"
         done
+        delete_secret "$writer_secret"
         delete_secret "$rpc_secret"
         for service in ring-rpc ring-indexer ring-prover photon; do
             absent "$(aws_ ecr describe-repositories --repository-names "$prefix-$service" \

@@ -8,6 +8,7 @@
 - **Ring indexer** keeps its index in its own Postgres instance and binds `0.0.0.0:8786`. It serves the ring methods and passes every other call to Photon. Clients read Photon through it.
 - **Ring RPC task** runs two containers. The Ring RPC serves port 8785. The ring prover binds `127.0.0.1:3001` beside it, because the Rust prover client accepts plain HTTP only on loopback.
 - **Ring RPC settings** follow from the task. It runs in derived mode with its store in a third Postgres instance. Its storage authority, fee payer, co-signer and grant rows keys turn on the record writer, the relay, co-signing and `database` reader grants.
+- **Enrollment writer** writes the enrollments of a ring after the ring registers through `registerEnrollmentRing`. The ring's policy authority signs the registration, and the ring's `enrollmentWriter` role must name the writer key. The Postgres store keeps the registered rings across a restart. `RING_DEVNET_ENROLLMENT_BUDGET_LAMPORTS` caps its batch fees, 1 SOL by default. `RING_DEVNET_ENROLLMENT_RING_BUDGET_LAMPORTS` caps the fees of one ring, 0.02 SOL by default, and `RING_DEVNET_ENROLLMENT_MAX_RINGS` caps the registered rings, 64 by default.
 - **Network** is one load balancer in front of the three services. One CloudFront distribution per service serves HTTPS on an Amazon hostname.
 
 ## Prerequisites
@@ -32,7 +33,7 @@
    ```
 
    `up` builds each missing image, creates or updates every resource, waits for the services and prints the `status` block.
-4. Fund the storage authority and the fee payer that `status` prints. The storage authority pays every records write. The fee payer pays every relay, and the relay budget caps what enrollments and token accounts take from it.
+4. Fund the storage authority, the fee payer and the enrollment writer that `status` prints. The storage authority pays every records write. The fee payer pays every relay, and the relay budget caps what enrollments and token accounts take from it. The enrollment writer pays every enrollment batch, and the enrollment budget caps it.
 5. Copy the endpoint block into the devnet profile of the demo.
 
 ## Status
@@ -46,9 +47,10 @@ ring indexer       https://<id>.cloudfront.net
 ring rpc           https://<id>.cloudfront.net
 service key        <base58>
 co-signer key      <base58>
+enrollment writer  <base58>
 ```
 
-It then prints the storage authority, the fee payer, one readiness line per service and the log command. Each key comes from the `public-key` tag of its secret, so `status` reads no secret value.
+The demo reads the enrollment writer as `RING_ENROLLMENT_WRITER`. `status` then prints the storage authority, the fee payer and the enrollment writer to fund, one readiness line per service and the log command. Each key comes from the `public-key` tag of its secret, so `status` reads no secret value.
 
 ## Images
 
@@ -65,9 +67,11 @@ It then prints the storage authority, the fee payer, one readiness line per serv
 - `storage-authority-key`, `fee-payer-key` and `co-signer-key` are Ed25519 seeds.
 - `grant-rows-key` keys the reader grant rows.
 
+`zolana-ring-devnet/enrollment-writer-keypair` holds the Ed25519 seed of the enrollment writer, the `enrollmentWriter` role key each ring names. `up` creates it once in the same way.
+
 Each value is 64 lowercase hex characters with no newline. To bring an existing key, create its secret before the first `up`, and `up` adds its `public-key` tag.
 
-`zolana-ring-devnet/solana-rpc-url` holds the RPC URL the services read. `RING_DEVNET_RPC_URL` creates or replaces it, and the value never reaches a command line or the dry run. The task execution role reads only `ring-rpc/`, `photon/`, `ring-indexer/` and `solana-rpc-url` under the prefix. Any other secret under the same prefix stays out of its reach.
+`zolana-ring-devnet/solana-rpc-url` holds the RPC URL the services read. `RING_DEVNET_RPC_URL` creates or replaces it, and the value never reaches a command line or the dry run. The task execution role reads only `ring-rpc/`, `photon/`, `ring-indexer/`, `enrollment-writer-keypair` and `solana-rpc-url` under the prefix. Any other secret under the same prefix stays out of its reach.
 
 ## Browser origins
 
