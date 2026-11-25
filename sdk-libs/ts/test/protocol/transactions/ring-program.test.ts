@@ -400,7 +400,7 @@ describe("SPP ring config", () => {
     await expect(fetchSppRingConfig(reader(account), PROGRAM)).resolves.toEqual({
       activated: true,
       paused: true,
-      ringAuthorityTransactIsEnabled: false,
+      ringAuthorityTransactIsEnabled: true,
     });
     await expect(requireActiveRing(reader(account), PROGRAM)).rejects.toMatchObject({
       code: "RING_PAUSED",
@@ -412,6 +412,33 @@ describe("SPP ring config", () => {
     await expect(
       fetchSppRingConfig(reader({ ...account, owner: PAYER }), PROGRAM),
     ).rejects.toMatchObject({ code: "RING_CONFIG_INVALID" });
+  });
+
+  it("reads the authority rail apart from the activation", async () => {
+    const read = async (input: Readonly<{ activated: boolean; authorityRail?: boolean }>) => {
+      const [ringAuth, account] = await sppRingRegistration({
+        authority: AUTHORITY,
+        ringProgramId: PROGRAM,
+        ...input,
+      });
+      return fetchSppRingConfig(
+        { getAccount: (at: Address) => Promise.resolve(at === ringAuth ? account : undefined) },
+        PROGRAM,
+      );
+    };
+    // A pool with permissionless activation opens the rail at creation, any other pool leaves both off.
+    await expect(read({ activated: true })).resolves.toMatchObject({
+      activated: true,
+      ringAuthorityTransactIsEnabled: true,
+    });
+    await expect(read({ activated: false })).resolves.toMatchObject({
+      activated: false,
+      ringAuthorityTransactIsEnabled: false,
+    });
+    await expect(read({ activated: true, authorityRail: false })).resolves.toMatchObject({
+      activated: true,
+      ringAuthorityTransactIsEnabled: false,
+    });
   });
 });
 
