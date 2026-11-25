@@ -20,7 +20,6 @@ pinocchio = { workspace = true, features = ["cpi"] }
 solana-instruction = { workspace = true, optional = true }
 spr-hasher = { workspace = true }
 spr-program = { workspace = true, features = ["compression", "verifier"] }
-wincode = { workspace = true }
 xark = { version = "0.3.1", optional = true }
 
 [target.'cfg(all(not(xark), not(xark_client)))'.dependencies]

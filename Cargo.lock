@@ -10530,7 +10530,6 @@ dependencies = [
  "spr-program",
  "spr-transaction",
  "tokio",
- "wincode",
  "xark",
  "zolana-ring-client",
  "zolana-ring-keys",
