@@ -541,6 +541,10 @@ publish-image service *args:
 rings-test command *args:
     tools/rings-test-deploy.sh {{command}} {{args}}
 
+# ECS ring devnet stack, every resource named zolana-ring-devnet-*, `just ring-devnet up`.
+ring-devnet command *args:
+    tools/ring-devnet-deploy.sh {{command}} {{args}}
+
 # Move the zolana pin, `just zolana-bump origin/main`.
 zolana-bump rev:
     git -C zolana fetch origin
