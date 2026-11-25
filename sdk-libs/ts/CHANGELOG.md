@@ -74,6 +74,7 @@ Added
 - A transfer committed to a program names no co-signer and no owner off the Ed25519 curve as a transaction signer, an owner on the curve still signs the transaction, `ProvenRingTransfer.approveTransfer(position)` returns one `ApproveTransfer` instruction per co-signer for the top level of the transaction, `approvedTransfer()` returns the value `ringRpcCoSigner` and `RingRpc.coSignTransaction` take as `approvedTransfer`, and both fail with `RING_APPROVAL_OUTSIDE_PROGRAM` on any other transfer.
 - `TransferApproval` digests, encodes and parses a transfer approval and `approveTransferInstruction` builds its instruction, `RingProgramError` names `missingTransferApproval`, `transferApprovalOtherCall`, `transferApprovalOtherPosition` and `approvalNotTopLevel` at 8270 to 8273, and `RingRpcRefusal` names `approvedCallNotOnce` at -32176.
 - `fetchSppRingConfig` reads a ring's `activated`, `paused` and `ringAuthorityTransactIsEnabled` flags, `closeRingProgramInstruction` closes a ring program with its program data, and the main entry exports `RING_COSIGN_APPROVE_OUTFLOW` and `RING_COSIGN_APPROVE_WITHDRAWAL`.
+- `ringCapabilities(client)` reports for each `RING_FEATURES` entry whether the prover serves its pinned keys and the reason when it does not, `enroll` names the owner's register key and the apply enrollments keys Ring RPC proves with, and `merge` also needs SPP's `merge_ring` keys.
 
 Changed
 
