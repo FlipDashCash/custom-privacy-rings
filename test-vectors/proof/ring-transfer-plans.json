@@ -5,6 +5,8 @@
   "ownerSeed": 1,
   "treeId": 0,
   "salt": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+  "state": "7374617465",
+  "stateHash": "1111111111111111111111111111111111111111111111111111111111111111",
   "cases": [
     {
       "name": "confidential, PDA owner, partial spend",
@@ -32,6 +34,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 6,
           "ring": true,
+          "dataHash": null,
           "blinding": "0ce67baaba1b53777666c497f10f1feeaf3a5a61f367546d651d99f2a5dd5587"
         },
         {
@@ -39,6 +42,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
           "ring": true,
+          "dataHash": null,
           "blinding": "300bfe7c0a08fc4842047991f0efe5afa00cdac14aa2f86fcabc918b31c3a1a5"
         }
       ],
@@ -47,13 +51,15 @@
           "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 6,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         }
       ],
       "blindingSeed": "11262a8dace96269e3c6cfb859a66290d5fcc82474118f24ab3e31302c05d430",
@@ -87,6 +93,7 @@
           "mint": "0909090909090909090909090909090909090909090909090909090909090909",
           "amount": 0,
           "ring": true,
+          "dataHash": null,
           "blinding": "0dbe56e0a36c32d92882bf3b16fe98592c56b5fbed58b69bd45347160b95dff0"
         },
         {
@@ -94,6 +101,7 @@
           "mint": "0909090909090909090909090909090909090909090909090909090909090909",
           "amount": 10,
           "ring": true,
+          "dataHash": null,
           "blinding": "12b2743d0edc985bb2ba46a8eaa87f2ad89056f7cf38307f872ec750795da0b3"
         }
       ],
@@ -102,13 +110,15 @@
           "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 0,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0909090909090909090909090909090909090909090909090909090909090909",
           "amount": 10,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         }
       ],
       "blindingSeed": "283900d6c7e3fd964870a2cd529313ff5d67e183bfbb2305b6363dbf31cc2d7a",
@@ -148,6 +158,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 0,
           "ring": true,
+          "dataHash": null,
           "blinding": "0ce67baaba1b53777666c497f10f1feeaf3a5a61f367546d651d99f2a5dd5587"
         },
         {
@@ -155,6 +166,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 10,
           "ring": true,
+          "dataHash": null,
           "blinding": "300bfe7c0a08fc4842047991f0efe5afa00cdac14aa2f86fcabc918b31c3a1a5"
         }
       ],
@@ -163,19 +175,494 @@
           "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 0,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 10,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         }
       ],
       "blindingSeed": "11262a8dace96269e3c6cfb859a66290d5fcc82474118f24ab3e31302c05d430",
       "firstNullifier": "0dbeb2d9d815b92ac49fb1fb5339231cff04e03543c24c25377a022e6e2b81a4",
       "privateTxHash": "0499c3d0a31fb91eb3d6edba1268bedf8c0caab01d49102936fa6133780ee13d",
       "transactionHash": "0499c3d0a31fb91eb3d6edba1268bedf8c0caab01d49102936fa6133780ee13d"
+    },
+    {
+      "name": "confidential, PDA owner, a declared change ahead of a state payment",
+      "mode": "confidential",
+      "pdaOwner": true,
+      "compact": false,
+      "inputs": [
+        {
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 10,
+          "blinding": "0303030303030303030303030303030303030303030303030303030303030303"
+        }
+      ],
+      "declared": [
+        {
+          "kind": "own",
+          "seed": null,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 6
+        },
+        {
+          "kind": "state",
+          "seed": null,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 0
+        },
+        {
+          "kind": "payment",
+          "seed": 2,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4
+        }
+      ],
+      "outputs": [
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 6,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "0ce67baaba1b53777666c497f10f1feeaf3a5a61f367546d651d99f2a5dd5587"
+        },
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 0,
+          "ring": true,
+          "dataHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "blinding": "300bfe7c0a08fc4842047991f0efe5afa00cdac14aa2f86fcabc918b31c3a1a5"
+        },
+        {
+          "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "17578fcd89015477e391adeb21cd3d47118870d7a9b91230631467cc6c611683"
+        },
+        {
+          "owner": null,
+          "blinding": "186f55b528aae337207905d87096b2ea15ee09479544d20df2b2ee2d3e23a3c4"
+        }
+      ],
+      "directOutputs": [
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 6,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 0,
+          "ring": true,
+          "dataHash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": null
+        }
+      ],
+      "blindingSeed": "11262a8dace96269e3c6cfb859a66290d5fcc82474118f24ab3e31302c05d430",
+      "firstNullifier": "0dbeb2d9d815b92ac49fb1fb5339231cff04e03543c24c25377a022e6e2b81a4",
+      "privateTxHash": "28bfcd950bca4a395b119e5101ef5134cdfccd0fe08702cd9ab78eb091c874f6",
+      "transactionHash": "28bfcd950bca4a395b119e5101ef5134cdfccd0fe08702cd9ab78eb091c874f6"
+    },
+    {
+      "name": "anonymous, PDA owner, a declared change ahead of a state payment",
+      "mode": "anonymous",
+      "pdaOwner": true,
+      "compact": false,
+      "inputs": [
+        {
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 10,
+          "blinding": "0303030303030303030303030303030303030303030303030303030303030303"
+        }
+      ],
+      "declared": [
+        {
+          "kind": "own",
+          "seed": null,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 6
+        },
+        {
+          "kind": "state",
+          "seed": null,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 0
+        },
+        {
+          "kind": "payment",
+          "seed": 2,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4
+        }
+      ],
+      "outputs": [
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 6,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "0ce67baaba1b53777666c497f10f1feeaf3a5a61f367546d651d99f2a5dd5587"
+        },
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 0,
+          "ring": true,
+          "dataHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "blinding": "300bfe7c0a08fc4842047991f0efe5afa00cdac14aa2f86fcabc918b31c3a1a5"
+        },
+        {
+          "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "17578fcd89015477e391adeb21cd3d47118870d7a9b91230631467cc6c611683"
+        },
+        {
+          "owner": null,
+          "blinding": "186f55b528aae337207905d87096b2ea15ee09479544d20df2b2ee2d3e23a3c4"
+        }
+      ],
+      "directOutputs": [
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 6,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 0,
+          "ring": true,
+          "dataHash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": null
+        }
+      ],
+      "blindingSeed": "11262a8dace96269e3c6cfb859a66290d5fcc82474118f24ab3e31302c05d430",
+      "firstNullifier": "0dbeb2d9d815b92ac49fb1fb5339231cff04e03543c24c25377a022e6e2b81a4",
+      "privateTxHash": "28bfcd950bca4a395b119e5101ef5134cdfccd0fe08702cd9ab78eb091c874f6",
+      "transactionHash": "28bfcd950bca4a395b119e5101ef5134cdfccd0fe08702cd9ab78eb091c874f6"
+    },
+    {
+      "name": "confidential, PDA owner, a declared change, every unit paid and a spare slot",
+      "mode": "confidential",
+      "pdaOwner": true,
+      "compact": false,
+      "inputs": [
+        {
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 10,
+          "blinding": "0303030303030303030303030303030303030303030303030303030303030303"
+        }
+      ],
+      "declared": [
+        {
+          "kind": "own",
+          "seed": null,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4
+        },
+        {
+          "kind": "payment",
+          "seed": 2,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 5
+        },
+        {
+          "kind": "payment",
+          "seed": 3,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 1
+        }
+      ],
+      "outputs": [
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "0ce67baaba1b53777666c497f10f1feeaf3a5a61f367546d651d99f2a5dd5587"
+        },
+        {
+          "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 5,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "300bfe7c0a08fc4842047991f0efe5afa00cdac14aa2f86fcabc918b31c3a1a5"
+        },
+        {
+          "owner": "01ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1000859c8d76b11ae685d6e344cbad137e531a486d002c631a2aaee3b6d46729e7204cd38df94f3abeee72ece343e56d255b55d06a59ba3e57073a01310d7df4c9360",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 1,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "17578fcd89015477e391adeb21cd3d47118870d7a9b91230631467cc6c611683"
+        },
+        {
+          "owner": null,
+          "blinding": "186f55b528aae337207905d87096b2ea15ee09479544d20df2b2ee2d3e23a3c4"
+        }
+      ],
+      "directOutputs": [
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 5,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": "01ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1000859c8d76b11ae685d6e344cbad137e531a486d002c631a2aaee3b6d46729e7204cd38df94f3abeee72ece343e56d255b55d06a59ba3e57073a01310d7df4c9360",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 1,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": null
+        }
+      ],
+      "blindingSeed": "11262a8dace96269e3c6cfb859a66290d5fcc82474118f24ab3e31302c05d430",
+      "firstNullifier": "0dbeb2d9d815b92ac49fb1fb5339231cff04e03543c24c25377a022e6e2b81a4",
+      "privateTxHash": "155606d104bd5cc468f7686b946ff4b3b82342f71091136dac9816d7d65344b3",
+      "transactionHash": "155606d104bd5cc468f7686b946ff4b3b82342f71091136dac9816d7d65344b3"
+    },
+    {
+      "name": "anonymous, PDA owner, a declared change, every unit paid and a spare slot",
+      "mode": "anonymous",
+      "pdaOwner": true,
+      "compact": false,
+      "inputs": [
+        {
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 10,
+          "blinding": "0303030303030303030303030303030303030303030303030303030303030303"
+        }
+      ],
+      "declared": [
+        {
+          "kind": "own",
+          "seed": null,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4
+        },
+        {
+          "kind": "payment",
+          "seed": 2,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 5
+        },
+        {
+          "kind": "payment",
+          "seed": 3,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 1
+        }
+      ],
+      "outputs": [
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "0ce67baaba1b53777666c497f10f1feeaf3a5a61f367546d651d99f2a5dd5587"
+        },
+        {
+          "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 5,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "300bfe7c0a08fc4842047991f0efe5afa00cdac14aa2f86fcabc918b31c3a1a5"
+        },
+        {
+          "owner": "01ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1000859c8d76b11ae685d6e344cbad137e531a486d002c631a2aaee3b6d46729e7204cd38df94f3abeee72ece343e56d255b55d06a59ba3e57073a01310d7df4c9360",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 1,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "17578fcd89015477e391adeb21cd3d47118870d7a9b91230631467cc6c611683"
+        },
+        {
+          "owner": null,
+          "blinding": "186f55b528aae337207905d87096b2ea15ee09479544d20df2b2ee2d3e23a3c4"
+        }
+      ],
+      "directOutputs": [
+        {
+          "owner": "02c1cd9152317b583479110a062763c901a9ad701a473a81d1d147544dd4cc90b300070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 5,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": "01ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1000859c8d76b11ae685d6e344cbad137e531a486d002c631a2aaee3b6d46729e7204cd38df94f3abeee72ece343e56d255b55d06a59ba3e57073a01310d7df4c9360",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 1,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": null
+        }
+      ],
+      "blindingSeed": "11262a8dace96269e3c6cfb859a66290d5fcc82474118f24ab3e31302c05d430",
+      "firstNullifier": "0dbeb2d9d815b92ac49fb1fb5339231cff04e03543c24c25377a022e6e2b81a4",
+      "privateTxHash": "155606d104bd5cc468f7686b946ff4b3b82342f71091136dac9816d7d65344b3",
+      "transactionHash": "155606d104bd5cc468f7686b946ff4b3b82342f71091136dac9816d7d65344b3"
+    },
+    {
+      "name": "anonymous, a state output of the sender and no change",
+      "mode": "anonymous",
+      "pdaOwner": false,
+      "compact": false,
+      "inputs": [
+        {
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 10,
+          "blinding": "0303030303030303030303030303030303030303030303030303030303030303"
+        }
+      ],
+      "declared": [
+        {
+          "kind": "state",
+          "seed": null,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 0
+        },
+        {
+          "kind": "payment",
+          "seed": 2,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 6
+        },
+        {
+          "kind": "payment",
+          "seed": 3,
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4
+        }
+      ],
+      "outputs": [
+        {
+          "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 0,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
+        },
+        {
+          "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 0,
+          "ring": true,
+          "dataHash": "1111111111111111111111111111111111111111111111111111111111111111",
+          "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
+        },
+        {
+          "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 6,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "183b9986f7a5ef6853e4ee3c91a9ad2e2028761038a8f9910864d824ac24fbd7"
+        },
+        {
+          "owner": "01ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1000859c8d76b11ae685d6e344cbad137e531a486d002c631a2aaee3b6d46729e7204cd38df94f3abeee72ece343e56d255b55d06a59ba3e57073a01310d7df4c9360",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4,
+          "ring": true,
+          "dataHash": null,
+          "blinding": "17ffa06c2a840a01ac05462f6c17b70367361db0f69fd81f7095098836281dc6"
+        }
+      ],
+      "directOutputs": [
+        {
+          "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 0,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 0,
+          "ring": true,
+          "dataHash": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 6,
+          "ring": true,
+          "dataHash": null
+        },
+        {
+          "owner": "01ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1000859c8d76b11ae685d6e344cbad137e531a486d002c631a2aaee3b6d46729e7204cd38df94f3abeee72ece343e56d255b55d06a59ba3e57073a01310d7df4c9360",
+          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
+          "amount": 4,
+          "ring": true,
+          "dataHash": null
+        }
+      ],
+      "blindingSeed": "28932a9b60d071b69ae9656d05fdc1fabf8d3debd3bf347704a2b22e8128d8d1",
+      "firstNullifier": "2741d44f7176ad91afd8fd29ac6472dd561dc732a67fa6a751e9596553662edb",
+      "privateTxHash": "00e9a4c4c4a3b5b725fe7e787e7d89030238380b3b089bf74b8df71de70991a2",
+      "transactionHash": "00e9a4c4c4a3b5b725fe7e787e7d89030238380b3b089bf74b8df71de70991a2"
     },
     {
       "name": "confidential, partial spend",
@@ -203,6 +690,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 6,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
@@ -210,6 +698,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
           "ring": true,
+          "dataHash": null,
           "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
         }
       ],
@@ -218,13 +707,15 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 6,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         }
       ],
       "blindingSeed": "28932a9b60d071b69ae9656d05fdc1fabf8d3debd3bf347704a2b22e8128d8d1",
@@ -263,6 +754,7 @@
           "mint": "0909090909090909090909090909090909090909090909090909090909090909",
           "amount": 6,
           "ring": true,
+          "dataHash": null,
           "blinding": "131118fc260be0ab6760be9214249a7acbed77bf4ab7c2054ff5429eaf753183"
         },
         {
@@ -270,6 +762,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
           "ring": true,
+          "dataHash": null,
           "blinding": "1ae112750caca189933254aaa0e97b5573182354f2198d92176ce3126b04d398"
         },
         {
@@ -277,6 +770,7 @@
           "mint": "0909090909090909090909090909090909090909090909090909090909090909",
           "amount": 4,
           "ring": true,
+          "dataHash": null,
           "blinding": "02ec7cefd683984e08b3cfc2fdb5eb338d26130e01997b0fffb985d81c9326d3"
         },
         {
@@ -289,19 +783,22 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0909090909090909090909090909090909090909090909090909090909090909",
           "amount": 6,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0909090909090909090909090909090909090909090909090909090909090909",
           "amount": 4,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": null
@@ -338,6 +835,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 10,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
@@ -350,7 +848,8 @@
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 10,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": null
@@ -387,6 +886,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 7,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
@@ -394,6 +894,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 3,
           "ring": true,
+          "dataHash": null,
           "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
         }
       ],
@@ -402,13 +903,15 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 7,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 3,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         }
       ],
       "blindingSeed": "28932a9b60d071b69ae9656d05fdc1fabf8d3debd3bf347704a2b22e8128d8d1",
@@ -448,6 +951,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
@@ -455,6 +959,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
           "ring": true,
+          "dataHash": null,
           "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
         },
         {
@@ -462,6 +967,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 1,
           "ring": true,
+          "dataHash": null,
           "blinding": "183b9986f7a5ef6853e4ee3c91a9ad2e2028761038a8f9910864d824ac24fbd7"
         },
         {
@@ -474,19 +980,22 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "01ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1000859c8d76b11ae685d6e344cbad137e531a486d002c631a2aaee3b6d46729e7204cd38df94f3abeee72ece343e56d255b55d06a59ba3e57073a01310d7df4c9360",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 1,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": null
@@ -529,6 +1038,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
@@ -536,6 +1046,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 2,
           "ring": false,
+          "dataHash": null,
           "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
         },
         {
@@ -543,6 +1054,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
           "ring": true,
+          "dataHash": null,
           "blinding": "183b9986f7a5ef6853e4ee3c91a9ad2e2028761038a8f9910864d824ac24fbd7"
         },
         {
@@ -555,19 +1067,22 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 2,
-          "ring": false
+          "ring": false,
+          "dataHash": null
         },
         {
           "owner": "01ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1000859c8d76b11ae685d6e344cbad137e531a486d002c631a2aaee3b6d46729e7204cd38df94f3abeee72ece343e56d255b55d06a59ba3e57073a01310d7df4c9360",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": null
@@ -610,6 +1125,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 3,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
@@ -617,6 +1133,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 2,
           "ring": true,
+          "dataHash": null,
           "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
         },
         {
@@ -624,6 +1141,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
           "ring": true,
+          "dataHash": null,
           "blinding": "183b9986f7a5ef6853e4ee3c91a9ad2e2028761038a8f9910864d824ac24fbd7"
         },
         {
@@ -636,19 +1154,22 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 3,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 2,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": null
@@ -691,6 +1212,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 3,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
@@ -698,6 +1220,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 2,
           "ring": true,
+          "dataHash": null,
           "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
         },
         {
@@ -705,6 +1228,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
           "ring": true,
+          "dataHash": null,
           "blinding": "183b9986f7a5ef6853e4ee3c91a9ad2e2028761038a8f9910864d824ac24fbd7"
         },
         {
@@ -717,19 +1241,22 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 3,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 2,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": null
@@ -772,6 +1299,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 3,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
@@ -779,6 +1307,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 2,
           "ring": true,
+          "dataHash": null,
           "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
         },
         {
@@ -786,6 +1315,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
           "ring": true,
+          "dataHash": null,
           "blinding": "183b9986f7a5ef6853e4ee3c91a9ad2e2028761038a8f9910864d824ac24fbd7"
         },
         {
@@ -798,19 +1328,22 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 3,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 2,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": null
@@ -853,6 +1386,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 3,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
@@ -860,6 +1394,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 2,
           "ring": true,
+          "dataHash": null,
           "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
         },
         {
@@ -867,6 +1402,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
           "ring": true,
+          "dataHash": null,
           "blinding": "183b9986f7a5ef6853e4ee3c91a9ad2e2028761038a8f9910864d824ac24fbd7"
         },
         {
@@ -879,19 +1415,22 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 3,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 2,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 5,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": null
@@ -928,6 +1467,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 6,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
@@ -935,6 +1475,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
           "ring": true,
+          "dataHash": null,
           "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
         }
       ],
@@ -943,13 +1484,15 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 6,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 4,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         }
       ],
       "blindingSeed": "28932a9b60d071b69ae9656d05fdc1fabf8d3debd3bf347704a2b22e8128d8d1",
@@ -983,6 +1526,7 @@
           "mint": "0909090909090909090909090909090909090909090909090909090909090909",
           "amount": 0,
           "ring": true,
+          "dataHash": null,
           "blinding": "272faeca5f87e61f090d4a2852d0fde09e9afa77c71aabd62406bb022274095e"
         },
         {
@@ -990,6 +1534,7 @@
           "mint": "0909090909090909090909090909090909090909090909090909090909090909",
           "amount": 10,
           "ring": true,
+          "dataHash": null,
           "blinding": "0cb1e9986fce6e69a8c940b42b34f6c58557dd58feaab94d5cf00b28e3e4df83"
         }
       ],
@@ -998,13 +1543,15 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 0,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0909090909090909090909090909090909090909090909090909090909090909",
           "amount": 10,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         }
       ],
       "blindingSeed": "1c5590d9010742442b7217b31d713db0329256e22331db18d064ada27a5722db",
@@ -1038,6 +1585,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 0,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
@@ -1045,6 +1593,7 @@
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 10,
           "ring": true,
+          "dataHash": null,
           "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
         }
       ],
@@ -1053,13 +1602,15 @@
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 0,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         },
         {
           "owner": "018139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394000e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e93904c6964c9c891df8f976eac5fb35ffea0c0638432c1cb983560bafc800ffcc2c44",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
           "amount": 10,
-          "ring": true
+          "ring": true,
+          "dataHash": null
         }
       ],
       "blindingSeed": "28932a9b60d071b69ae9656d05fdc1fabf8d3debd3bf347704a2b22e8128d8d1",
@@ -1091,15 +1642,13 @@
         {
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
-          "amount": 0,
+          "amount": 10,
           "ring": true,
+          "dataHash": null,
           "blinding": "2b100722c9f0c725234febfbc19f9c7d50ddb09e6d25ad368325cad26b3e41df"
         },
         {
-          "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
-          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
-          "amount": 10,
-          "ring": true,
+          "owner": null,
           "blinding": "1ced249bcff01b9e4fe8a54090bf332163f96999ded09cea8b5fea958310c68f"
         }
       ],
@@ -1107,20 +1656,18 @@
         {
           "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
           "mint": "0000000000000000000000000000000000000000000000000000000000000000",
-          "amount": 0,
-          "ring": true
+          "amount": 10,
+          "ring": true,
+          "dataHash": null
         },
         {
-          "owner": "018a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c00070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f0484da9bedd212dd7aedecb0fa71a67074d100c6b42793d8acc08cbf40a5794654",
-          "mint": "0000000000000000000000000000000000000000000000000000000000000000",
-          "amount": 10,
-          "ring": true
+          "owner": null
         }
       ],
       "blindingSeed": "28932a9b60d071b69ae9656d05fdc1fabf8d3debd3bf347704a2b22e8128d8d1",
       "firstNullifier": "2741d44f7176ad91afd8fd29ac6472dd561dc732a67fa6a751e9596553662edb",
-      "privateTxHash": "1099b96f9e24f11f893bf05a951c0f8bfb9536ebb48dd32e79969ffcb5a60045",
-      "transactionHash": "1099b96f9e24f11f893bf05a951c0f8bfb9536ebb48dd32e79969ffcb5a60045"
+      "privateTxHash": "15d673fb974b93bf456869ccdf22e30143854075ce849f4f69d01c7eb6c1d616",
+      "transactionHash": "15d673fb974b93bf456869ccdf22e30143854075ce849f4f69d01c7eb6c1d616"
     }
   ]
 }

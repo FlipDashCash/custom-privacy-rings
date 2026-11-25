@@ -340,7 +340,7 @@ fn auditor_sees_every_ring_transfer() -> Result<()> {
     .run(&env)?;
     assert_eq!(
         ring_amounts(&audited_hop)?,
-        vec![SECOND_HOP_AMOUNT, RING_TRANSFER_AMOUNT - SECOND_HOP_AMOUNT],
+        vec![RING_TRANSFER_AMOUNT - SECOND_HOP_AMOUNT, SECOND_HOP_AMOUNT],
         "second hop outputs"
     );
 
@@ -458,7 +458,7 @@ fn an_audit_only_ring_audits_every_transfer() -> Result<()> {
     );
     assert_eq!(
         ring_amounts(&audited)?,
-        [RING_TRANSFER_AMOUNT, RING_CHANGE],
+        [RING_CHANGE, RING_TRANSFER_AMOUNT],
         "auditor decrypts both output amounts"
     );
 
@@ -487,7 +487,7 @@ fn an_audit_only_ring_audits_every_transfer() -> Result<()> {
     .run(&env)?;
     assert_eq!(
         ring_amounts(&audited_hop)?,
-        vec![SECOND_HOP_AMOUNT, RING_TRANSFER_AMOUNT - SECOND_HOP_AMOUNT],
+        vec![RING_TRANSFER_AMOUNT - SECOND_HOP_AMOUNT, SECOND_HOP_AMOUNT],
         "second hop outputs"
     );
     Ok(())
@@ -552,7 +552,7 @@ fn an_audit_only_ring_audits_a_relayer_paid_transfer_its_owner_signs_in_the_proo
     .run(&env)?;
     assert_eq!(
         ring_amounts(&audited)?,
-        [RING_TRANSFER_AMOUNT, RING_DEPOSIT_A - RING_TRANSFER_AMOUNT],
+        [RING_DEPOSIT_A - RING_TRANSFER_AMOUNT, RING_TRANSFER_AMOUNT],
         "the auditor opens both outputs of the in-proof transfer"
     );
     Ok(())

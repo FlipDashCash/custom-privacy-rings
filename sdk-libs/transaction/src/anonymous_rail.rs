@@ -342,7 +342,7 @@ fn note_of(output: &SppProofOutputUtxo) -> (Option<ShieldedAddress>, Mint, u64) 
 }
 
 /// A bundle cell holds no data, a data note travels in its own body.
-fn is_change(output: &SppProofOutputUtxo, sender: &ShieldedAddress) -> bool {
+pub(crate) fn is_change(output: &SppProofOutputUtxo, sender: &ShieldedAddress) -> bool {
     let carries_data = [output.data_hash, output.ring_data_hash]
         .into_iter()
         .flatten()

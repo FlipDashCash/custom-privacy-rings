@@ -104,7 +104,7 @@ import {
 } from "../workflow/program-commitment.js";
 import type { SealRow } from "../workflow/transfer-plan.js";
 import { isSmallOrder } from "../../crypto/keys/x25519.js";
-import { AnonymousPlan, RingOutputRail } from "./output-rail.js";
+import { AnonymousPlan, declarePayment, RingOutputRail } from "./output-rail.js";
 import {
   checkCoOwnerKeys,
   checkZeroKeyInputs,
@@ -657,15 +657,10 @@ export class AnonymousTransfer {
       throw new RingError("RING_FOREIGN_RING", {
         details: { address: payment.to.ringProgramId, ring: this.#owner.ringProgramId },
       });
-    this.#owner.transfer.sendToRing(
-      payment.to.recipient,
-      payment.asset,
-      payment.amount,
-      payment.to.ringProgramId,
-    );
+    const declared = declarePayment(this.#owner.transfer, payment);
     return new AnonymousTransfer({
       ...this.#fields(),
-      payments: Object.freeze([...this.#payments, Object.freeze({ ...payment })]),
+      payments: Object.freeze([...this.#payments, declared]),
     });
   }
 
@@ -915,7 +910,7 @@ export class AnonymousTransfer {
       await transactionKey(keys, sender, prepared, context),
       prepared.firstNullifier,
       { kind: "anonymous", plan: anonymousPlan(this.#payments) },
-      this.#payments.map((payment) => payment.data),
+      this.#payments,
     );
     try {
       const encrypted = rail.encrypt({
@@ -1040,19 +1035,14 @@ export class PublicOwnerTransfer {
   /** Every ring output owner other than the wallet is paid here, Rust `with_payment`. */
   withPayment(payment: AnonymousPayment): PublicOwnerTransfer {
     checkPaymentRing(payment, this.#owner.ringProgramId);
-    this.#owner.transfer.sendToRing(
-      payment.to.recipient,
-      payment.asset,
-      payment.amount,
-      payment.to.ringProgramId,
-    );
+    const declared = declarePayment(this.#owner.transfer, payment);
     return new PublicOwnerTransfer({
       owner: this.#owner,
       withdrawal: this.#withdrawal,
       wallet: this.#wallet,
       inProofOwner: this.#inProofOwner,
       coOwners: this.#coOwners,
-      payments: Object.freeze([...this.#payments, Object.freeze({ ...payment })]),
+      payments: Object.freeze([...this.#payments, declared]),
     });
   }
 
@@ -1203,7 +1193,7 @@ export class PublicOwnerTransfer {
       anonymous
         ? { kind: "anonymous", plan: anonymousPlan(this.#payments) }
         : { kind: "delivered" },
-      this.#payments.map((payment) => payment.data),
+      this.#payments,
       planSalt ?? program?.salt,
     );
     try {

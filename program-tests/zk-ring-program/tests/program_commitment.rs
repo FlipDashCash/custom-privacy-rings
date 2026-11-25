@@ -52,7 +52,7 @@ use zolana_ring_keys::RingAddress;
 const TREE_ID: u16 = 3;
 const HELD: u64 = 10;
 const SPL: Mint = Mint::new(Address::new_from_array([9; 32]), 2);
-/// One output slot per output of the circuit, a full spend then seals its zero change.
+/// A slot past the three the update circuit emits, the spare one stays padding.
 const SHAPE: Shape = Shape::new(2, 4);
 const RING_PROGRAM: Address = Address::new_from_array([42; 32]);
 const PAYER: Address = Address::new_from_array([7; 32]);
@@ -243,8 +243,8 @@ impl Step {
 }
 
 struct Case {
-    /// A signer seal adds no zero change, the client declares the one the circuit outputs.
-    zero_change_declared: bool,
+    /// A signer seal adds no zero change, there the client declares the one the circuit outputs.
+    change_declared: bool,
     /// The circuit outputs the state ahead of the payment.
     payment_first: bool,
     program: Program,
@@ -259,7 +259,7 @@ impl Case {
     fn new(mode: RingMode, mint: Mint, step: Step) -> Self {
         let program = Program::new();
         Self {
-            zero_change_declared: mode == RingMode::Confidential && step.paid() == HELD,
+            change_declared: mode == RingMode::Confidential && step.paid() == HELD,
             payment_first: false,
             recipient: keypair(2).shielded_address().unwrap(),
             mint,
@@ -310,11 +310,12 @@ impl Case {
         };
         let mut transaction =
             ConfidentialTransaction::new_with_ring(inputs, PAYER, RING_PROGRAM).unwrap();
-        if self.zero_change_declared {
+        if self.change_declared {
             transaction
                 .add_output_utxo(SppProofOutputUtxo {
                     owner_address: Some(self.program.address),
                     asset: self.mint,
+                    amount: HELD - self.step.paid(),
                     ring_program_id: Some(RING_PROGRAM),
                     ..Default::default()
                 })
@@ -425,8 +426,16 @@ async fn the_program_circuits_commit_the_sealed_ring_transfer_on_both_rails() {
     ];
     for mode in MODES {
         for mint in [Mint::SOL, SPL] {
-            for step in steps {
-                let case = Case::new(mode, mint, step);
+            // A declared change is the frame's change, the spare slot of `SHAPE` takes no second one.
+            for (step, declared) in steps
+                .into_iter()
+                .flat_map(|step| [(step, false), (step, true)])
+            {
+                let seals_alone = Case::new(mode, mint, step);
+                let case = Case {
+                    change_declared: declared || seals_alone.change_declared,
+                    ..seals_alone
+                };
                 let client = Chain::ring(mode).client();
                 let plan = case.transfer().plan_for_program(&client).await.unwrap();
                 let Committed {
@@ -434,7 +443,7 @@ async fn the_program_circuits_commit_the_sealed_ring_transfer_on_both_rails() {
                     finalized,
                     ..
                 } = case.commit(plan.blinding_seed, &plan);
-                let label = format!("{mode:?} {} {step:?}", mint.asset);
+                let label = format!("{mode:?} {} {step:?} declared {declared}", mint.asset);
 
                 assert_eq!(
                     finalized.first_nullifier().unwrap(),

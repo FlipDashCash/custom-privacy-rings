@@ -3,7 +3,8 @@ import { encryptConfidential, equalBytes, isZero, ZERO_32 } from "@heliuslabs/sp
 import type { Address } from "@heliuslabs/spr/interface";
 import type { Bytes16, Bytes32, MessageData, TransactOutput } from "@heliuslabs/spr/interface";
 import { randomSalt, ViewingKey } from "@heliuslabs/spr/keypair";
-import type { ShieldedAddress, X25519PublicKey } from "@heliuslabs/spr/keypair";
+import { ShieldedAddress } from "@heliuslabs/spr/keypair";
+import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
 import {
   createExternalData,
   createProofOutput,
@@ -12,6 +13,7 @@ import {
   SppProofInputs,
   TransactionError,
   type AssetRegistry,
+  type ConfidentialTransfer,
   type PreparedTransfer,
   type ProofOutputUtxo,
 } from "@heliuslabs/spr/transaction";
@@ -53,7 +55,8 @@ import {
 import { randomTagPreimage } from "../../crypto/derivation/dummy-tag.js";
 import { dummyRecipientKey } from "../../crypto/derivation/dummy-key.js";
 import { withOutputFields } from "../../protocol/proof/proof-output.js";
-import type { NoteData } from "./anonymous.js";
+import type { AnonymousPayment } from "./anonymous.js";
+import { RingAddress } from "../../crypto/keys/ring-address.js";
 import {
   OutputBlindings,
   ringBlindedOutputs,
@@ -249,17 +252,27 @@ export function outputRecord(output: ProofOutputUtxo): OutputRecord {
   });
 }
 
+/** Declares `payment` under an address object of its own, the output it becomes keeps that object as its owner. */
+export function declarePayment(
+  transfer: ConfidentialTransfer,
+  payment: AnonymousPayment,
+): AnonymousPayment {
+  const { ringProgramId, listSalt } = payment.to;
+  const recipient = ShieldedAddress.fromBytes(payment.to.recipient.toBytes());
+  transfer.sendToRing(recipient, payment.asset, payment.amount, ringProgramId);
+  return Object.freeze({
+    ...payment,
+    to: new RingAddress({ recipient, ringProgramId, listSalt }),
+  });
+}
+
+/** Each payment's data goes to the output that holds its owner object, whatever slot the frame gives it. */
 function withPaymentData(
   outputs: readonly ProofOutputUtxo[],
-  senderOutputCount: number,
-  paymentData: readonly (NoteData | undefined)[],
+  payments: readonly Pick<AnonymousPayment, "to" | "data">[],
 ): readonly ProofOutputUtxo[] {
-  const payments = paymentData[Symbol.iterator]();
-  return outputs.map((output, slot) => {
-    // An exit past the sender's outputs takes no payment.
-    if (slot < senderOutputCount || output.isDummy() || output.ringProgramId === undefined)
-      return output;
-    const { value: data } = payments.next();
+  const bound = outputs.map((output, slot) => {
+    const data = payments.find((payment) => payment.to.recipient === output.ownerAddress)?.data;
     if (data === undefined) return output;
     const { ringDataHash, application } = data;
     if (application !== undefined && isZero(application.hash))
@@ -269,6 +282,13 @@ function withPaymentData(
       ? hashed
       : hashed.withUtxoData(application.bytes, application.hash);
   });
+  const lost = payments.findIndex(
+    (payment) =>
+      payment.data !== undefined &&
+      !outputs.some((output) => output.ownerAddress === payment.to.recipient),
+  );
+  if (lost >= 0) throw framingError(lost);
+  return bound;
 }
 
 /** What every slot of one frame shares, a length of its own would mark a data note, Rust `BodyForm`. */
@@ -347,7 +367,7 @@ type PlannedSlot = Readonly<{
  * new salt so a slot secret never repeats.
  */
 export class RingOutputRail {
-  readonly #paymentData: readonly (NoteData | undefined)[];
+  readonly #payments: readonly Pick<AnonymousPayment, "to" | "data">[];
   readonly txViewingKey: ViewingKey;
   readonly salt: Bytes16;
   readonly delivery: RingDelivery;
@@ -358,10 +378,10 @@ export class RingOutputRail {
     txViewingKey: ViewingKey,
     firstNullifier: Bytes32,
     delivery: RingDelivery,
-    paymentData: readonly (NoteData | undefined)[] = [],
+    payments: readonly Pick<AnonymousPayment, "to" | "data">[] = [],
     salt: Bytes16 = randomSalt(),
   ) {
-    this.#paymentData = paymentData;
+    this.#payments = payments;
     this.txViewingKey = txViewingKey;
     this.salt = salt;
     this.delivery = delivery;
@@ -406,15 +426,14 @@ export class RingOutputRail {
     const { prepared, sender, auditor } = input;
     if (!equalBytes(prepared.firstNullifier, this.#firstNullifier)) throw framingError(0);
     const anonymous = this.delivery.kind === "anonymous";
-    const proofOutputs = withPaymentData(
-      prepared.proofOutputs(),
-      prepared.senderOutputCount,
-      this.#paymentData,
-    );
+    const proofOutputs = withPaymentData(prepared.proofOutputs(), this.#payments);
     checkCompactSuffix(proofOutputs);
-    // SPP leads with the change it adds, an anonymous frame takes a zero one when nothing returns.
+    // SPP leads with the change it adds, an anonymous frame with no change of the sender takes a zero one.
     const added = new Set(Array.from({ length: prepared.senderOutputCount }, (_, slot) => slot));
-    const spare = anonymous && added.size === 0 ? spareSlot(proofOutputs) : -1;
+    const spare =
+      anonymous && !proofOutputs.some((output) => isChange(output, sender))
+        ? spareSlot(proofOutputs)
+        : -1;
     const ringProgramId = proofOutputs[spare]?.ringProgramId;
     const zeroChange =
       ringProgramId === undefined

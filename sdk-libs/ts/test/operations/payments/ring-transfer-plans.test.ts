@@ -23,7 +23,7 @@ const address = (encoded: string) => getAddressDecoder().decode(bytes(encoded));
 const ring = address(plans.ring);
 const assets = new AssetRegistry();
 
-/** Owner, mint, amount and ring per slot, a dummy by its blinding alone. */
+/** Owner, mint, amount, ring and data hash per slot, a dummy by its blinding alone. */
 const slots = (outputs: readonly ProofOutputUtxo[], blinded: boolean) =>
   outputs.map((output) => ({
     owner: output.ownerAddress === undefined ? null : hex(output.ownerAddress.toBytes()),
@@ -33,6 +33,10 @@ const slots = (outputs: readonly ProofOutputUtxo[], blinded: boolean) =>
           mint: hex(new Uint8Array(getAddressEncoder().encode(output.asset))),
           amount: Number(output.amount),
           ring: output.ringProgramId !== undefined,
+          dataHash:
+            output.dataHash === undefined || output.dataHash.every((byte) => byte === 0)
+              ? null
+              : hex(output.dataHash),
         }),
     ...(blinded ? { blinding: hex(output.blinding) } : {}),
   }));
@@ -88,6 +92,18 @@ describe("shared transfer plans", () => {
         if (declared.kind === "own") {
           transfer.sendToRing(sender, asset, amount, ring);
           return built;
+        }
+        if (declared.kind === "state") {
+          const to = new RingAddress({
+            recipient: sender,
+            ringProgramId: ring,
+            listSalt: filled(7),
+          });
+          const application = {
+            hash: bytes(plans.stateHash) as Bytes32,
+            bytes: bytes(plans.state),
+          };
+          return built.withPayment({ to, asset, amount, reply: null, data: { application } });
         }
         const recipient = keypair(declared.seed ?? 0).shieldedAddress();
         fixture.enroll(recipient);

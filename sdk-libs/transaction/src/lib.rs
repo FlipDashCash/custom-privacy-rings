@@ -40,7 +40,7 @@ use spr_transaction::{
 use zolana_ring_keys::dummy_recipient_key;
 
 pub use anonymous_rail::published as published_outputs;
-use anonymous_rail::{lead_change, AnonymousSeal};
+use anonymous_rail::{is_change, lead_change, AnonymousSeal};
 pub use anonymous_rail::{random_tag_preimage, AnonymousPlan, AnonymousSlot};
 pub use assets::RingAssets;
 pub use error::RingRailError;
@@ -103,12 +103,11 @@ impl ShapedSeal<'_> {
         if let RingDelivery::Anonymous(plan) = &rail.delivery {
             let mut padded = transaction.clone();
             padded.pad_utxos(shape, sender)?;
+            // A declared dataless output to the sender is the change, a second one would add a note no program proved.
             let returns = padded
                 .outputs()
                 .iter()
-                .filter(|output| !output.is_dummy())
-                .count()
-                > declared.iter().filter(|output| !output.is_dummy()).count();
+                .any(|output| is_change(output, sender));
             // The last slot is padding whenever one is spare, it names the transaction's ring.
             let ring = padded
                 .outputs()

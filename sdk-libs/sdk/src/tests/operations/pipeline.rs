@@ -5191,6 +5191,8 @@ enum Declared {
     Payment(u8),
     /// A dataless ring output to the sender's own address.
     Own,
+    /// Through `with_payment`, to the sender's own address under application data.
+    State,
     /// A default ring output to the keypair of the seed.
     Exit(u8),
 }
@@ -5209,9 +5211,11 @@ struct PinnedTransfer {
 #[tokio::test]
 async fn every_pinned_transfer_seals_to_the_plan_both_sdks_share() {
     use crate::tests::support::{keypair, wallet};
-    use Declared::{Exit, Own, Payment};
+    use Declared::{Exit, Own, Payment, State};
     const SALT: [u8; 16] = [0x5a; 16];
     const SOL: Mint = Mint::SOL;
+    const STATE: &[u8] = b"state";
+    const STATE_HASH: [u8; 32] = [0x11; 32];
     let spl = Mint {
         asset: Address::new_from_array([9; 32]),
         asset_id: 2,
@@ -5256,6 +5260,48 @@ async fn every_pinned_transfer_seals_to_the_plan_both_sdks_share() {
                 &[(Own, SOL, 0), (Payment(2), SOL, 10)],
             )
         },
+        PinnedTransfer {
+            pda_owner: true,
+            ..case(
+                "confidential, PDA owner, a declared change ahead of a state payment",
+                confidential,
+                &[(SOL, 10)],
+                &[(Own, SOL, 6), (State, SOL, 0), (Payment(2), SOL, 4)],
+            )
+        },
+        PinnedTransfer {
+            pda_owner: true,
+            ..case(
+                "anonymous, PDA owner, a declared change ahead of a state payment",
+                anonymous,
+                &[(SOL, 10)],
+                &[(Own, SOL, 6), (State, SOL, 0), (Payment(2), SOL, 4)],
+            )
+        },
+        PinnedTransfer {
+            pda_owner: true,
+            ..case(
+                "confidential, PDA owner, a declared change, every unit paid and a spare slot",
+                confidential,
+                &[(SOL, 10)],
+                &[(Own, SOL, 4), (Payment(2), SOL, 5), (Payment(3), SOL, 1)],
+            )
+        },
+        PinnedTransfer {
+            pda_owner: true,
+            ..case(
+                "anonymous, PDA owner, a declared change, every unit paid and a spare slot",
+                anonymous,
+                &[(SOL, 10)],
+                &[(Own, SOL, 4), (Payment(2), SOL, 5), (Payment(3), SOL, 1)],
+            )
+        },
+        case(
+            "anonymous, a state output of the sender and no change",
+            anonymous,
+            &[(SOL, 10)],
+            &[(State, SOL, 0), (Payment(2), SOL, 6), (Payment(3), SOL, 4)],
+        ),
         case(
             "confidential, partial spend",
             confidential,
@@ -5355,6 +5401,7 @@ async fn every_pinned_transfer_seals_to_the_plan_both_sdks_share() {
                     slot["mint"] = hex::encode(output.asset.asset).into();
                     slot["amount"] = output.amount.into();
                     slot["ring"] = output.ring_program_id.is_some().into();
+                    slot["dataHash"] = output.data_hash.map(hex::encode).into();
                 }
                 if blinded {
                     slot["blinding"] = hex::encode(output.blinding).into();
@@ -5419,6 +5466,25 @@ async fn every_pinned_transfer_seals_to_the_plan_both_sdks_share() {
                                 })
                                 .unwrap()
                         }
+                        State => {
+                            let own = RingAddress {
+                                recipient: address,
+                                ..ring_address(&holder)
+                            };
+                            return transfer
+                                .with_payment(AnonymousPayment {
+                                    asset: *asset,
+                                    data: crate::NoteData {
+                                        ring_data_hash: None,
+                                        application: Some(crate::ApplicationData {
+                                            hash: STATE_HASH,
+                                            bytes: STATE.to_vec(),
+                                        }),
+                                    },
+                                    ..payment(&own, *amount)
+                                })
+                                .unwrap();
+                        }
                         Own => {
                             transaction.transfer_with_ring(&address, *asset, *amount, Some(program))
                         }
@@ -5456,6 +5522,7 @@ async fn every_pinned_transfer_seals_to_the_plan_both_sdks_share() {
                 let (kind, seed) = match declared {
                     Payment(seed) => ("payment", Some(seed)),
                     Own => ("own", None),
+                    State => ("state", None),
                     Exit(seed) => ("exit", Some(seed)),
                 };
                 serde_json::json!({
@@ -5481,6 +5548,8 @@ async fn every_pinned_transfer_seals_to_the_plan_both_sdks_share() {
         "ownerSeed": 1,
         "treeId": TREE_ID,
         "salt": hex::encode(SALT),
+        "state": hex::encode(STATE),
+        "stateHash": hex::encode(STATE_HASH),
         "cases": cases,
     });
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
