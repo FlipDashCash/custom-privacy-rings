@@ -36,8 +36,7 @@ import {
   SENDER_BUNDLE_LEN,
   type ReplyClaim,
 } from "../protocol/codec/anonymous-delivery.js";
-import { openRecipientNote } from "../crypto/derivation/blinding.js";
-import { openOutputSlot } from "../crypto/audit/ring-disclosure.js";
+import { openRecipientBody } from "../crypto/derivation/blinding.js";
 import { spendingTransactions } from "../operations/workflow/recover.js";
 import { outputTreeId } from "../protocol/membership/trees.js";
 import {
@@ -395,13 +394,13 @@ function openedNote(
   input: Readonly<{ keys: RingKeys; assets: AssetRegistry }>,
   site: Site,
   slotSecret: Bytes32,
-): ReturnType<typeof openRecipientNote> {
+): ReturnType<typeof openRecipientBody> {
   const parts = ringBodyOutput(site.slot.payload);
   try {
     return parts === undefined
       ? undefined
       : decoded(() =>
-          openRecipientNote(
+          openRecipientBody(
             {
               owner: input.keys.address(),
               ring: site.ring,
@@ -409,7 +408,8 @@ function openedNote(
               commitment: site.slot.outputContext.hash,
               assets: input.assets,
             },
-            openOutputSlot(slotSecret, parts.body),
+            slotSecret,
+            parts.body,
           ),
         );
   } finally {

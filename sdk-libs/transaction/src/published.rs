@@ -3,7 +3,7 @@
 
 use custom_ring_interface::{
     ring_body_output, ring_sender_bundle_output_body, FramedSenderBundle, RingOutput, SlotBody,
-    EXIT_RECORD_LEN, RING_RECORD_LEN,
+    TRANSFER_RECORD_LEN,
 };
 use spr_event::confidential_encrypted_output_body;
 use spr_interface::instruction::instruction_data::transact::{OwnerTag, TransactOutput};
@@ -13,8 +13,8 @@ use spr_transaction::{
 };
 
 use crate::{
-    anonymous_rail::published as published_outputs, record_of, AnonymousSlot, RingDelivery,
-    RingOutputRail, RingRailError, Slot,
+    anonymous_rail::published as published_outputs, record_of, AnonymousSlot, BodyForm, ExitSlot,
+    RingDelivery, RingOutputRail, RingRailError, Slot,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -23,8 +23,9 @@ pub struct PublishedSlot<'a> {
     pub hash: &'a [u8; 32],
     pub owner_tag: &'a [u8; 32],
     pub body: SlotBody<'a>,
-    /// The record ciphertext the statement binds, a recipient body's prefix zero padded.
-    record: [u8; EXIT_RECORD_LEN],
+    /// The record ciphertext the statement binds, zero padded past `record_len`.
+    record: [u8; TRANSFER_RECORD_LEN],
+    record_len: usize,
     /// Set on the anonymous rail.
     pub anonymous: Option<AnonymousSlot>,
     /// The sealed reply beside a recipient body, empty without reply metadata.
@@ -32,9 +33,9 @@ pub struct PublishedSlot<'a> {
 }
 
 impl<'a> PublishedSlot<'a> {
-    /// [`SlotBody::record_len`] bytes.
+    /// [`SlotBody::record_len`] bytes under the frame's form.
     pub fn record(&self) -> &[u8] {
-        &self.record[..self.body.record_len()]
+        &self.record[..self.record_len]
     }
 
     pub fn wire(&self) -> RingOutput<'_> {
@@ -66,6 +67,7 @@ impl RingOutputRail {
             RingDelivery::Delivered => None,
         };
         let first_nullifier = inputs.first_nullifier()?;
+        let form = BodyForm::of(outputs)?.records;
         outputs
             .iter()
             .zip(published)
@@ -77,20 +79,28 @@ impl RingOutputRail {
                     None => (self.delivered_body(output, published, index)?, &[][..]),
                 };
                 let (hash, owner_tag) = inline(published, index)?;
-                let record = match body {
-                    SlotBody::Recipient(body) => {
-                        let mut record = [0; EXIT_RECORD_LEN];
-                        record[..RING_RECORD_LEN].copy_from_slice(record_of(body, index)?);
-                        record
+                let exit_record;
+                let published_record = match body {
+                    SlotBody::Recipient(body) => record_of(body, form, index)?,
+                    SlotBody::Exit(_) => {
+                        exit_record =
+                            self.exit_record(output, &first_nullifier, ExitSlot { index, form })?;
+                        &exit_record[..]
                     }
-                    SlotBody::Exit(_) => self.exit_record(output, &first_nullifier, index)?,
                 };
+                let record_len = body.record_len(form);
+                if published_record.len() != record_len {
+                    return Err(RingRailError::RingOutputFraming { slot_index: index });
+                }
+                let mut record = [0; TRANSFER_RECORD_LEN];
+                record[..record_len].copy_from_slice(published_record);
                 let slot = PublishedSlot {
                     output,
                     hash,
                     owner_tag,
                     body,
                     record,
+                    record_len,
                     anonymous,
                     reply,
                 };

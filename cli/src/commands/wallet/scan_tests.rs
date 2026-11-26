@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use crate::ZolanaServices;
 use custom_ring_interface::{
     blinding::ring_blinding_seed, encode_ring_body_output, encode_ring_sender_bundle_output,
-    stream::DeliveredSlot, OutputRecord, RecordKind, SenderBundle,
+    stream::DeliveredSlot, OutputRecord, RecordForm, RecordKind, SenderBundle,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -22,9 +22,7 @@ use spr_transaction::{
     utxo::blinding::derive_transact_output_blinding,
     AssetRegistry, Data, Mint, OwnerCx, Utxo, UtxoSerialization, WalletUtxo,
 };
-use zolana_ring_transaction::{
-    record_key, seal_recipient_body, seal_sender_bundle, OutputBlindings,
-};
+use zolana_ring_transaction::{record_key, seal_sender_bundle, OutputBlindings, RecipientBody};
 
 use super::{
     fixtures::{keypair, Member, RING},
@@ -90,8 +88,15 @@ fn ring_body(
         mint: sealed.asset.asset.to_bytes(),
         blinding,
         key: record_key(RecordKind::Ring, owner.nullifier_pubkey),
+        ..OutputRecord::default()
     };
-    let ciphertext = seal_recipient_body(&record, None, secret).unwrap();
+    let ciphertext = RecipientBody {
+        record: &record,
+        form: RecordForm::default(),
+        payload: None,
+    }
+    .seal(secret)
+    .unwrap();
     encode_ring_body_output(&ciphertext, &[]).unwrap()
 }
 

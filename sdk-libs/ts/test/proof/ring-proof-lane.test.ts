@@ -27,7 +27,10 @@ import {
 } from "../../src/proof/audit-proof.js";
 import { checkHiddenOwnerSpends } from "../../src/operations/payments/anonymous.js";
 import { EMPTY_ENTRY_RECORD, InputClass } from "../../src/protocol/codec/audit-stream.js";
-import type { AuditStreamLayout } from "../../src/protocol/codec/ring-disclosure-layout.js";
+import {
+  CLEAR_RECORD_FORM,
+  type AuditStreamLayout,
+} from "../../src/protocol/codec/ring-disclosure-layout.js";
 import { checkInputKeys, checkOutputKeys } from "../../src/proof/policy-proof.js";
 import { committedRingSalt, enrolledSalt } from "../../src/proof/policy-proof.js";
 import { anonymousPartyIdentities } from "../../src/protocol/membership/parties.js";
@@ -419,6 +422,7 @@ describe("input evidence", () => {
     outputs: 1,
     capacity: 2,
     vouched: false,
+    records: CLEAR_RECORD_FORM,
   });
   const address = note({ address: true });
 
@@ -697,7 +701,7 @@ describe("prover/ring/params.go", () => {
       txViewingSk: zero,
       auditorPk: zero,
       salt: new Uint8Array(16) as TransferProofRequest["salt"],
-      layout: { entry: false, vouched: false },
+      layout: { entry: false, vouched: false, records: CLEAR_RECORD_FORM },
       approvalMask: 0,
       outputCount: 2,
       outputs: repeat(2, {

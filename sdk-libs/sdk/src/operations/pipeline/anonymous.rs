@@ -18,19 +18,16 @@ use spr_transaction::{
 };
 use zolana_ring_client::rpc::SubjectListSalt;
 use zolana_ring_keys::{RingAddress, RingPaymentRequest};
-use zolana_ring_transaction::{
-    AnonymousPlan, ClassifiedInput, ReplyMetadata, RingDelivery, RingOutputRail,
-};
+use zolana_ring_transaction::{AnonymousPlan, ClassifiedInput, ReplyMetadata, RingDelivery};
 
 use super::{
     canonical_shape,
     owner::{CustomRingTransferInput, Owner},
-    pad_under_rail,
     public_owners::check_zero_key_inputs,
     sealed,
     selection::{payment_total, widest, Candidate, Funding},
-    spends_default_ring, transaction_key, transfer_key, CoOwnerKey, OwnerSource, Rail, RailKind,
-    RingSender, RingTransfer, Spend, Staged, TransferAuthority,
+    spends_default_ring, transfer_key, CoOwnerKey, OutputSeal, OwnerSource, Rail, RailKind,
+    RingSender, RingTransfer, SealedOutputs, Spend, Staged, TransferAuthority,
 };
 use crate::{
     client::{RingClient, RingIndexerBackend},
@@ -204,7 +201,7 @@ pub struct Anonymous<'a> {
     pub(super) signer: OwnerSource<'a>,
     pub(super) exposure: OwnerExposure,
     /// In declared order, the order of their ring outputs.
-    payments: Vec<AnonymousPayment>,
+    pub(super) payments: Vec<AnonymousPayment>,
     pub(super) exit_token_owner: Option<Address>,
     co_owners: Vec<CoOwner<'a>>,
     read_cache: Option<ReadCache>,
@@ -260,6 +257,7 @@ impl<'a> RingTransfer<Owner<'a>> {
             ring_salt: self.ring_salt,
             approval: self.approval,
             seal_row: self.seal_row,
+            program: self.program,
         }
     }
 }
@@ -449,7 +447,6 @@ impl HiddenOwner {
 impl Anonymous<'_> {
     pub(super) async fn stage<R: AsyncRpc + ?Sized>(
         &self,
-        ring: CustomRing,
         client: &R,
         config: &CustomRingConfig,
     ) -> Result<Staged<'_>, RingError> {
@@ -477,25 +474,21 @@ impl Anonymous<'_> {
         }
         .owners(client)
         .await?;
-        let transaction = SenderChange {
-            shape: self.owner.shape,
-            sender: &sender,
-            ring: ring.program_id(),
-        }
-        .ensure(self.owner.transaction.clone())?;
+        let transaction = self.owner.transaction.clone();
         let shape = match self.owner.shape {
             Some(shape) => shape,
             None => canonical_shape(&transaction, &sender)?,
         };
-        let first_nullifier = *transaction.first_nullifier();
-        let tx_viewing_key = transaction_key(keys, first_nullifier)?;
-        let rail = RingOutputRail::new(
-            tx_viewing_key,
-            config.auditor_pubkey,
-            RingDelivery::Anonymous(Box::new(anonymous_plan(&self.payments))),
-        );
-        let transaction = pad_under_rail(transaction, &rail, shape, &sender)?;
-        let proof_inputs = self.cached(rail.encrypt(transaction, &sender)?)?;
+        let SealedOutputs { rail, proof_inputs } = OutputSeal {
+            keys,
+            sender: &sender,
+            auditor: config.auditor_pubkey,
+            delivery: RingDelivery::Anonymous(Box::new(anonymous_plan(&self.payments))),
+            shape,
+            program_salt: None,
+        }
+        .seal(transaction)?;
+        let proof_inputs = self.cached(proof_inputs)?;
         check_anonymous_inputs(&proof_inputs, &sender, self.exposure)?;
         let owner_signers = public_co_owners(&proof_inputs, &sender)?;
         // A signer owning no input authorizes its data output alone, it spends with no key, and an address slot spends nothing.
@@ -532,7 +525,7 @@ impl Anonymous<'_> {
                 signer: self.signer,
             })),
             presealed: None,
-            list_salts: payment_salts(&self.payments)?,
+            list_salts: Vec::new(),
         })
     }
 }
@@ -865,39 +858,5 @@ fn exit_refused(refusal: CustomRingError, destination: Address) -> RingError {
             destination,
             refusal,
         },
-    }
-}
-
-/// A zero SOL change fills a spare slot of a transfer that returns nothing, a change slot costs less than a dummy with a body.
-pub(super) struct SenderChange<'a> {
-    pub shape: Option<Shape>,
-    pub sender: &'a ShieldedAddress,
-    pub ring: Address,
-}
-
-impl SenderChange<'_> {
-    pub(super) fn ensure(
-        self,
-        mut transaction: ConfidentialTransaction,
-    ) -> Result<ConfidentialTransaction, RingError> {
-        let declared = transaction.outputs().len();
-        let mut probe = transaction.clone();
-        let shape = match self.shape {
-            Some(shape) => shape,
-            None => canonical_shape(&probe, self.sender)?,
-        };
-        probe.pad_utxos(shape, self.sender)?;
-        let returns = probe.outputs()[declared..]
-            .iter()
-            .any(|output| output.owner_address == Some(*self.sender));
-        if !returns && declared < shape.n_outputs() {
-            transaction.add_output_utxo(SppProofOutputUtxo {
-                owner_address: Some(*self.sender),
-                asset: Mint::SOL,
-                ring_program_id: Some(self.ring),
-                ..Default::default()
-            })?;
-        }
-        Ok(transaction)
     }
 }

@@ -4,19 +4,17 @@ use custom_ring_interface::RingMode;
 use solana_address::Address;
 use spr_interface::shape::Shape;
 use spr_interface::ZERO_NULLIFIER_PUBKEY;
-use spr_keypair::PublicKey;
+use spr_keypair::{viewing_key::Salt, PublicKey, ShieldedAddress};
 use spr_transaction::{utxo::SppProofInputUtxo, TransactionError};
-use zolana_ring_transaction::{RingDelivery, RingOutputRail};
+use zolana_ring_transaction::RingDelivery;
 
 use super::{
-    anonymous::{
-        anonymous_plan, check_payment_ring, payment_salts, AnonymousPayment, SenderChange,
-    },
+    anonymous::{anonymous_plan, check_payment_ring, AnonymousPayment},
     canonical_shape,
     owner::Owner,
-    pad_under_rail, sealed, transaction_key, Rail, RailKind, RingTransfer, Spend, Staged,
+    sealed, OutputSeal, Rail, RailKind, RingTransfer, SealedOutputs, Spend, Staged,
 };
-use crate::{CustomRing, CustomRingConfig, RingError};
+use crate::{CustomRingConfig, RingError};
 
 /// The named wallet becomes public, recipients stay hidden on an anonymous ring.
 pub struct PublicOwners<'a> {
@@ -25,7 +23,7 @@ pub struct PublicOwners<'a> {
     /// An unenrolled wallet's only key on a tracking root.
     zero_key_change: bool,
     /// In declared order, the order of their ring outputs.
-    payments: Vec<AnonymousPayment>,
+    pub(super) payments: Vec<AnonymousPayment>,
 }
 
 pub type PublicOwnerTransfer<'a> = RingTransfer<PublicOwners<'a>>;
@@ -59,6 +57,7 @@ impl<'a> RingTransfer<Owner<'a>> {
             ring_salt: self.ring_salt,
             approval: self.approval,
             seal_row: self.seal_row,
+            program: self.program,
         }
     }
 }
@@ -96,11 +95,42 @@ impl RingTransfer<PublicOwners<'_>> {
 impl PublicOwners<'_> {
     pub(super) async fn stage(
         &self,
-        ring: CustomRing,
         config: &CustomRingConfig,
+        program_salt: Option<Salt>,
     ) -> Result<Staged<'_>, RingError> {
-        let keys = self.owner.sender;
-        let mut sender = keys.address()?;
+        let sender = self.sender()?;
+        if config.mode != RingMode::Anonymous {
+            return self.owner.stage_signers(sender, config, program_salt);
+        }
+        let SealedOutputs { rail, proof_inputs } =
+            self.seal_anonymous(&sender, config, program_salt)?;
+        Ok(Staged {
+            authority: self.owner.authority()?,
+            owner_signers: proof_inputs.owner_signer_pubkeys()?,
+            proof_inputs,
+            rail,
+            sender,
+            interface_transfer_accounts: self.owner.interface_transfer_accounts.clone(),
+            spend: Spend::PublicOwners,
+            presealed: None,
+            list_salts: Vec::new(),
+        })
+    }
+
+    pub(super) fn seal(
+        &self,
+        config: &CustomRingConfig,
+        program_salt: Option<Salt>,
+    ) -> Result<SealedOutputs, RingError> {
+        let sender = self.sender()?;
+        match config.mode {
+            RingMode::Anonymous => self.seal_anonymous(&sender, config, program_salt),
+            _ => self.owner.seal_signers(&sender, config, program_salt),
+        }
+    }
+
+    fn sender(&self) -> Result<ShieldedAddress, RingError> {
+        let mut sender = self.owner.sender.address()?;
         if self.zero_key_change {
             sender.nullifier_pubkey = ZERO_NULLIFIER_PUBKEY;
         }
@@ -114,39 +144,40 @@ impl PublicOwners<'_> {
         if self.owner.in_proof_owner.is_some() {
             return Err(RingError::PublicSpendInProofOwner);
         }
-        if config.mode != RingMode::Anonymous {
-            return self.owner.stage_signers(sender, config);
-        }
+        Ok(sender)
+    }
+
+    fn seal_anonymous(
+        &self,
+        sender: &ShieldedAddress,
+        config: &CustomRingConfig,
+        program_salt: Option<Salt>,
+    ) -> Result<SealedOutputs, RingError> {
         self.owner.check_settlement_accounts()?;
-        let transaction = SenderChange {
-            shape: self.owner.shape,
-            sender: &sender,
-            ring: ring.program_id(),
-        }
-        .ensure(self.owner.transaction.clone())?;
+        let transaction = self.owner.transaction.clone();
+        let plan = anonymous_plan(&self.payments);
+        // A program circuit keeps its zero change in the asset it spent.
+        let spent = transaction
+            .inputs()
+            .iter()
+            .find(|input| input.utxo.amount > 0);
+        let plan = match program_salt.and(spent) {
+            Some(input) => plan.with_change_asset(input.utxo.asset),
+            None => plan,
+        };
         let shape = match self.owner.shape {
             Some(shape) => shape,
-            None => canonical_shape(&transaction, &sender)?,
+            None => canonical_shape(&transaction, sender)?,
         };
-        let first_nullifier = *transaction.first_nullifier();
-        let rail = RingOutputRail::new(
-            transaction_key(keys, first_nullifier)?,
-            config.auditor_pubkey,
-            RingDelivery::Anonymous(Box::new(anonymous_plan(&self.payments))),
-        );
-        let transaction = pad_under_rail(transaction, &rail, shape, &sender)?;
-        let proof_inputs = rail.encrypt(transaction, &sender)?;
-        Ok(Staged {
-            authority: self.owner.authority()?,
-            owner_signers: proof_inputs.owner_signer_pubkeys()?,
-            proof_inputs,
-            rail,
+        OutputSeal {
+            keys: self.owner.sender,
             sender,
-            interface_transfer_accounts: self.owner.interface_transfer_accounts.clone(),
-            spend: Spend::PublicOwners,
-            presealed: None,
-            list_salts: payment_salts(&self.payments)?,
-        })
+            auditor: config.auditor_pubkey,
+            delivery: RingDelivery::Anonymous(Box::new(plan)),
+            shape,
+            program_salt,
+        }
+        .seal(transaction)
     }
 }
 

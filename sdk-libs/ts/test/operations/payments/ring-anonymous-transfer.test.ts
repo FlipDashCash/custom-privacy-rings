@@ -300,6 +300,7 @@ function openedBody(
   const opened = openOutputSlot(
     slotSecretOf(reader, data, call, slotIndex),
     concatBytes(output.record, output.body.payload),
+    RingTransactData.recordForm(data),
   );
   const payload = opened.payload.kind === "opened" ? opened.payload.payload.data : undefined;
   return { ...opened.record, data: payload ?? new Uint8Array() };
@@ -762,8 +763,8 @@ describe("anonymous delivery slots", () => {
       const { fixture, recipients, anonymous } = await paying([400n, 300n], {
         replies: [claim(sayer), null],
       });
-      anonymous.withShape({ inputs: 1, outputs: 4 });
-      const expand = await expanded(fixture, await anonymous.prove(fixture.client), "anonymous");
+      const shaped = anonymous.withShape({ inputs: 1, outputs: 4 });
+      const expand = await expanded(fixture, await shaped.prove(fixture.client), "anonymous");
       return { ...expand, recipients };
     };
     const { data, call, recipients } = await build();
@@ -1201,9 +1202,11 @@ describe("anonymous ring exits and entries", () => {
 
     it("commits a ring data hash with no owner signature", async () => {
       const ringDataHash = small(0x33);
-      const { proven, output } = await pay({ ringDataHash });
+      const { proven, output, frame, bob, call, slot } = await pay({ ringDataHash });
       expect(output.ringDataHash).toEqual(ringDataHash);
       expect(proven.accounts.ownerSigners).toEqual([]);
+      expect([frame.hasData, frame.ringData]).toEqual([false, true]);
+      expect(openedBody(bob, frame, call, slot).ringDataHash).toEqual(ringDataHash);
     });
 
     it("holds application data to a signing owner and carries it in the body", async () => {
@@ -1220,7 +1223,9 @@ describe("anonymous ring exits and entries", () => {
       const body = frame.outputs[slot]?.body;
       if (body?.kind !== "recipient") throw new Error("no body");
       const opened = openedBody(bob, frame, call, slot);
-      expect(opened.data).toEqual(Uint8Array.of(...hash, ...bytes));
+      // The record carries the hash the commitment reads, the payload the bytes alone.
+      expect(opened.dataHash).toEqual(hash);
+      expect(opened.data).toEqual(bytes);
     });
 
     it("keeps a payment's data on its slot past an exit", async () => {
@@ -1249,22 +1254,21 @@ describe("anonymous ring exits and entries", () => {
       const fixture = await anonymousRing();
       const sender = anonymousSender();
       const to = await addressOf(fixture, ShieldedKeypair.generate());
-      await expect(
-        rail({ fixture, sender, transfer: spend(fixture, sender) })
-          .withPayment({
-            to,
-            asset: SOL_MINT,
-            amount: 400n,
-            reply: null,
-            data: {
-              application: {
-                hash: new Uint8Array(32) as Bytes32,
-                bytes: new TextEncoder().encode("app"),
-              },
+      const built = rail({ fixture, sender, transfer: spend(fixture, sender) });
+      expect(() =>
+        built.withPayment({
+          to,
+          asset: SOL_MINT,
+          amount: 400n,
+          reply: null,
+          data: {
+            application: {
+              hash: new Uint8Array(32) as Bytes32,
+              bytes: new TextEncoder().encode("app"),
             },
-          })
-          .prove(fixture.client),
-      ).rejects.toThrow(ringError("RING_NOTE_DATA_UNBOUND"));
+          },
+        }),
+      ).toThrow(ringError("RING_NOTE_DATA_UNBOUND"));
       noProofs(fixture);
     });
   });

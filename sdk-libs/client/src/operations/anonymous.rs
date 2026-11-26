@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use custom_ring_interface::{
     ring_body_output, ring_sender_bundle_output_body, stream::SlotSecret, AuditStreamLayout,
-    RingMode, SENDER_BUNDLE_LEN,
+    RecordForm, RingMode, SENDER_BUNDLE_LEN,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -636,12 +636,9 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
         let Some((ciphertext, reply)) = ring_body_output(&slot.payload) else {
             return Ok(());
         };
-        let Ok(plain) = open_recipient_body(ciphertext, secret) else {
-            return Ok(());
-        };
         let opened = self
             .output_at(body, &self.address, position)
-            .open_body(&plain);
+            .open(ciphertext, secret);
         match opened {
             Ok(Some(OpenedBody::Note(note))) => {
                 self.accept(index, body.tx, body.found, position, note)?;
@@ -711,14 +708,11 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
             else {
                 continue;
             };
-            let opened = open_recipient_body(ciphertext, &SlotSecret::new(secret)?)
+            let opened = self
+                .output_at(body, &self.address, position)
+                .open(ciphertext, &SlotSecret::new(secret)?)
                 .ok()
-                .and_then(|plain| {
-                    self.output_at(body, &self.address, position)
-                        .open_body(&plain)
-                        .ok()
-                        .flatten()
-                });
+                .flatten();
             match opened {
                 Some(OpenedBody::Note(note)) => {
                     self.accept(index, body.tx, body.found, position, note)?
@@ -811,7 +805,9 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
         if secret.anonymous_slot_tag().ok()? != slot.view_tag {
             return None;
         }
-        let plain = open_recipient_body(ciphertext, &secret).ok()?;
+        // The amount sits in the record's head, the same bytes under every form.
+        let plain = RecordForm::of_recipient_body(ciphertext.len())
+            .find_map(|form| open_recipient_body(ciphertext, &secret, form).ok())?;
         let verified = self
             .sync
             .recipients
@@ -821,7 +817,7 @@ impl<I: AsyncRpc + ?Sized, K: ShieldedKeys + RingKeys + ?Sized> Scan<'_, '_, '_,
             .find_map(|address| {
                 match self
                     .output_at(body, address, position)
-                    .open_body(&plain)
+                    .open(ciphertext, &secret)
                     .ok()
                     .flatten()?
                 {

@@ -3,7 +3,7 @@
 mod frames;
 mod ring_policy;
 
-use frames::{spp_b, Fixture};
+use frames::{spp_b, Fixture, DATA_RING_RECORD_LEN};
 use ring_policy::config;
 
 use custom_ring_interface::{
@@ -103,7 +103,7 @@ fn compute_vectors() -> ExpansionVectors {
                       policy, curator, no_spend, in-proof owner, own root, second tree, reply \
                       metadata and extension flags. Byte 1 indexes SPP_SUPPORTED_SHAPES below the \
                       default owner tag (bit 6) and public owners (bit 7). Byte 2 is the input \
-                      count below has_data (bit 6) and entry (bit 7), byte 3 is m, byte 4 the \
+                      count below has_data (bit 6) and entry (bit 7), byte 3 is m below ring_data (bit 5), byte 4 the \
                       approval mask below the co-signer count. The ring proof and the tracking \
                       revision follow, the own revision under the own root flag, the curator \
                       revision under the curator flag, the expiry as a u32, the viewing key, the \
@@ -115,7 +115,8 @@ fn compute_vectors() -> ExpansionVectors {
                       per body-bearing slot follow the slots. The anonymous frame's sender bundle \
                       follows as a 32-byte tag and 32 + 40 c + 32 (m - c) bytes for c bodiless \
                       slots, then the envelope, \
-                      m records of 105 bytes and under has_data m tails of 64 bytes, the lengths \
+                      a record of 105 bytes per recipient slot and 137 per exit, each 32 longer under has_data \
+                      and a recipient's 32 longer under ring_data, the lengths \
                       those of ring-disclosure-ranges.json. The auditor message is 0x04 || tx_viewing_u \
                       || envelope || records || tails. Recipient bodies forward as ring body, \
                       u16le(body_len) || body || reply. Produced by \
@@ -471,8 +472,9 @@ fn a_record_off_its_slot_length_is_refused() {
     let mut short_exit = data.clone();
     short_exit.outputs[exit].record = &fixture.records[exit][..RING_RECORD_LEN];
     let mut keyed_recipient = data.clone();
-    keyed_recipient.outputs[recipient].record = &fixture.records[recipient];
-    keyed_recipient.outputs[recipient].body = SlotBody::Recipient(&fixture.records[recipient]);
+    keyed_recipient.outputs[recipient].record = &fixture.records[recipient][..EXIT_RECORD_LEN];
+    keyed_recipient.outputs[recipient].body =
+        SlotBody::Recipient(&fixture.records[recipient][..EXIT_RECORD_LEN]);
     for (name, refused) in [
         ("a 105 byte exit record", short_exit),
         ("a 137 byte non-exit record", keyed_recipient),
@@ -848,18 +850,18 @@ fn a_data_frame_carries_each_length_and_one_payload_width() {
     );
     assert_eq!(
         parsed.outputs[0].record,
-        &fixture.records[0][..RING_RECORD_LEN]
+        &fixture.records[0][..DATA_RING_RECORD_LEN]
     );
     // An exit's record reaches the auditor message, its scheme 3 body stays whole.
     let stream = data.audit_stream().unwrap();
     let message = data.auditor_message();
     let read = AuditorMessage::parse(&message, stream, 1).unwrap();
-    assert_eq!(read.exit_record(0), Some(&fixture.records[1]));
+    assert_eq!(read.exit_record(0), Some(&fixture.records[1][..]));
     // Two payload widths would mark a slot.
     let mut uneven = fixture.confidential_data();
     uneven.outputs.push(custom_ring_interface::RingOutput {
-        body: SlotBody::Recipient(&fixture.extended_bodies[2][..RING_RECORD_LEN + 2]),
-        record: &fixture.records[2][..RING_RECORD_LEN],
+        body: SlotBody::Recipient(&fixture.extended_bodies[2][..DATA_RING_RECORD_LEN + 2]),
+        record: &fixture.records[2][..DATA_RING_RECORD_LEN],
         ..fixture.recipient(2)
     });
     uneven.n_out = 4;
@@ -869,6 +871,47 @@ fn a_data_frame_carries_each_length_and_one_payload_width() {
     let mut claimed = fixture.confidential_delivered().encode().unwrap();
     claimed[input_flag::BYTE] |= input_flag::HAS_DATA;
     assert!(RingTransactData::parse(&claimed, RingRail::Confidential).is_err());
+}
+
+/// The ring data bit lengthens every non-exit record by one hash and no exit record.
+#[test]
+fn a_ring_data_frame_carries_one_record_length_per_kind() {
+    let fixture = Fixture::new();
+    let plain = fixture.confidential_delivered();
+    let mut data = plain.clone();
+    data.ring_data = true;
+    let mut recipients = 0;
+    for (slot, output) in data.outputs.iter_mut().enumerate() {
+        if !output.is_exit() {
+            output.record = &fixture.records[slot][..DATA_RING_RECORD_LEN];
+            output.body = SlotBody::Recipient(output.record);
+            recipients += 1;
+        }
+    }
+    let compact = data.encode().unwrap();
+    assert_eq!(
+        compact[OUTPUT_COUNT_BYTE] & output_flag::RING_DATA,
+        output_flag::RING_DATA
+    );
+    assert_eq!(
+        compact.len(),
+        plain.encode().unwrap().len() + 32 * recipients
+    );
+    let parsed = RingTransactData::parse(&compact, RingRail::Confidential).unwrap();
+    assert_eq!(parsed.data(), &data);
+    assert_eq!(parsed.data().audit_layout().value(), 8);
+    assert!(parsed.audit_stream().records.ring_data);
+    // The bit alone moves every non-exit record length, a frame of any other length is refused.
+    let mut claimed = plain.encode().unwrap();
+    claimed[OUTPUT_COUNT_BYTE] |= output_flag::RING_DATA;
+    assert!(RingTransactData::parse(&claimed, RingRail::Confidential).is_err());
+    let mut cleared = compact.clone();
+    cleared[OUTPUT_COUNT_BYTE] &= !output_flag::RING_DATA;
+    assert!(RingTransactData::parse(&cleared, RingRail::Confidential).is_err());
+    let mut short = data.clone();
+    short.outputs[0].record = &fixture.records[0][..RING_RECORD_LEN];
+    short.outputs[0].body = SlotBody::Recipient(short.outputs[0].record);
+    assert_eq!(short.encode(), Err(CustomRingError::RingTransactLength));
 }
 
 #[test]
@@ -1001,7 +1044,7 @@ fn the_external_data_hash_binds_every_delivery_byte() {
     }
     let confidential = fixture.confidential_delivered();
     let mut record = confidential.clone();
-    record.outputs[3].record = &fixture.records[15];
+    record.outputs[3].record = &fixture.records[15][..EXIT_RECORD_LEN];
     assert_ne!(hash(&record), hash(&confidential), "exit record");
     let mut exit = confidential.clone();
     exit.outputs[3].body = SlotBody::Exit(&other_payload);
@@ -1267,6 +1310,7 @@ fn every_rail_reads_its_audit_stream() {
             outputs,
             capacity: if key.entry { 4 } else { outputs },
             vouched: false,
+            records: data.record_form(),
         };
         assert_eq!(data.audit_stream(), Ok(expected), "{key:?}");
         assert_eq!(expected.checked(), Ok(expected), "{key:?}");
@@ -1408,11 +1452,7 @@ fn a_truncated_or_appended_ciphertext_is_refused() {
         assert_eq!(parsed.envelope, data.envelope, "{name}");
         assert_eq!(parsed.recipient_keys, data.recipient_keys, "{name}");
         for (exit, output) in exits.iter().enumerate() {
-            assert_eq!(
-                parsed.exit_record(exit).map(|record| &record[..]),
-                Some(output.record),
-                "{name}"
-            );
+            assert_eq!(parsed.exit_record(exit), Some(output.record), "{name}");
         }
         assert_eq!(
             AuditorMessage::parse(&message[..message.len() - 1], stream, exits.len()),
@@ -1581,7 +1621,7 @@ fn the_transfer_statement_reads_the_frame_and_names_its_family() {
             TransferFamily::Confidential {
                 sender: ConfidentialSender::Signer,
             },
-            0,
+            4,
             false,
         ),
         (

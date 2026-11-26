@@ -24,6 +24,7 @@ fn plain_layout() -> AuditStreamLayout {
         outputs: 2,
         capacity: 2,
         vouched: false,
+        records: Default::default(),
     }
 }
 
@@ -37,6 +38,7 @@ fn entry_layout() -> AuditStreamLayout {
         outputs: 2,
         capacity: 2,
         vouched: false,
+        records: Default::default(),
     }
 }
 

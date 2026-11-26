@@ -289,20 +289,25 @@ impl Ring {
     }
 
     pub fn send(&mut self, instruction: Instruction, signers: &[&Keypair]) -> Sent {
-        self.send_with_meta(instruction, signers)
+        self.send_all(&[instruction], signers)
+    }
+
+    /// One transaction, a refusal names its instruction by index.
+    pub fn send_all(&mut self, instructions: &[Instruction], signers: &[&Keypair]) -> Sent {
+        self.send_with_meta(instructions, signers)
             .map(|meta| meta.compute_units_consumed)
             .map_err(|failed| (failed.err, failed.meta.compute_units_consumed))
     }
 
     pub fn send_with_meta(
         &mut self,
-        instruction: Instruction,
+        instructions: &[Instruction],
         signers: &[&Keypair],
     ) -> SentWithMeta {
         self.svm.expire_blockhash();
         let message = v1::Message::try_compile_with_config(
             &self.payer.pubkey(),
-            &[instruction],
+            instructions,
             self.svm.latest_blockhash(),
             v1::TransactionConfig::empty()
                 .with_compute_unit_limit(UNITS)

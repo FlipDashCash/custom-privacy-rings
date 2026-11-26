@@ -163,12 +163,14 @@ impl KnownSalts {
             .iter()
             .filter(|salt| salt.member == *member && salt.list_salt != [0; 32])
             .peekable();
-        if known.peek().is_none() {
+        let Some(first) = known.peek().map(|salt| salt.list_salt) else {
             return Err(RingError::ListSaltUnknown { member: *member });
-        }
+        };
+        // An address and an explicit salt that differ for one member are refused, neither wins.
         let list_salt = known
-            .map(|salt| salt.list_salt)
-            .find(|salt| domain::list_tag(salt).is_ok_and(|tag| tag == row.list_tag))
+            .all(|salt| salt.list_salt == first)
+            .then_some(first)
+            .filter(|salt| domain::list_tag(salt).is_ok_and(|tag| tag == row.list_tag))
             .ok_or(RingError::ListSaltMismatch { member: *member })?;
         SaltedKey::of(member, list_salt).map(Some)
     }

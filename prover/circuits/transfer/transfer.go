@@ -189,10 +189,11 @@ func (c *TransferCircuit) Define(api frontend.API) error {
 	// 2. The output slots open and the sealed key derives the transaction blinding. Every later section reads these wires, so what it proves is about the notes step 6 ties to SPP.
 	stream := c.Shape.Stream()
 	// The voucher signs the notes step 6 binds and the legs the policy binds, one set of key wires feeds the stream and the policy, so the auditor reads the signer the sender rules held.
-	vouch := c.Voucher.Open(api, rc, stream.AssertLayout(api, c.Layout), shared.VouchDigest(api, c.PrivateTxHash, c.WithdrawalHash))
+	layout := stream.AssertLayout(api, c.Layout)
+	vouch := c.Voucher.Open(api, rc, layout.Vouched, shared.VouchDigest(api, c.PrivateTxHash, c.WithdrawalHash))
 	w := audit.AuditWires{FirstNullifier: c.FirstNullifier, RingProgramID: c.RingProgramID, TxViewingSk: c.TxViewingSk, AuditorPk: c.AuditorPk, Salt: c.Salt, Layout: c.Layout, Vouched: vouch.Active, Voucher: vouch.Key}
 	envelope := w.OpenEnvelope(api, rc)
-	opened := stream.OpenSlots(api, rc, c.Outputs, c.OutputCount)
+	opened := stream.OpenSlots(api, rc, layout, c.Outputs, c.OutputCount)
 	// 3. The spent notes open in SPP's note order, and only notes incur the ring membership check.
 	section := OpenInputs(api, c.Inputs, c.InputCount)
 	section.AssertRingNotes(api, c.RingProgramID, c.Shape.Entry)

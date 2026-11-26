@@ -693,9 +693,9 @@ fn anonymous_spend(fixture: &Fixture, others: &[([u8; 32], bool)]) -> StaticSour
     source
 }
 
-/// A payload that rebuilds no commitment leaves the note's spend resolved.
+/// The record's proven data hash rebuilds the commitment, no payload enters the spend.
 #[tokio::test]
-async fn a_malformed_payload_on_a_data_bearing_output_still_resolves_its_spend() {
+async fn a_data_bearing_output_resolves_its_spend_from_its_record() {
     let fixture = Fixture::new();
     let key = NullifierKey::from_secret([7; 31]);
     let note = UtxoFields {
@@ -715,7 +715,6 @@ async fn a_malformed_payload_on_a_data_bearing_output_still_resolves_its_spend()
     let mut disclosure =
         Transfer::with_data(paying.disclosure(Rail::Anonymous, &outputs), &outputs);
     disclosure.real_inputs = 1;
-    disclosure.payloads.as_mut().expect("payloads")[0] = Default::default();
     let auditor = fixture.auditor.pubkey();
     let row = Indexed {
         transfer: &paying,

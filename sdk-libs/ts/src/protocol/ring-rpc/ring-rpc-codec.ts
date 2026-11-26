@@ -468,6 +468,16 @@ export function encodeCoSignTransactionRequest(value: CoSignTransactionRequest):
   return {
     ring: checkedAddress(value.ring, "ring"),
     message: checkedBase64(value.message, "message"),
+    ...(value.approvedTransfer === undefined
+      ? {}
+      : {
+          approvedTransfer: {
+            data: checkedBase64(value.approvedTransfer.data, "approvedTransfer.data"),
+            accounts: value.approvedTransfer.accounts.map((account, index) =>
+              checkedAddress(account, `approvedTransfer.accounts[${index}]`),
+            ),
+          },
+        }),
   };
 }
 

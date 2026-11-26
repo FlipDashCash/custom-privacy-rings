@@ -14,7 +14,7 @@ use zolana_ring_policy::Member;
 
 use super::*;
 use crate::{
-    cosign::{CoSignFlows, CoSignRefusal},
+    cosign::{CoSignFlows, CoSignRefusal, FrameSource},
     database::Store,
 };
 
@@ -26,6 +26,7 @@ fn request() -> CoSignRequest {
         ring: RING,
         message: VersionedMessage::Legacy(Message::default()),
         flows: CoSignFlows::Frame,
+        approved_transfer: None,
     }
 }
 
@@ -101,7 +102,7 @@ impl PartySource for Named {
     async fn parties(
         &self,
         _ring: Address,
-        _message: &VersionedMessage,
+        _frame: FrameSource<'_>,
     ) -> Result<FrameParties, RingRpcError> {
         Ok(FrameParties::Transfer(self.0.clone()))
     }
@@ -113,7 +114,7 @@ impl PartySource for DelegateFrame {
     async fn parties(
         &self,
         _ring: Address,
-        _message: &VersionedMessage,
+        _frame: FrameSource<'_>,
     ) -> Result<FrameParties, RingRpcError> {
         Ok(FrameParties::Delegate)
     }

@@ -72,7 +72,6 @@ import {
 } from "@heliuslabs/spr/transaction";
 import type { MergeProofRequest, RingProofRequest } from "../../../src/rpc/prover/ring.js";
 import { ringAuthAddress, ringPolicyPda } from "../../../src/protocol/pda/index.js";
-import { LocalRingKeys, ringWalletKeys, type RingKeys } from "../../../src/state/ring-keys.js";
 import type { RingMode } from "../../../src/protocol/codec/ring-codecs.js";
 import {
   MAX_RING_MERGE_INPUTS,
@@ -108,8 +107,8 @@ import {
   trackingRegistryAccount,
 } from "../../helpers/ring-accounts.js";
 import {
-  PROOF_SERVICE,
   TRACKING_REVISION,
+  pdaKeys,
   trackingEntry,
   walletKeys,
 } from "../../helpers/ring-pipeline.js";
@@ -344,21 +343,6 @@ async function pdaOwner(): Promise<ShieldedPda> {
     NullifierKey.fromSecret(new Uint8Array(31).fill(3) as Bytes31),
     ViewingKey.generate(),
   );
-}
-
-function pdaKeys(holder: ShieldedPda): LocalKeys & RingKeys {
-  const viewing = holder.viewingKey();
-  const nullifierKey = holder.nullifierKey();
-  try {
-    const roles = { address: holder.shieldedAddress(), viewingKeys: [viewing], nullifierKey };
-    return ringWalletKeys(
-      LocalKeys.fromKeys(roles, PROOF_SERVICE),
-      LocalRingKeys.fromKeys({ ...roles, listRoot: viewing }),
-    );
-  } finally {
-    viewing.destroy();
-    nullifierKey.destroy();
-  }
 }
 
 async function ringMergeParams({

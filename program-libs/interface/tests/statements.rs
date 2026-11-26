@@ -4,9 +4,10 @@ use custom_ring_interface::tracking::{TrackingEntry, TRACKING_EMPTY_ROOT};
 use custom_ring_interface::{
     chain_link, ciphertext_digest, cosign::ApprovalMask, domain, record_chain,
     ApplyEnrollmentsStatement, ApplyRecordsStatement, AuditHead, AuditKey, AuditLayout,
-    AuditStreamLayout, ConfidentialSender, CustomRingError, PrivateWrites, RegisterKeyStatement,
-    RingOutput, SignerSet, SlotBody, TransferFamily, TransferRoots, TransferStatement,
-    ANONYMOUS_PARTIES, AUDIT_HEAD_ELEMENTS, EXIT_RECORD_LEN, RING_RECORD_LEN,
+    AuditStreamLayout, ConfidentialSender, CustomRingError, PrivateWrites, RecordForm,
+    RegisterKeyStatement, RingOutput, SignerSet, SlotBody, TransferFamily, TransferRoots,
+    TransferStatement, ANONYMOUS_PARTIES, AUDIT_HEAD_ELEMENTS, EXIT_RECORD_LEN, RING_RECORD_LEN,
+    TRANSFER_RECORD_LEN,
 };
 use custom_ring_interface::{PublicLeg, PublicSlotError, PublicSlots, SOL_ASSET_ADDRESS};
 use serde::{Deserialize, Serialize};
@@ -69,6 +70,8 @@ struct TrackingCase {
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 struct OutputCase {
     record: String,
+    /// The frame's exit claim, the record chain tags each cell with it.
+    exit: bool,
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
@@ -175,7 +178,7 @@ fn hexes(values: &[[u8; 32]]) -> Vec<String> {
 struct Values {
     fields: Vec<[u8; 32]>,
     keys: Vec<[u8; 32]>,
-    records: [[u8; EXIT_RECORD_LEN]; 8],
+    records: [[u8; TRANSFER_RECORD_LEN]; 8],
     envelope: Vec<u8>,
     recipient_keys: Vec<u8>,
     auditor_pubkey: [u8; 33],
@@ -188,7 +191,7 @@ impl Values {
         Self {
             fields: (0..80).map(field).collect(),
             keys: (0..16).map(|seed| [0x60 + seed; 32]).collect(),
-            records: core::array::from_fn(|slot| [0x90 + slot as u8; EXIT_RECORD_LEN]),
+            records: core::array::from_fn(|slot| [0x90 + slot as u8; TRANSFER_RECORD_LEN]),
             envelope: (0..1024u32).map(|byte| byte as u8 ^ 0x93).collect(),
             recipient_keys: (0..512u32).map(|byte| byte as u8 ^ 0x71).collect(),
             auditor_pubkey: tagged(0xa1),
@@ -218,7 +221,7 @@ impl Values {
                     hash: &self.fields[20 + slot],
                     owner_tag: self.keys[4 + slot % 4],
                     body: SlotBody::Exit(&[]),
-                    record: &self.records[slot],
+                    record: &self.records[slot][..EXIT_RECORD_LEN],
                 },
                 _ => RingOutput {
                     hash: &self.fields[20 + slot],
@@ -241,12 +244,14 @@ fn stream(key: AuditKey, inputs: usize, outputs: &[RingOutput<'_>]) -> AuditStre
         outputs: outputs.len(),
         capacity: outputs.len(),
         vouched: false,
+        records: RecordForm::default(),
     }
 }
 
 fn output_case(output: &RingOutput<'_>) -> OutputCase {
     OutputCase {
         record: hex::encode(output.record),
+        exit: output.is_exit(),
     }
 }
 
@@ -313,7 +318,12 @@ fn transfer_case(statement: &TransferStatement<'_>) -> TransferCase {
         outputs: statement.outputs.iter().map(output_case).collect(),
         output_capacity: statement.output_capacity,
         record_chain: hex::encode(
-            record_chain(statement.outputs, statement.output_capacity).unwrap(),
+            record_chain(
+                statement.outputs,
+                statement.output_capacity,
+                head.layout.records,
+            )
+            .unwrap(),
         ),
         input_count: statement.input_count,
         private_tx_hash: hex::encode(statement.private_tx_hash),
@@ -476,7 +486,7 @@ fn compute_vectors() -> StatementVectors {
         head: values.head(
             AuditLayout {
                 entry: true,
-                vouched: false,
+                ..AuditLayout::default()
             },
             stream(entry_key, 3, &four),
         ),
@@ -558,12 +568,12 @@ fn compute_vectors() -> StatementVectors {
         description: "Every ring statement and its public input HashChain4(elements). The transfer \
                       head is [CRTX, n0, ring_id, pack_be(0x04 || tx_u), pack_be(auditor_pubkey), \
                       Poseidon(digest(envelope), digest(recipient_keys), 0), salt, layout] with the frame's \
-                      random salt and layout = entry << 1, no case is vouched. \
+                      random salt and layout = vouched | entry << 1 | data << 2 | ring_data << 3, no case is vouched or carries a data hash. \
                       digest(ct) = Poseidon(u32 len(ct), HashChain4(pack_left31(ct))). Each \
                       envelope and key region has the length of its stream layout. The transfer statements are HashChain4 over the \
                       audit head under CRTX, in_proof, hidden, delegate, \
                       approval_mask, approval_totals, no_spend, output_count, record_chain \
-                      HashChain4(hash_bytes(record_i)), input_count, private_tx_hash, the sender, delegate_asset, the \
+                      HashChain4(Poseidon(exit_i, hash_bytes(record_i))) with each output's exit claim, input_count, private_tx_hash, the sender, delegate_asset, the \
                       party identities, signer_count, signer_chain, policy_hash, own_root, \
                       curator_root, tracking_root, asset, net and gross per public \
                       slot, withdrawal_hash and the element count. No body, tag, \
@@ -687,32 +697,74 @@ fn the_ciphertext_digest_tags_the_length_over_the_left_packed_chain() {
     );
 }
 
+/// Cell `i` is `Poseidon(exit_i, hash_bytes(record_i))`, zero past the published slots.
 #[test]
-fn the_record_chain_hashes_each_published_slot() {
+fn the_record_chain_tags_each_published_slot_with_its_exit_claim() {
     let values = Values::new();
     let outputs = values.outputs(4);
-    let records: Vec<[u8; 32]> = (0..4)
+    let cell = |exit: u64, hash: [u8; 32]| Poseidon::hashv(&[&right_aligned(exit), &hash]).unwrap();
+    let cells: Vec<[u8; 32]> = (0..4)
         .map(|slot| match slot {
-            Values::EXIT => hash_bytes(&values.records[slot]),
-            _ => hash_bytes(
-                values.records[slot]
-                    .first_chunk::<RING_RECORD_LEN>()
-                    .unwrap(),
+            Values::EXIT => cell(
+                1,
+                hash_bytes(
+                    values.records[slot]
+                        .first_chunk::<EXIT_RECORD_LEN>()
+                        .unwrap(),
+                )
+                .unwrap(),
+            ),
+            _ => cell(
+                0,
+                hash_bytes(
+                    values.records[slot]
+                        .first_chunk::<RING_RECORD_LEN>()
+                        .unwrap(),
+                )
+                .unwrap(),
             ),
         })
-        .map(Result::unwrap)
         .collect();
     assert_eq!(
-        record_chain(&outputs, 4).unwrap(),
-        create_hash_chain_4_from_slice(&records).unwrap()
+        record_chain(&outputs, 4, RecordForm::default()).unwrap(),
+        create_hash_chain_4_from_slice(&cells).unwrap()
     );
     // An omitted slot reads zero at the key's width.
-    let mut filled = records.clone();
+    let mut filled = cells.clone();
     filled[3] = [0; 32];
     assert_eq!(
-        record_chain(&outputs[..3], 4).unwrap(),
+        record_chain(&outputs[..3], 4, RecordForm::default()).unwrap(),
         create_hash_chain_4_from_slice(&filled).unwrap()
     );
+}
+
+/// Under the ring data bit both kinds publish 137 bytes, the tag alone parts an exit from a ring slot.
+#[test]
+fn a_flipped_exit_claim_at_equal_length_moves_the_record_chain() {
+    let values = Values::new();
+    let form = RecordForm {
+        data: false,
+        ring_data: true,
+    };
+    let record = &values.records[0][..EXIT_RECORD_LEN];
+    let slot = |body| RingOutput {
+        hash: &values.fields[20],
+        owner_tag: values.keys[4],
+        body,
+        record,
+    };
+    let (ring, exit) = (slot(SlotBody::Recipient(record)), slot(SlotBody::Exit(&[])));
+    assert_ne!(
+        record_chain(&[ring], 2, form).unwrap(),
+        record_chain(&[exit], 2, form).unwrap()
+    );
+    // A record off the one length of its kind enters no chain.
+    assert!(record_chain(&[ring], 2, RecordForm::default()).is_err());
+    let data = RecordForm {
+        data: true,
+        ring_data: false,
+    };
+    assert!(record_chain(&[exit], 2, data).is_err());
 }
 
 /// Repeats collapse in run order, only the run's owners count, a reorder moves the chain.
@@ -873,8 +925,8 @@ fn the_anonymous_transfer_statement_follows_the_contract_order() {
         ..stream(key, 3, &outputs)
     };
     let vouched_layout = AuditLayout {
-        entry: false,
         vouched: true,
+        ..AuditLayout::default()
     };
     let vouched = TransferStatement {
         head: values.head(vouched_layout, vouched_stream),
@@ -916,7 +968,7 @@ fn the_anonymous_transfer_statement_follows_the_contract_order() {
         zero,
         right_aligned(1),
         right_aligned(4),
-        record_chain(&outputs, 4).unwrap(),
+        record_chain(&outputs, 4, RecordForm::default()).unwrap(),
         right_aligned(3),
         values.fields[3],
         zero,
@@ -982,7 +1034,7 @@ fn delivery_bytes_stay_outside_the_statement() {
         withdrawal_hash: &zero,
     };
     // A payload past the record, a tag and an exit's scheme 3 body stay outside.
-    let body = [&values.records[1][..], &[7u8; 5]].concat();
+    let body = [&values.records[1][..RING_RECORD_LEN], &[7u8; 5]].concat();
     let mut rewritten = outputs.clone();
     rewritten[1].owner_tag = custom_ring_interface::stream::slot_tag(values.keys[9]);
     rewritten[1].body = SlotBody::Recipient(&body);

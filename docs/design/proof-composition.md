@@ -138,8 +138,8 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The circuit reopens `private_tx_hash` in `bindTransaction`. A note relabelled as an address changes the note chain, and `private_tx_hash` fails.
 - The circuit holds every output slot to the UTXO or the dummy domain, dummies last, and a dummy to zero fields but its blinding. Ring slot `i` is then SPP slot `i` with no output hash in the statement.
 - SPP holds each output's ring id to 0 or the ring's in `AssertRingMemberOrFree`. Its authority rail holds it to the ring's in `AssertRingMember`.
-- The data hashes enter no ring constraint but the UTXO hash, and no layout bit reads them. A malformed payload loses them for the recipient and the auditor.
-- The tests are `TestDataOutputs`, and `TestOutputSlotsKeepSppForm` and `TestDataHashesNeedNoLayoutBit` in `prover/circuits/audit`.
+- The record proves `data_hash` and `ring_data_hash` from the slot's own wires. A clear layout bit proves that hash zero on every slot, and an exit holds no ring data hash. A lost payload loses the application data and not the commitment.
+- The tests are `TestDataOutputs`, and `TestOutputSlotsKeepSppForm`, `TestDataHashesFollowTheLayoutBits`, `TestRecordLengthsFollowTheFrame` and `TestExitCarriesNoRingData` in `prover/circuits/audit`.
 
 ### Every published blinding derives from the sealed key
 
@@ -164,7 +164,7 @@ Tests sit under `prover/circuits/transfer` unless the entry names another path.
 - The circuit seals each slot's record to its supplied recipient key under that slot's secret, in `RecordChain`. It refuses a noncanonical key and a zero agreement. No constraint ties the key to the intended recipient.
 - The circuit proves one key expansion and one `CTREncrypt` under `CRING/adt` over the envelope and every recipient key, in `SealStream`. `countedDigest` covers the transmitted envelope over `n` and the keys over `m`, each with its length as a tag.
 - The circuit derives each record's kind from the slot, holds the owner key to the owner identity, the mint to the asset and the blinding to the slot's blinding wire. A slot's key counter is fixed by its index.
-- The auditor rebuilds each commitment and accepts only an exact match with the published hash. That check is the reader's, and the record proof makes it complete for every slot whose payload carries its data hashes.
+- The auditor rebuilds each commitment and accepts only an exact match with the published hash. That check is the reader's, and the record proof makes it complete for every slot. The record chain tags each cell with the slot's exit claim, and `TestExitClaimBindsThroughTheCellTag` pins the tag.
 - The test in `prover/circuits/transfer` is `TestWrongAuditorRecordFailsAtTheStatement`. The tests in `prover/circuits/audit` are `TestStreamVector`, `TestStreamRangesAreTheSharedVector`, `TestStreamRegionsHoldTheirPlaintext`, `TestRecordsAreSealedToTheSealedRecipientKey`, `TestEveryRecordFieldIsSealed`, `TestKindFollowsTheSlot`, `TestSlotPredicatesRefuseBeforeTheBinding`, `TestReaderRebuildsEverySlot`, `TestZeroAndEnrolledKeysReadApart` and `TestRecordAtAnotherSlotFailsTheReader`.
 
 ### The envelope counts the spent notes and names entry inputs

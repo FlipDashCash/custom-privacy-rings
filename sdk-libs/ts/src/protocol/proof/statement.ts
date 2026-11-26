@@ -12,11 +12,12 @@ import { packDisclosure } from "../../crypto/audit/audit.js";
 import { u32Field } from "../../crypto/error.js";
 import { packBytesBe } from "../../crypto/derivation/hasher.js";
 import {
-  EXIT_RECORD_LEN,
-  RING_RECORD_LEN,
+  RecordKind,
   auditLayoutValue,
+  publishedRecordLen,
   splitSealedKeys,
   type AuditLayout,
+  type RecordForm,
 } from "../codec/ring-disclosure-layout.js";
 
 import { RingDomain, domainField } from "../../crypto/derivation/ring-domain.js";
@@ -27,7 +28,6 @@ import {
   isAnonymousFrame,
   isDelegateRail,
   taggedX25519,
-  type RingOutput,
 } from "../transaction/transact.js";
 import { N_PUBLIC_SLOTS } from "../transaction/spp.js";
 import { QUAD_CAPACITY } from "../membership/member-registry.js";
@@ -113,8 +113,11 @@ export interface TransferStatement {
   readonly withdrawalHash: Bytes32;
 }
 
-/** The slot field the statement chains. */
-export type StatementOutput = Pick<RingOutput, "record">;
+/** The slot fields the statement chains, its record ciphertext under the frame's exit claim. */
+export interface StatementOutput {
+  readonly record: Uint8Array;
+  readonly exit: boolean;
+}
 
 /** An application of `count` writes, Rust `ApplyRecordsStatement`. */
 export interface ApplyRecordsStatement {
@@ -203,7 +206,7 @@ export function transferStatementElements(statement: TransferStatement): readonl
     statement.approvalTotals,
     bit(statement.noSpend),
     u32Field(outputs.length, "output count"),
-    recordChain(outputs, capacity),
+    recordChain(outputs, capacity, statement.head.layout.records),
     u32Field(statement.inputCount, "input count"),
     checkedBytes<Bytes32>(statement.privateTxHash, 32, "private tx hash"),
     sender,
@@ -282,7 +285,9 @@ export function ringTransferStatement(
     approvalMask: data.approval,
     approvalTotals: data.extensions.approvalTotals ?? ZERO_FIELD,
     noSpend: data.noSpend,
-    outputs: data.outputs,
+    outputs: data.outputs.map((output) =>
+      Object.freeze({ record: output.record, exit: output.body.kind === "exit" }),
+    ),
     capacity: stream.capacity,
     inputCount: data.nullifiers.length,
     privateTxHash: data.privateTxHash,
@@ -419,17 +424,20 @@ export function envelopeDigest(
   ]) as Bytes32;
 }
 
-/** `HashChain4(hash_bytes(record_ct_i))`, untagged since the proof derives each slot's length from its ring id. */
+/** `HashChain4(Poseidon(exit_i, hash_bytes(record_ct_i)))`, the frame's exit claim parts the two kinds at one length. */
 export function recordChain(
-  outputs: readonly Pick<RingOutput, "record">[],
+  outputs: readonly StatementOutput[],
   capacity: number,
+  form: RecordForm,
 ): Bytes32 {
   return filledChain(
-    outputs.map((output) => {
-      const length = output.record.length;
-      if (length !== RING_RECORD_LEN && length !== EXIT_RECORD_LEN)
-        throw new RingError("RING_INVALID_LENGTH", { details: { field: "record", length } });
-      return hashBytes(output.record) as Bytes32;
+    outputs.map(({ record, exit }) => {
+      const expected = publishedRecordLen(form, exit ? RecordKind.exit : RecordKind.ring);
+      if (record.length !== expected)
+        throw new RingError("RING_INVALID_LENGTH", {
+          details: { field: "record", expected, length: record.length },
+        });
+      return poseidon([bit(exit), hashBytes(record)]) as Bytes32;
     }),
     capacity,
   );

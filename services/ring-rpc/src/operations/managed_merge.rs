@@ -759,7 +759,7 @@ pub(crate) mod tests {
             &self,
             _message: &solana_message::VersionedMessage,
         ) -> Result<crate::landing::Simulation, RingRpcError> {
-            Ok(crate::landing::Simulation::Passed)
+            Ok(crate::landing::Simulation::Passed { calls: Vec::new() })
         }
 
         async fn account_data(

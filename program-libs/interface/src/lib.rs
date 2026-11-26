@@ -74,6 +74,10 @@ pub mod tracking;
 pub use owner_grant::OwnerGrant;
 #[path = "instructions/transact.rs"]
 pub mod transact;
+#[path = "instructions/transfer_approval.rs"]
+pub mod transfer_approval;
+#[path = "instructions/transfer_cpi.rs"]
+pub mod transfer_cpi;
 #[cfg(feature = "verifying-keys")]
 #[path = "proof/verification.rs"]
 mod verification;
@@ -105,6 +109,7 @@ pub use spp::*;
 pub use state::*;
 pub use statement::*;
 pub use transact::*;
+pub use transfer_approval::{TransferApproval, MAX_TRANSFER_ACCOUNTS};
 #[cfg(feature = "verifying-keys")]
 pub use verification::{RegisterKeyCheck, RingProof};
 
@@ -132,6 +137,7 @@ pub struct AuditorMessage<'a> {
     pub recipient_keys: &'a [u8],
     /// One record per exit in slot order, every other record opens its slot's body.
     pub exit_records: &'a [u8],
+    exit_record_len: usize,
 }
 
 impl<'a> AuditorMessage<'a> {
@@ -141,19 +147,23 @@ impl<'a> AuditorMessage<'a> {
         let (eph_pk, rest) = data.split_first_chunk::<TAGGED_X25519_KEY_LEN>()?;
         let (envelope, rest) = rest.split_at_checked(layout.envelope().len)?;
         let (recipient_keys, exit_records) = rest.split_at_checked(layout.keys_len())?;
+        let exit_record_len = layout.records.published_len(RecordKind::Exit);
         (eph_pk[0] == VIEWING_PUBKEY_TAG
-            && exit_records.len() == exits.checked_mul(EXIT_RECORD_LEN)?)
+            && exit_records.len() == exits.checked_mul(exit_record_len)?)
         .then_some(Self {
             eph_pk,
             envelope,
             recipient_keys,
             exit_records,
+            exit_record_len,
         })
     }
 
     /// Indexed among the exits, not the slots.
-    pub fn exit_record(&self, exit: usize) -> Option<&'a [u8; EXIT_RECORD_LEN]> {
-        self.exit_records.as_chunks().0.get(exit)
+    pub fn exit_record(&self, exit: usize) -> Option<&'a [u8]> {
+        self.exit_records
+            .chunks_exact(self.exit_record_len)
+            .nth(exit)
     }
 
     /// `ciphertexts` is the envelope, the keys and the exit records in slot order.

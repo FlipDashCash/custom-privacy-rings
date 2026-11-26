@@ -18,6 +18,8 @@ import (
 
 type statementOutputVector struct {
 	Record string `json:"record"`
+	// Exit is the frame's claim, the tag of the slot's record chain cell.
+	Exit bool `json:"exit"`
 }
 
 type withdrawalVector struct {
@@ -98,7 +100,7 @@ func vectorOf(t *testing.T, name, family string, s ringtransfer.Statement, run [
 		if output.Omitted {
 			continue
 		}
-		v.Outputs = append(v.Outputs, statementOutputVector{Record: hex.EncodeToString(output.Record)})
+		v.Outputs = append(v.Outputs, statementOutputVector{Record: hex.EncodeToString(output.Record), Exit: output.Exit})
 	}
 	return v
 }

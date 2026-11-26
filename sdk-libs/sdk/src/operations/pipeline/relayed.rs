@@ -58,6 +58,7 @@ impl<'a> RingTransfer<Relayed<'a>> {
             ring_salt: None,
             approval: ApprovalDisclosure::None,
             seal_row: None,
+            program: None,
         }
     }
 

@@ -7,19 +7,18 @@ use spr_client::{
 
 use super::VouchSigner;
 use spr_interface::shape::Shape;
-use spr_keypair::{NullifierKey, ShieldedAddress, SigningKey};
+use spr_keypair::{viewing_key::Salt, NullifierKey, ShieldedAddress, SigningKey};
 use spr_program::instruction::TransactInterfaceTransferAccounts;
 use spr_transaction::instructions::transact::ConfidentialTransaction;
 pub(super) use zolana_ring_client::rpc::deposit_funder;
 use zolana_ring_client::rpc::TokenAccountSetup;
-use zolana_ring_transaction::RingOutputRail;
 
 use super::{
     anonymous::{CoOwner, HiddenOwner},
-    canonical_shape, pad_under_rail,
+    canonical_shape,
     public_owners::check_zero_key_inputs,
-    sealed, shape_keyed, transaction_key, ApprovalDisclosure, CoOwnerKey, DeliveredRail, OwnerKey,
-    Rail, RailKind, RingSender, RingTransfer, Spend, Staged, TransferAuthority,
+    sealed, shape_keyed, ApprovalDisclosure, CoOwnerKey, DeliveredRail, OutputSeal, OwnerKey, Rail,
+    RailKind, RingSender, RingTransfer, SealedOutputs, Spend, Staged, TransferAuthority,
 };
 use crate::{CustomRing, CustomRingConfig, RingError};
 
@@ -79,6 +78,7 @@ impl<'a> RingTransfer<Owner<'a>> {
             ring_salt: None,
             approval: ApprovalDisclosure::None,
             seal_row: None,
+            program: None,
         }
     }
 
@@ -188,15 +188,54 @@ impl<'a> Owner<'a> {
         _ring: CustomRing,
         _client: &R,
         config: &CustomRingConfig,
+        program_salt: Option<Salt>,
     ) -> Result<Staged<'_>, RingError> {
+        let sender = self.signer_rail_sender(config)?;
+        self.stage_signers(sender, config, program_salt)
+    }
+
+    pub(super) fn seal(
+        &self,
+        config: &CustomRingConfig,
+        program_salt: Option<Salt>,
+    ) -> Result<SealedOutputs, RingError> {
+        let sender = self.signer_rail_sender(config)?;
+        self.seal_signers(&sender, config, program_salt)
+    }
+
+    fn signer_rail_sender(&self, config: &CustomRingConfig) -> Result<ShieldedAddress, RingError> {
         if config.mode == RingMode::Anonymous {
             return Err(RingError::MissingAnonymousSigner);
         }
-        check_zero_key_inputs(
-            self.transaction.inputs(),
-            &self.sender.address()?.signing_pubkey,
-        )?;
-        self.stage_signers(self.sender.address()?, config)
+        let sender = self.sender.address()?;
+        check_zero_key_inputs(self.transaction.inputs(), &sender.signing_pubkey)?;
+        Ok(sender)
+    }
+
+    pub(super) fn seal_signers(
+        &self,
+        sender: &ShieldedAddress,
+        config: &CustomRingConfig,
+        program_salt: Option<Salt>,
+    ) -> Result<SealedOutputs, RingError> {
+        if program_salt.is_some() && self.in_proof_owner.is_some() {
+            return Err(RingError::ProgramRailUnsupported);
+        }
+        self.check_settlement_accounts()?;
+        let shape = self.shape(sender)?;
+        OutputSeal {
+            keys: self.sender,
+            sender,
+            auditor: config.auditor_pubkey,
+            delivery: DeliveredRail {
+                outputs: shape.n_outputs(),
+                rail: RingRail::Confidential,
+            }
+            .delivery()?,
+            shape,
+            program_salt,
+        }
+        .seal(self.transaction.clone())
     }
 
     /// The signer rail, zero-key notes admitted by the caller.
@@ -204,23 +243,10 @@ impl<'a> Owner<'a> {
         &self,
         sender: ShieldedAddress,
         config: &CustomRingConfig,
+        program_salt: Option<Salt>,
     ) -> Result<Staged<'_>, RingError> {
-        self.check_settlement_accounts()?;
-        let shape = self.shape(&sender)?;
-        let transaction = self.transaction.clone();
-        let delivery = DeliveredRail {
-            outputs: shape.n_outputs(),
-            rail: RingRail::Confidential,
-        }
-        .delivery()?;
-        let first_nullifier = *transaction.first_nullifier();
-        let rail = RingOutputRail::new(
-            transaction_key(self.sender, first_nullifier)?,
-            config.auditor_pubkey,
-            delivery,
-        );
-        let transaction = pad_under_rail(transaction, &rail, shape, &sender)?;
-        let proof_inputs = rail.encrypt(transaction, &sender)?;
+        let SealedOutputs { rail, proof_inputs } =
+            self.seal_signers(&sender, config, program_salt)?;
         let (owner_signers, spend) = match self.in_proof_owner {
             Some(signer) => {
                 if signer.pubkey() != sender.signing_pubkey {

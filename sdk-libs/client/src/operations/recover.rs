@@ -159,7 +159,7 @@ impl SourceMember<'_> {
     fn nullifier_pk_of_output(&self, opened: &AuditedUtxo) -> Result<Option<[u8; 32]>, AuditError> {
         match opened.owner {
             UtxoOwner::Keyed { .. } => self.nullifier_pk_of(opened.owner_hash()?),
-            UtxoOwner::Unresolved { .. } => Ok((opened.owner_key
+            UtxoOwner::Unresolved => Ok((opened.owner_key
                 == self.address.signing_pubkey.confidential_view_tag()?)
             .then_some(self.address.nullifier_pubkey)),
         }

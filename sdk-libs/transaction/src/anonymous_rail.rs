@@ -4,10 +4,10 @@
 use custom_ring_interface::{SenderBundle, MIN_REPLY_LEN};
 use rand::{rngs::OsRng, RngCore};
 use spr_hasher::primitives::is_canonical_bn254_scalar_be;
-use spr_interface::MAX_OUTPUTS;
+use spr_interface::{instruction::instruction_data::transact::TransactOutput, MAX_OUTPUTS};
 use spr_keypair::{ShieldedAddress, X25519Pubkey};
 use spr_transaction::{
-    instructions::transact::SppProofInputs, SppProofOutputUtxo, TransactionError,
+    instructions::transact::SppProofInputs, Mint, SppProofOutputUtxo, TransactionError,
 };
 
 use crate::{
@@ -24,6 +24,7 @@ pub struct AnonymousPlan {
     replies: Vec<Option<ReplyMetadata>>,
     /// Drawn ahead, every encoding of a dummy slot publishes one tag.
     dummy_preimages: [[u8; 32]; MAX_OUTPUTS],
+    change_asset: Mint,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +47,7 @@ impl AnonymousPlan {
             recipients: Vec::new(),
             replies: Vec::new(),
             dummy_preimages: core::array::from_fn(|_| random_tag_preimage()),
+            change_asset: Mint::SOL,
         }
     }
 
@@ -59,6 +61,7 @@ impl AnonymousPlan {
             recipients,
             replies,
             dummy_preimages,
+            change_asset: Mint::SOL,
         }
     }
 
@@ -74,6 +77,16 @@ impl AnonymousPlan {
             *slot = Some(reply);
         }
         self
+    }
+
+    /// The asset of the zero change a frame leads with when nothing returns, SOL unless set.
+    pub fn with_change_asset(mut self, asset: Mint) -> Self {
+        self.change_asset = asset;
+        self
+    }
+
+    pub fn change_asset(&self) -> Mint {
+        self.change_asset
     }
 
     pub fn recipients(&self) -> &[X25519Pubkey] {
@@ -166,26 +179,63 @@ impl AnonymousSlot {
     }
 }
 
-/// Moves the sender's change to the front and rederives every blinding at its slot.
+/// The added change leads, SPL ahead of SOL, then each dataless output `declared` to the sender.
 pub(crate) fn lead_change(
     inputs: &mut SppProofInputs,
     sender: &ShieldedAddress,
+    declared: &[SppProofOutputUtxo],
 ) -> Result<(), RingRailError> {
-    let mut order: Vec<usize> = (0..inputs.output_utxos.len()).collect();
-    order.sort_by_key(|index| !is_change(&inputs.output_utxos[*index], sender));
-    let outputs: Vec<SppProofOutputUtxo> = order
+    let live =
+        |outputs: &[SppProofOutputUtxo]| outputs.iter().filter(|output| !output.is_dummy()).count();
+    let appended = inputs
+        .output_utxos
         .iter()
-        .map(|index| inputs.output_utxos[*index].clone())
-        .collect();
+        .zip(declared)
+        .all(|(sealed, declared)| note_of(sealed) == note_of(declared));
+    // SPP appends its change today, a builder that leads with it keeps the same frame.
+    let first = match appended {
+        true => declared.len(),
+        false => 0,
+    };
+    let added = first..first + live(&inputs.output_utxos).saturating_sub(live(declared));
+    let rank = |index: usize| {
+        let output = &inputs.output_utxos[index];
+        match added.contains(&index) {
+            true if output.asset != Mint::SOL => 0,
+            true => 1,
+            false if is_change(output, sender) => 2,
+            false => 3,
+        }
+    };
+    let mut order: Vec<usize> = (0..inputs.output_utxos.len()).collect();
+    order.sort_by_key(|index| rank(*index));
     let first_nullifier = inputs.first_nullifier()?;
     let blindings = OutputBlindings::new(&first_nullifier, &inputs.blinding_seed)?;
-    inputs.output_utxos = outputs
-        .into_iter()
+    inputs.output_utxos = order
+        .iter()
         .zip(0u32..)
-        .map(|(output, slot_index)| {
+        .map(|(index, slot_index)| {
             Ok(SppProofOutputUtxo {
                 blinding: blindings.at(slot_index)?,
-                ..output
+                ..inputs.output_utxos[*index].clone()
+            })
+        })
+        .collect::<Result<_, RingRailError>>()?;
+    // Change never sits in the omitted compact suffix, the published prefix permutes within itself.
+    let external = &mut inputs.external_data;
+    let published = order
+        .iter()
+        .filter(|index| **index < external.outputs.len());
+    external.resolved_owner_tags = published
+        .clone()
+        .map(|index| external.resolved_owner_tags[*index])
+        .collect();
+    external.outputs = published
+        .zip(&inputs.output_utxos)
+        .map(|(index, output)| {
+            Ok(TransactOutput {
+                utxo_hash: output.hash(inputs.output_tree_id)?,
+                ..external.outputs[*index].clone()
             })
         })
         .collect::<Result<_, RingRailError>>()?;
@@ -198,8 +248,7 @@ pub(crate) struct AnonymousSeal<'a> {
     pub outputs: &'a [SppProofOutputUtxo],
     pub slots: &'a [AnonymousSlot],
     pub plan: &'a AnonymousPlan,
-    /// The frame's payload width, `None` without data.
-    pub width: Option<usize>,
+    pub form: crate::BodyForm,
 }
 
 /// One non-exit slot's bytes, its reply empty without reply metadata.
@@ -218,7 +267,7 @@ impl AnonymousSeal<'_> {
         let output = &self.outputs[slot_index];
         let body = self
             .rail
-            .seal_body(output, &self.first_nullifier, slot_index, self.width)?;
+            .seal_body(output, &self.first_nullifier, slot_index, self.form)?;
         let replies = self.plan.slot_replies(self.slots);
         let reply = match (self.slots[slot_index], replies[slot_index], reply_len) {
             (AnonymousSlot::Payment { recipient }, Some(reply), Some(reply_len)) => {
@@ -288,8 +337,12 @@ fn leading_change(outputs: &[SppProofOutputUtxo], sender: &ShieldedAddress) -> u
         .count()
 }
 
+fn note_of(output: &SppProofOutputUtxo) -> (Option<ShieldedAddress>, Mint, u64) {
+    (output.owner_address, output.asset, output.amount)
+}
+
 /// A bundle cell holds no data, a data note travels in its own body.
-fn is_change(output: &SppProofOutputUtxo, sender: &ShieldedAddress) -> bool {
+pub(crate) fn is_change(output: &SppProofOutputUtxo, sender: &ShieldedAddress) -> bool {
     let carries_data = [output.data_hash, output.ring_data_hash]
         .into_iter()
         .flatten()

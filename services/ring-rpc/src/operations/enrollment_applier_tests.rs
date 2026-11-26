@@ -164,7 +164,7 @@ impl ChainSubmit for StubChain {
     }
 
     async fn simulate(&self, _message: &VersionedMessage) -> Result<Simulation, RingRpcError> {
-        Ok(Simulation::Passed)
+        Ok(Simulation::Passed { calls: Vec::new() })
     }
 }
 

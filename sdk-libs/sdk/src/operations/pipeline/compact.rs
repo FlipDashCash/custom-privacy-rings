@@ -4,7 +4,7 @@ use custom_ring_interface::{
     cosign::ApprovalMask, storage::Revision, tag, AnonymousProofData, AppMessage, CustomRingError,
     CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
     PlainGroth16Proof, PolicyProof, Replies, RingOutput, RingPolicy, RingRail, RingTransactData,
-    RootRead, SlotBody, EXIT_RECORD_LEN, MAX_SPP_CPI_ACCOUNTS,
+    RootRead, SlotBody, TransferApproval, MAX_SPP_CPI_ACCOUNTS,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -14,6 +14,8 @@ use spr_interface::instruction::{
 use spr_program::instruction::{
     RingAuthorityTransact, RingTransact, TransactInterfaceTransferAccounts,
 };
+
+use zolana_ring_client::rpc::ApprovedTransfer;
 
 use super::owner::deposit_funder;
 use crate::{CustomRing, RingError};
@@ -163,6 +165,7 @@ pub(crate) struct TransactParts {
     pub extensions: OwnedExtensions,
     pub interface_transfers: Vec<InterfaceTransfer>,
     pub has_data: bool,
+    pub ring_data: bool,
     pub entry: bool,
     pub wide_owners: bool,
     pub vouched: bool,
@@ -187,13 +190,13 @@ impl TransactParts {
         &mut self,
         envelope: Vec<u8>,
         recipient_keys: Vec<u8>,
-        exit_records: &[[u8; EXIT_RECORD_LEN]],
+        exit_records: &[Vec<u8>],
     ) {
         self.envelope = envelope;
         self.recipient_keys = recipient_keys;
         let exits = self.outputs.iter_mut().filter(|output| output.is_exit());
         for (output, record) in exits.zip(exit_records) {
-            output.record = record.to_vec();
+            output.record.clone_from(record);
         }
     }
 
@@ -217,6 +220,7 @@ impl TransactParts {
             extensions: self.extensions.view(),
             interface_transfers: self.interface_transfers.clone(),
             has_data: self.has_data,
+            ring_data: self.ring_data,
             entry: self.entry,
             wide_owners: self.wide_owners,
             outputs: self.outputs.iter().map(OwnedOutput::view).collect(),
@@ -247,6 +251,14 @@ impl TransactParts {
     }
 }
 
+/// What follows the record in each co-signer pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CoSignerForm {
+    Signature,
+    /// The instructions sysvar, a top-level `ApproveTransfer` stands for the signature.
+    Approval,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TransactAccounts {
     pub payer: Address,
@@ -259,6 +271,7 @@ pub(crate) struct TransactAccounts {
     /// SPP reads each cached note from it, it follows the settlement groups.
     pub read_cache: Option<Address>,
     pub co_signers: Vec<Address>,
+    pub co_signer_form: CoSignerForm,
     pub delegate: Option<Address>,
     pub delegate_mint: Option<Address>,
 }
@@ -275,6 +288,51 @@ impl TransactAccounts {
             .collect()
     }
 
+    /// One per co-signer, the digest reads `transfer` as built.
+    pub fn transfer_approvals(
+        &self,
+        transfer: &Instruction,
+        position: u8,
+    ) -> Result<Vec<Instruction>, RingError> {
+        self.called_by_program()?;
+        let digest = TransferApproval::digest(
+            &transfer.program_id,
+            &transfer.data,
+            transfer.accounts.iter().map(|account| &account.pubkey),
+        )?;
+        let data = TransferApproval { position, digest }.encode();
+        let ring = CustomRing::new(transfer.program_id);
+        Ok(self
+            .co_signers
+            .iter()
+            .map(|co_signer| Instruction {
+                program_id: transfer.program_id,
+                accounts: ring.transfer_approval_metas(*co_signer).into(),
+                data: data.into(),
+            })
+            .collect())
+    }
+
+    /// The call Ring RPC reads beside the approvals of `transfer`.
+    pub fn approved_transfer(&self, transfer: &Instruction) -> Result<ApprovedTransfer, RingError> {
+        self.called_by_program()?;
+        Ok(ApprovedTransfer {
+            data: transfer.data.clone().into(),
+            accounts: transfer
+                .accounts
+                .iter()
+                .map(|account| account.pubkey.into())
+                .collect(),
+        })
+    }
+
+    fn called_by_program(&self) -> Result<(), RingError> {
+        match self.co_signer_form {
+            CoSignerForm::Approval => Ok(()),
+            CoSignerForm::Signature => Err(RingError::ApprovalOutsideProgram),
+        }
+    }
+
     /// The ring prefix, then SPP's own list, the data's tag by its rail.
     pub fn instruction(
         &self,
@@ -284,7 +342,7 @@ impl TransactAccounts {
     ) -> Result<Instruction, RingError> {
         let data = parts.data()?;
         let expanded = data.transact_ix_data(config, TransactProof::zeroed())?;
-        let spp = match parts.rail {
+        let mut spp = match parts.rail {
             RingRail::Delegate | RingRail::AnonymousDelegate => {
                 RingAuthorityTransact {
                     payer: self.payer,
@@ -313,6 +371,13 @@ impl TransactAccounts {
                 }
             }
         };
+        if self.called_by_program().is_ok() {
+            // An owner off the curve signs inside its program's call alone, every other owner signs the transaction.
+            spp.iter_mut()
+                .filter(|meta| self.owner_signers.contains(&meta.pubkey))
+                .filter(|meta| !meta.pubkey.is_on_curve())
+                .for_each(|meta| meta.is_signer = false);
+        }
         if spp.len() > MAX_SPP_CPI_ACCOUNTS {
             return Err(RingError::TooManySettlementAccounts {
                 accounts: spp.len(),
@@ -328,7 +393,10 @@ impl TransactAccounts {
         accounts.extend(
             self.co_signers
                 .iter()
-                .flat_map(|co_signer| ring.co_signer_metas(*co_signer)),
+                .flat_map(|co_signer| match self.co_signer_form {
+                    CoSignerForm::Signature => ring.co_signer_metas(*co_signer),
+                    CoSignerForm::Approval => ring.approved_co_signer_metas(*co_signer),
+                }),
         );
         accounts.extend(
             self.delegate

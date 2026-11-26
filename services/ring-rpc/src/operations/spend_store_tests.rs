@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Mutex};
 use sea_orm::ConnectionTrait;
 use spr_hasher::primitives::solana_owner_identity;
 use spr_keypair::NullifierKey;
-use zolana_ring_client::{rpc::WalletNoteStatus, ClaimedData, CreatedUtxo, KnownUtxo, UtxoOwner};
+use zolana_ring_client::{rpc::WalletNoteStatus, CreatedUtxo, KnownUtxo, UtxoOwner};
 
 use super::{page_work::MAX_LATE_NOTES, *};
 use crate::{
@@ -231,15 +231,12 @@ fn a_late_key_recomputes_the_owners_notes_and_resolves_their_rows() {
     assert!(status_of(&store, owner).notes.is_empty());
 }
 
-/// `note` as a record without its key publishes it, the payload's hashes claimed apart.
-fn unresolved(created: &CreatedUtxo, claimed: ClaimedData) -> CreatedUtxo {
+/// `note` as a record without its key publishes it, under the record's `data_hash`.
+fn unresolved(created: &CreatedUtxo, data_hash: [u8; 32]) -> CreatedUtxo {
     CreatedUtxo {
         utxo: KnownUtxo {
-            owner: UtxoOwner::Unresolved {
-                claimed: Some(claimed),
-            },
-            data_hash: None,
-            ring_data_hash: None,
+            owner: UtxoOwner::Unresolved,
+            data_hash: Some(data_hash),
             ..created.utxo
         },
         ..*created
@@ -267,7 +264,7 @@ fn an_unresolved_note_keys_once_when_its_owner_enrolls_late() {
     let keys = Keys::none();
     let created = rebuilt(owner, &secret(7));
     apply(&store, &keys, |work| {
-        work.open(frame(5), [unresolved(&created, ClaimedData::default())]);
+        work.open(frame(5), [unresolved(&created, [0; 32])]);
     });
     through(&store, &keys, 10);
     let read = status_of(&store, owner);
@@ -311,19 +308,13 @@ fn an_unresolved_note_that_does_not_rebuild_under_the_registered_key_stays_unkno
     let cases = [
         (
             "another key",
-            unresolved(&under_another_key, ClaimedData::default()),
+            unresolved(&under_another_key, [0; 32]),
             nullifier_of(&under_another_key, &secret(8)),
             SpendState::Unclassified,
         ),
         (
-            "another payload",
-            unresolved(
-                &under_the_key,
-                ClaimedData {
-                    data_hash: [9; 32],
-                    ring_data_hash: [0; 32],
-                },
-            ),
+            "another data hash",
+            unresolved(&under_the_key, [9; 32]),
             nullifier_of(&under_the_key, &secret(7)),
             SpendState::Resolved {
                 note: under_the_key.commitment,

@@ -6,7 +6,7 @@ use std::{
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use sea_orm::{ConnectionTrait, Statement};
 use solana_keypair::Keypair;
-use solana_message::Message;
+use solana_message::{Message, VersionedMessage};
 use solana_signer::Signer;
 use zolana_ring_policy::AssetLimits;
 
@@ -83,7 +83,7 @@ impl AssetLimitSource for Clocked {
     async fn transfer_flows(
         &self,
         _ring: Address,
-        _message: &VersionedMessage,
+        _frame: FrameSource<'_>,
     ) -> Result<FrameRead, RingRpcError> {
         self.frame_reads.fetch_add(1, Ordering::Relaxed);
         Ok(FrameRead::Transfer(TransferRead {
@@ -215,6 +215,7 @@ fn request(nonce: u8, flows: Vec<OwnerFlow>) -> CoSignRequest {
         ring: RING,
         message: message(nonce),
         flows: CoSignFlows::Published(flows),
+        approved_transfer: None,
     }
 }
 
@@ -371,6 +372,7 @@ async fn a_frame_read_past_a_repeated_message_never_moves_its_rows() {
         ring: RING,
         message: message(1),
         flows: CoSignFlows::Frame,
+        approved_transfer: None,
     };
     let first = window.co_signer.decide(&framed()).await.expect("first");
     assert!(matches!(first, CoSignDecision::Signed(_)));

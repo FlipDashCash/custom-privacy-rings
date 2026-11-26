@@ -592,6 +592,11 @@ func TestDataOutputs(t *testing.T) {
 	t.Run("no data output", func(t *testing.T) {
 		requireSolved(t, ringtransfer.Signed(dataKey2).Build(t).Circuit)
 	})
+	t.Run("a data hash the layout leaves out", func(t *testing.T) {
+		w := ringtransfer.Signed(dataKey2)
+		w.Outputs = map[int]func(*ringaudit.Slot){0: func(s *ringaudit.Slot) { s.Utxo.DataHash = big.NewInt(0x77) }}
+		refused(t, w.Build(t).Circuit, "audit.LayoutFlags.assertHashes")
+	})
 }
 
 // Dummies stay last and an input past the published count opens nothing.

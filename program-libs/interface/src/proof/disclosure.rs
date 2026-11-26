@@ -4,7 +4,7 @@
 
 use spr_hasher::primitives::{pack_be_chunks, PACK_BE_CHUNK_BYTES};
 
-use crate::audit_stream::SEALED_KEY_LEN;
+use crate::audit_stream::{RecordForm, SEALED_KEY_LEN};
 
 pub const TRANSFER_OUTPUT_CAPACITIES: [usize; 4] = [2, 4, 8, 16];
 
@@ -15,12 +15,16 @@ pub struct AuditLayout {
     pub entry: bool,
     /// The frame publishes the voucher's sealed key after the slot keys.
     pub vouched: bool,
+    pub records: RecordForm,
 }
 
 impl AuditLayout {
-    /// Bit 0 vouched, bit 1 entry.
+    /// Bit 0 vouched, bit 1 entry, bit 2 data, bit 3 ring data.
     pub const fn value(self) -> u8 {
-        self.vouched as u8 | (self.entry as u8) << 1
+        self.vouched as u8
+            | (self.entry as u8) << 1
+            | (self.records.data as u8) << 2
+            | (self.records.ring_data as u8) << 3
     }
 
     /// `None` on a vouched region shorter than one key.
@@ -82,11 +86,27 @@ mod tests {
 
     #[test]
     fn the_layout_value_is_the_circuit_flag() {
-        let layout = |entry, vouched| AuditLayout { entry, vouched }.value();
+        let layout = |entry, vouched| {
+            AuditLayout {
+                entry,
+                vouched,
+                records: RecordForm::default(),
+            }
+            .value()
+        };
         assert_eq!(layout(false, false), 0);
         assert_eq!(layout(false, true), 1);
         assert_eq!(layout(true, false), 2);
         assert_eq!(layout(true, true), 3);
+        let records = |data, ring_data| {
+            AuditLayout {
+                records: RecordForm { data, ring_data },
+                ..AuditLayout::default()
+            }
+            .value()
+        };
+        assert_eq!(records(true, false), 4);
+        assert_eq!(records(false, true), 8);
     }
 
     #[test]

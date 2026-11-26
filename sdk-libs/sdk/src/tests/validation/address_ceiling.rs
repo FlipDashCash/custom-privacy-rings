@@ -325,6 +325,7 @@ fn anonymous_transfer_with(
             utxo_tree_root_index: 1,
             nullifier_tree_root_index: 2,
         }),
+        ring_data: false,
     };
     data.envelope = &envelope_room[..data.audit_stream().unwrap().envelope().len];
     Instruction {

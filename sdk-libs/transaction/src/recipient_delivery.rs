@@ -1,13 +1,14 @@
 //! Ring bodies, sender bundles and reply metadata, each under its own label over a CRDS slot secret.
 //!
 //! A ring body is the slot's proven record and its unproven payload, one stream. The proof binds the
-//! record to the slot's opening and its ciphertext to the statement, the payload stays the sender's word.
+//! record, its data hashes included, to the slot's opening and its ciphertext to the statement. The
+//! payload holds the application data alone and stays the sender's word.
 
 use custom_ring_interface::{
     domain::{RECIPIENT_BODY_LABEL, REPLY_LABEL, SENDER_BUNDLE_LABEL},
     stream::SlotSecret,
-    OutputRecord, RecipientPayload, RecordKey, RecordKind, SenderBundle, EXIT_RECORD_LEN,
-    RECORD_ZERO_KEY_BIT, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
+    OutputRecord, RecipientPayload, RecordForm, RecordKey, RecordKind, SenderBundle,
+    RECORD_ZERO_KEY_BIT, SENDER_BUNDLE_LEN,
 };
 use solana_address::Address;
 use spr_hasher::primitives::is_canonical_x25519_public_key;
@@ -141,36 +142,50 @@ pub fn published_nullifier_pk(record: &OutputRecord) -> Option<[u8; 32]> {
     }
 }
 
-/// The record then the payload padded to the frame's width, one slot secret keys one body.
-pub fn seal_recipient_body(
-    record: &OutputRecord,
-    payload: Option<(&RecipientPayload, usize)>,
-    slot_secret: &SlotSecret,
-) -> Result<Vec<u8>, RingRailError> {
-    let mut plaintext = Zeroizing::new(record.encode()[..record.published_len()].to_vec());
-    if let Some((payload, width)) = payload {
-        plaintext.extend_from_slice(&payload.encode_padded(width)?);
+/// One slot's record under the frame's form, then the payload padded to the frame's width.
+#[must_use]
+#[derive(Clone, Copy, Debug)]
+pub struct RecipientBody<'a> {
+    pub record: &'a OutputRecord,
+    pub form: RecordForm,
+    /// The payload and the frame's width, absent on an exit and on a frame without data.
+    pub payload: Option<(&'a RecipientPayload, usize)>,
+}
+
+impl RecipientBody<'_> {
+    /// One slot secret keys one body.
+    pub fn seal(self, slot_secret: &SlotSecret) -> Result<Vec<u8>, RingRailError> {
+        let mut plaintext = Zeroizing::new(self.record.published(self.form));
+        if let Some((payload, width)) = self.payload {
+            plaintext.extend_from_slice(&payload.encode_padded(width)?);
+        }
+        let mut ciphertext = plaintext.to_vec();
+        symmetric_apply_audit(
+            slot_secret.as_bytes(),
+            RECIPIENT_BODY_LABEL,
+            &mut ciphertext,
+        )?;
+        Ok(ciphertext)
     }
-    encrypt_recipient_body(plaintext.to_vec(), slot_secret)
 }
 
 /// The cipher is unauthenticated, only the commitment a reader rebuilds proves ownership.
 pub fn open_recipient_body(
     ciphertext: &[u8],
     slot_secret: &SlotSecret,
+    form: RecordForm,
 ) -> Result<OpenedRecipientBody, RingRailError> {
     let mut plaintext = Zeroizing::new(ciphertext.to_vec());
     symmetric_apply_audit(slot_secret.as_bytes(), RECIPIENT_BODY_LABEL, &mut plaintext)?;
-    // Only an exit's record carries its key, every other record is the published prefix.
-    let record_len = match plaintext.first() {
-        Some(kind) if kind & !RECORD_ZERO_KEY_BIT == RecordKind::Exit as u8 => EXIT_RECORD_LEN,
-        _ => RING_RECORD_LEN,
+    let kind = match plaintext.first() {
+        Some(kind) if kind & !RECORD_ZERO_KEY_BIT == RecordKind::Exit as u8 => RecordKind::Exit,
+        _ => RecordKind::Ring,
     };
     let (record, payload) = plaintext
-        .split_at_checked(record_len)
+        .split_at_checked(form.published_len(kind))
         .ok_or(custom_ring_interface::CustomRingError::RingTransactLength)?;
     Ok(OpenedRecipientBody {
-        record: OutputRecord::decode(record)?,
+        record: OutputRecord::decode(record, form)?,
         payload: match payload.is_empty() {
             true => PayloadRead::Absent,
             false => RecipientPayload::decode(payload)
@@ -179,15 +194,10 @@ pub fn open_recipient_body(
     })
 }
 
-/// The payload `output` commits beside its record, `data` leads with the hash the commitment reads.
+/// The application data `output` sends beside its record.
 pub fn recipient_payload(output: &SppProofOutputUtxo) -> RecipientPayload {
-    let data = match output.data_hash.filter(|hash| *hash != [0; 32]) {
-        Some(hash) => [&hash[..], output.data.utxo_data().unwrap_or_default()].concat(),
-        None => Vec::new(),
-    };
     RecipientPayload {
-        ring_data_hash: output.ring_data_hash.filter(|hash| *hash != [0; 32]),
-        data,
+        data: output.data.utxo_data().unwrap_or_default().to_vec(),
     }
 }
 
@@ -271,8 +281,31 @@ pub struct OutputBlindings {
 }
 
 impl AnonymousOutput<'_> {
+    /// Opens a body with no frame at hand, each form its length admits tried against the commitment.
+    pub fn open(
+        &self,
+        ciphertext: &[u8],
+        slot_secret: &SlotSecret,
+    ) -> Result<Option<OpenedBody>, RingRailError> {
+        let mut without_data = None;
+        for form in RecordForm::of_recipient_body(ciphertext.len()) {
+            let Ok(body) = open_recipient_body(ciphertext, slot_secret, form) else {
+                continue;
+            };
+            // A form whose payload decodes wins, a malformed one still yields the note.
+            match (self.open_body(&body)?, &body.payload) {
+                (Some(opened), PayloadRead::Malformed) => {
+                    without_data = without_data.or(Some(opened));
+                }
+                (Some(opened), _) => return Ok(Some(opened)),
+                (None, _) => {}
+            }
+        }
+        Ok(without_data)
+    }
+
     /// `None` unless the record names the reader as a ring output's owner and the commitment rebuilds
-    /// under the reader's own key, or the zero key the record's kind names.
+    /// from the record's proven hashes under the reader's own key, or the zero key the record's kind names.
     pub fn open_body(
         &self,
         body: &OpenedRecipientBody,
@@ -283,21 +316,19 @@ impl AnonymousOutput<'_> {
         {
             return Ok(None);
         }
-        let payload = match &body.payload {
-            PayloadRead::Absent => RecipientPayload::default(),
-            PayloadRead::Opened(payload) => payload.clone(),
-            PayloadRead::Malformed => return Ok(None),
-        };
         // No registry lookup, an owner not yet registered reads its note at once.
         let nullifier_pk = published_nullifier_pk(record).unwrap_or(self.owner.nullifier_pubkey);
         let mint = Address::new_from_array(record.mint);
         let asset = self.assets.by_mint(&mint);
-        let (data_hash, app_data) = match payload.data.split_first_chunk::<32>() {
-            // Data under a zero hash binds to no commitment.
-            Some((hash, _)) if *hash == [0; 32] => return Ok(None),
-            Some((hash, app_data)) => (Some(*hash), app_data),
-            None if payload.data.is_empty() => (None, &[][..]),
-            None => return Ok(None),
+        let published = |hash: [u8; 32]| Some(hash).filter(|hash| *hash != [0; 32]);
+        let data_hash = published(record.data_hash);
+        let ring_data_hash = published(record.ring_data_hash);
+        // Data under a zero hash binds to no commitment, a lost payload leaves the note without it.
+        let data = match (&body.payload, data_hash) {
+            (PayloadRead::Opened(payload), Some(_)) => {
+                Data::new(vec![DataRecord::UtxoData(payload.data.clone())])
+            }
+            _ => Data::default(),
         };
         let note = |asset: Mint| Utxo {
             owner: self.owner.signing_pubkey,
@@ -305,10 +336,7 @@ impl AnonymousOutput<'_> {
             amount: record.amount,
             blinding: record.blinding,
             ring_program_id: Some(self.ring),
-            data: match data_hash {
-                Some(_) => Data::new(vec![DataRecord::UtxoData(app_data.to_vec())]),
-                None => Data::default(),
-            },
+            data: data.clone(),
         };
         // The commitment reads the mint alone, the id only names a registered one.
         let probe = note(asset.unwrap_or(Mint {
@@ -318,8 +346,8 @@ impl AnonymousOutput<'_> {
         let rebuilds = probe
             .hash(
                 &nullifier_pk,
-                &data_hash.unwrap_or_default(),
-                &payload.ring_data_hash.unwrap_or_default(),
+                &record.data_hash,
+                &record.ring_data_hash,
                 self.tree_id,
             )
             .is_ok_and(|hash| hash == *self.utxo_hash);
@@ -330,7 +358,7 @@ impl AnonymousOutput<'_> {
             utxo,
             nullifier_pk,
             data_hash,
-            ring_data_hash: payload.ring_data_hash,
+            ring_data_hash,
         };
         Ok(Some(match asset {
             Some(asset) => OpenedBody::Note(opened(note(asset))),
@@ -380,12 +408,4 @@ pub fn is_contributory(tx_viewing_pk: &X25519Pubkey) -> bool {
     X25519Keypair::from_bytes(&[0; 32])
         .ecdh(tx_viewing_pk)
         .is_ok()
-}
-
-fn encrypt_recipient_body(
-    mut plaintext: Vec<u8>,
-    slot_secret: &SlotSecret,
-) -> Result<Vec<u8>, RingRailError> {
-    symmetric_apply_audit(slot_secret.as_bytes(), RECIPIENT_BODY_LABEL, &mut plaintext)?;
-    Ok(plaintext)
 }

@@ -43,6 +43,8 @@ func (h AuditHead) ElementsUnder(t testing.TB, domain int64) []*big.Int {
 type StatementOutput struct {
 	Record  []byte
 	Omitted bool
+	// Exit is the frame's claim, the cell's tag.
+	Exit bool
 }
 
 // SignerChain mirrors transfer.OpenSigners over a run of the key's slots, zero at a count of zero.
@@ -69,14 +71,14 @@ func OutputCount(outputs []StatementOutput) int {
 	return count
 }
 
-// RecordChain mirrors record_chain, zero past m.
+// RecordChain mirrors record_chain, each cell Poseidon(exit, hash_bytes(record)) and zero past m.
 func RecordChain(t testing.TB, outputs []StatementOutput) *big.Int {
 	t.Helper()
 	hashes := make([]*big.Int, len(outputs))
 	for i, output := range outputs {
 		hashes[i] = big.NewInt(0)
 		if !output.Omitted {
-			hashes[i] = ringtest.HashBytes(t, output.Record)
+			hashes[i] = ringtest.MustPoseidonHash(t, big.NewInt(ringtest.Bit(output.Exit)), ringtest.HashBytes(t, output.Record))
 		}
 	}
 	return spptest.MustHashChain4(t, hashes)

@@ -18,6 +18,7 @@ fn ring_dispatch_tags_do_not_collide_with_forwarded_spp_tags() {
         tag::CLEAR_CO_SIGNER,
         tag::SET_DELEGATE,
         tag::AUTHORITY_TRANSFER,
+        tag::APPROVE_TRANSFER,
     ];
     let unique: std::collections::BTreeSet<_> = tags.into_iter().collect();
     assert_eq!(unique.len(), tags.len());

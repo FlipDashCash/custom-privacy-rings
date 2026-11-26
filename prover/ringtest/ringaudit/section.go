@@ -42,9 +42,10 @@ func NewSectionCircuit(shape audit.StreamShape) *SectionCircuit {
 
 func (c *SectionCircuit) Define(api frontend.API) error {
 	rc := rangecheck.New(api)
-	c.Vouched = c.Shape.AssertLayout(api, c.Layout)
+	layout := c.Shape.AssertLayout(api, c.Layout)
+	c.Vouched = layout.Vouched
 	envelope := c.OpenEnvelope(api, rc)
-	opened := c.Shape.OpenSlots(api, rc, c.Outputs, c.OutputCount)
+	opened := c.Shape.OpenSlots(api, rc, layout, c.Outputs, c.OutputCount)
 	section := transfer.OpenInputs(api, c.Inputs, c.InputCount)
 	records := c.RecordChain(api, envelope, opened)
 	stream := c.SealStream(api, rc, envelope, c.Shape, opened, audit.SpentInputs{Slots: section.Slots, Count: section.Count, Entries: c.Entries})
@@ -143,7 +144,7 @@ func (a Audit) Plaintexts(t testing.TB) Plaintexts {
 	}
 	p := Plaintexts{Envelope: envelope, Records: make([][]byte, len(a.Outputs)), RecipientKeys: make([][32]byte, len(a.Outputs))}
 	for i, output := range a.Outputs {
-		p.Records[i] = output.Record(t)
+		p.Records[i] = output.Record(t, a.Data)
 		p.RecipientKeys[i] = output.RecipientKey
 	}
 	p.SealedTo = slices.Clone(p.RecipientKeys)
@@ -164,7 +165,7 @@ func (a Audit) Seal(t testing.TB, p Plaintexts) Stream {
 	plaintext = append(plaintext, voucher[:]...)
 	stream := Stream{Ranges: ranges, Salt: a.Salt, Ciphertext: a.Keys.TransferCiphertext(t, plaintext, a.Salt), Records: make([][]byte, len(p.Records))}
 	for i, record := range p.Records {
-		stream.Records[i] = a.Keys.SealRecord(t, p.SealedTo[i], a.Salt, i, a.FirstNullifier, record)[:a.Outputs[i].PublishedLen()]
+		stream.Records[i] = a.Keys.SealRecord(t, p.SealedTo[i], a.Salt, i, a.FirstNullifier, record)[:a.PublishedLen(i)]
 	}
 	return stream
 }
@@ -194,16 +195,25 @@ type Claim struct {
 	NoSpend     bool
 	OutputCount int
 	InputCount  int
+	// Exits is the frame's exit claim per slot.
+	Exits []bool
 }
 
 func (a Audit) Claim() Claim {
-	return Claim{NoSpend: a.RealInputs() == 0, OutputCount: a.OutputCount(), InputCount: a.InputCount}
+	exits := make([]bool, len(a.Outputs))
+	for i, output := range a.Outputs {
+		exits[i] = output.Utxo.isExit()
+	}
+	return Claim{NoSpend: a.RealInputs() == 0, OutputCount: a.OutputCount(), InputCount: a.InputCount, Exits: exits}
 }
 
 // StatementOf is what the program would hash over stream under claim.
 func (a Audit) StatementOf(t testing.TB, stream Stream, claim Claim) []*big.Int {
 	t.Helper()
 	outputs := a.StatementOutputs(t, stream)
+	for i := range outputs {
+		outputs[i].Exit = claim.Exits[i]
+	}
 	head := a.headOver(t, stream, claim.InputCount, claim.OutputCount)
 	return append(head.ElementsUnder(t, shared.TransferStatementDomain), big.NewInt(ringtest.Bit(claim.NoSpend)), big.NewInt(int64(claim.OutputCount)),
 		RecordChain(t, outputs), big.NewInt(int64(claim.InputCount)))
@@ -234,13 +244,15 @@ func (a Audit) Circuit(t testing.TB) *SectionCircuit {
 }
 
 type Note struct {
-	Kind        byte
-	OwnerKey    [32]byte
-	Mint        [32]byte
-	Amount      uint64
-	NullifierPk *big.Int
-	Blinding    *big.Int
-	Hash        *big.Int
+	Kind         byte
+	OwnerKey     [32]byte
+	Mint         [32]byte
+	Amount       uint64
+	NullifierPk  *big.Int
+	Blinding     *big.Int
+	DataHash     *big.Int
+	RingDataHash *big.Int
+	Hash         *big.Int
 }
 
 // AuditReader rebuilds a slot with no mint registry and no other slot.
@@ -250,7 +262,8 @@ type AuditReader struct {
 	InputCount int
 	TreeID     uint16
 	// Registered stands in for the tracking rows, owner key to registered nullifier key.
-	Registered map[[32]byte]*big.Int
+	Registered     map[[32]byte]*big.Int
+	Data, RingData bool
 }
 
 // Reader registers each ring output's nonzero key under its owner.
@@ -261,7 +274,7 @@ func (a Audit) Reader() AuditReader {
 			registered[slot.OwnerKey] = slot.Utxo.NullifierPk
 		}
 	}
-	return AuditReader{Transfer: a.Transfer, Shape: a.Shape, InputCount: a.InputCount, TreeID: OutputTreeID, Registered: registered}
+	return AuditReader{Transfer: a.Transfer, Shape: a.Shape, InputCount: a.InputCount, TreeID: OutputTreeID, Registered: registered, Data: a.Data, RingData: a.RingData}
 }
 
 func (r AuditReader) Envelope(t testing.TB, stream Stream) (realInputs int, defaultBits uint64) {
@@ -274,7 +287,7 @@ func (r AuditReader) Envelope(t testing.TB, stream Stream) (realInputs int, defa
 	return realInputs, defaultBits
 }
 
-// Read opens slot i from the sealed key and its sealed recipient key, and accepts only an exact match, nil on a dummy.
+// Read opens slot i from the sealed key, its sealed recipient key and its record alone, and accepts only an exact match, nil on a dummy.
 func (r AuditReader) Read(t testing.TB, stream Stream, i int, published *big.Int) (*Note, error) {
 	t.Helper()
 	plaintext := r.Keys.Open(t, stream)
@@ -285,20 +298,29 @@ func (r AuditReader) Read(t testing.TB, stream Stream, i int, published *big.Int
 	record := ringprotocol.SealRecord(t, txViewingSk, u, r.Salt, i, r.FirstNullifier, shared.OutputRecordInfo, stream.Record(i))
 	kind, zeroKey := record[0]&^audit.KindZeroKey, record[0]&audit.KindZeroKey != 0
 	if record[0] == audit.KindDummy {
-		if len(record) != audit.RingRecordLen || slices.ContainsFunc(record, func(b byte) bool { return b != 0 }) {
+		if len(record) != audit.PublishedRecordLen(false, r.Data, r.RingData) || slices.ContainsFunc(record, func(b byte) bool { return b != 0 }) {
 			return nil, fmt.Errorf("slot %d: a dummy carries a value", i)
 		}
 		return nil, nil
 	}
-	lengths := map[byte]int{audit.KindRing: audit.RingRecordLen, audit.KindExit: audit.RecordLen}
-	if want, ok := lengths[kind]; !ok || len(record) != want {
+	if (kind != audit.KindRing && kind != audit.KindExit) || len(record) != audit.PublishedRecordLen(kind == audit.KindExit, r.Data, r.RingData) {
 		return nil, fmt.Errorf("slot %d: not a record", i)
 	}
-	note := Note{Kind: kind, OwnerKey: [32]byte(record[9:41]), Mint: [32]byte(record[41:73]), Amount: binary.BigEndian.Uint64(record[1:9]), Blinding: new(big.Int).SetBytes(record[73:audit.RingRecordLen])}
+	note := Note{
+		Kind: kind, OwnerKey: [32]byte(record[9:41]), Mint: [32]byte(record[41:73]), Amount: binary.BigEndian.Uint64(record[1:9]), Blinding: new(big.Int).SetBytes(record[73:audit.RingRecordLen]),
+		DataHash: big.NewInt(0), RingDataHash: big.NewInt(0),
+	}
+	// Each published field past the head, a hash the layout leaves out reads zero.
+	fields := record[audit.RingRecordLen:]
+	next := func() *big.Int {
+		field := new(big.Int).SetBytes(fields[:audit.KeyLen])
+		fields = fields[audit.KeyLen:]
+		return field
+	}
 	ringID := big.NewInt(0)
 	switch {
 	case kind == audit.KindExit:
-		note.NullifierPk = new(big.Int).SetBytes(record[audit.RingRecordLen:])
+		note.NullifierPk = next()
 	case zeroKey:
 		note.NullifierPk = shared.ZeroNullifierPk
 	default:
@@ -308,14 +330,19 @@ func (r AuditReader) Read(t testing.TB, stream Stream, i int, published *big.Int
 		}
 		note.NullifierPk = registered
 	}
+	if r.Data {
+		note.DataHash = next()
+	}
+	if r.RingData && kind == audit.KindRing {
+		note.RingDataHash = next()
+	}
 	if kind == audit.KindRing {
 		ringID = r.RingProgramID
 	}
-	// The fixtures carry no data payload, both data hashes read zero.
 	note.Hash = Utxo{
 		Domain: protocol.UtxoDomain, TreeID: r.TreeID, OwnerPkHash: ringtest.MustSolanaPkField(t, note.OwnerKey), NullifierPk: note.NullifierPk,
 		Asset: ringtest.AssetField(t, note.Mint), Amount: note.Amount, Blinding: note.Blinding,
-		DataHash: big.NewInt(0), RingDataHash: big.NewInt(0), RingProgramID: ringID,
+		DataHash: note.DataHash, RingDataHash: note.RingDataHash, RingProgramID: ringID,
 	}.Hash(t)
 	if note.Hash.Cmp(published) != 0 {
 		return nil, fmt.Errorf("slot %d: the record rebuilds no published commitment", i)

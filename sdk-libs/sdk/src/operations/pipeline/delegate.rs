@@ -13,11 +13,10 @@ use spr_transaction::{
     instructions::transact::{ConfidentialTransaction, SppProofOutputUtxo},
     AssetRegistry, TransactionError, WalletUtxo,
 };
-use zolana_ring_transaction::{AnonymousPlan, RingDelivery, RingOutputRail};
+use zolana_ring_transaction::{AnonymousPlan, RingDelivery, RingOutputRail, ShapedSeal};
 
 use super::{
-    anonymous::SenderChange,
-    canonical_shape, pad_under_rail, sealed,
+    canonical_shape, sealed,
     selection::{payment_total, spanned_trees, widest, Candidate},
     shape_keyed, ApprovalDisclosure, CoOwner, CoOwnerKey, DeliveredRail, OwnerKey, Rail, RailKind,
     RingTransfer, Spend, Staged, TransferAuthority,
@@ -177,6 +176,7 @@ impl<'a> RingTransfer<Delegated<'a>> {
             ring_salt: None,
             approval: ApprovalDisclosure::None,
             seal_row: None,
+            program: None,
         }
     }
 
@@ -644,16 +644,6 @@ impl Delegated<'_> {
             }
         };
         let ring_rail = RingRail::delegate(config.mode);
-        // The anonymous frame's sender bundle reads output 0 as the source's change.
-        let transaction = match ring_rail.anonymous_frame() {
-            true => SenderChange {
-                shape: self.shape,
-                sender: &self.source,
-                ring: program,
-            }
-            .ensure(transaction)?,
-            false => transaction,
-        };
         let delivery = match ring_rail.anonymous_frame() {
             true => RingDelivery::Anonymous(Box::new(
                 // An output back to the source reads as change and takes no payment slot.
@@ -672,8 +662,12 @@ impl Delegated<'_> {
         };
         let rail =
             RingOutputRail::new(self.tx_viewing_key.clone(), config.auditor_pubkey, delivery);
-        let transaction = pad_under_rail(transaction, &rail, shape, &self.source)?;
-        let proof_inputs = rail.encrypt(transaction, &self.source)?;
+        let proof_inputs = ShapedSeal {
+            rail: &rail,
+            shape,
+            sender: &self.source,
+        }
+        .encrypt(transaction)?;
         let shape = Shape::new(
             proof_inputs.input_utxos.len(),
             proof_inputs.output_utxos.len(),

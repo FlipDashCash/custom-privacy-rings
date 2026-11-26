@@ -38,6 +38,7 @@ pub use self::{
         PartySource, StoredLists, Subject, SubjectKind,
     },
     rule::{Chain, CoSignRule, Operation, Verdict},
+    scope::ApprovedCall,
 };
 use crate::{
     cosign::{CoSignDecision, CoSignPolicy, CoSignRequest, CoSignSettlement, Ticket},
@@ -75,6 +76,7 @@ impl<R: CoSignRule> CoSignPolicy for CoSigner<R> {
         let operation = Operation {
             ring: request.ring,
             message: &request.message,
+            approved_transfer: request.approved_transfer.as_ref(),
             flows: &request.flows,
             ticket: Ticket::of(&self.signer.address(), &request.message),
         };

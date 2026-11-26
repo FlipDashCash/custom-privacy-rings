@@ -95,6 +95,7 @@ import { signingKeySpendSigner } from "../../src/operations/payments/anonymous.j
 import { CustomRingTransfer } from "../../src/operations/payments/transfer-rails.js";
 import { RingAddress } from "../../src/crypto/keys/ring-address.js";
 import { noteInput, ringFixture, walletKeys, type Fixture } from "../helpers/ring-pipeline.js";
+import { vectorLayout } from "../helpers/vector-records.js";
 
 await initializePoseidon();
 
@@ -269,11 +270,8 @@ function recordPool(records: unknown, proof: unknown, subjects: unknown): Record
   };
 }
 
-/** `vouched | entry << 1`, any other bit is refused. */
 function layout(value: unknown): AuditLayout {
-  const flags = count(value);
-  if ((flags & ~3) !== 0) throw new Error(`layout ${flags}`);
-  return { entry: (flags & 2) !== 0, vouched: (flags & 1) !== 0 };
+  return vectorLayout(count(value));
 }
 
 function envelope(item: Json): AuditEnvelopeProofInputs {
@@ -922,6 +920,7 @@ function checkTransferStatement(typed: TransferProofRequest): void {
     outputs: typed.outputCount,
     capacity: typed.outputs.length,
     vouched: typed.layout.vouched,
+    records: typed.layout.records,
   };
   const evidence = typed.layout.entry
     ? {
@@ -990,6 +989,8 @@ function checkTransferStatement(typed: TransferProofRequest): void {
           mint: mintOf(slot.mintChunks),
           blinding: output.blinding,
           key: sealedRecordKey(kind, output.nullifierPk),
+          dataHash: output.dataHash,
+          ringDataHash: output.ringDataHash,
         }
       : DUMMY_RECORD;
     const secret = txKeySlotSecret({
@@ -999,7 +1000,10 @@ function checkTransferStatement(typed: TransferProofRequest): void {
       outputIndex: at,
       firstNullifier: typed.firstNullifier,
     });
-    return sealOutputSlot(secret, { record });
+    return {
+      record: sealOutputSlot(secret, { record, form: typed.layout.records }),
+      exit: isUtxo(output) && kind === RecordKind.exit,
+    };
   });
   txKey.destroy();
   const txViewingU = publicKeyOf(typed.txViewingSk).u();
@@ -1035,7 +1039,7 @@ function checkTransferStatement(typed: TransferProofRequest): void {
     approvalMask: typed.approvalMask,
     approvalTotals: typed.approvalTotals ?? ZERO_32,
     noSpend: notes.length === 0,
-    outputs: records.map((record) => ({ record })),
+    outputs: records,
     capacity: typed.outputs.length,
     inputCount: typed.inputCount,
     privateTxHash: typed.privateTxHash,

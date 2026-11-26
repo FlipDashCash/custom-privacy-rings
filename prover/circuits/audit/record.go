@@ -2,17 +2,23 @@
 //
 // SPP's output hash commits the owner key and the mint only as hashes, and no reader inverts a hash. A
 // record therefore carries the raw key and the raw mint with the proof holding each to its hash, so the
-// auditor names an owner and an asset with no directory. Its amount, blinding and nullifier key are the
-// slot's own wires. The recipient holds no viewing secret of the transaction, so the record carries the
-// blinding SPP derived. The reader rebuilds the published hash from these fields, the frame's tree id
-// and the data hashes of the slot's payload, so a record of another slot rebuilds nothing.
+// auditor names an owner and an asset with no directory. Its amount, blinding, nullifier key and data
+// hashes are the slot's own wires. The recipient holds no viewing secret of the transaction, so the
+// record carries the blinding SPP derived. The reader rebuilds the published hash from these fields and
+// the frame's tree id, with zero for a hash the frame's layout leaves out, so a record of another slot
+// rebuilds nothing.
 //
 // A dummy's plaintext is all zero, the auditor knows it by one byte under a proof and rebuilds its
 // hash from the derived blinding and the frame's tree id. That byte is no prover choice. Kind derives
 // from the domain and ring id the slot's hash commits, a note called a dummy would need another hash.
 // Exit marks a note of the default ring, its recipient body is SPP's.
 //
-// The nullifier key sits last and only an exit publishes it. A non-exit record names its key by the
+// A transfer record ends on two fields its slot's class selects before any byte is cut. An exit holds its
+// nullifier key, then its data hash. A ring slot holds its data hash on a data frame and its ring data
+// hash otherwise, then its ring data hash, and seals no nullifier key. A slot publishes a prefix,
+// PublishedRecordLen in audit/layout.go, so the hashes a frame's layout names are published bytes.
+//
+// Only an exit publishes its nullifier key. A non-exit record names its key by the
 // ZeroKey bit alone, set exactly when the key is the public Poseidon(0). A nonzero key on a ring note
 // spends only as its owner's registered key, transfer/owners.go, so an accepted nonzero-key spend matches
 // the owner's immutable registered key, the one the reader takes from the owner's row. An exit publishes
@@ -20,15 +26,17 @@
 // hash commits.
 //
 // The file proves the following.
-//  1. A live record's kind, amount, owner key, mint, blinding and nullifier key are the opened slot's,
-//     with the amount below 2^64 and each field the one canonical encoding. The kind byte sets ZeroKey
-//     exactly when the slot's key is Poseidon(0).
+//  1. A live record's kind, amount, owner key, mint and blinding are the opened slot's, with the amount
+//     below 2^64 and each field the one canonical encoding. The kind byte sets ZeroKey exactly when the
+//     slot's key is Poseidon(0).
 //  2. Every other record is all zero.
-//  3. A merge record is a record followed by the seed that rebuilds its blinding.
+//  3. A merge record is the head, the opened nullifier key and the seed that rebuilds its blinding.
 //  4. R counts only notes, and a key with no entry capacity refuses a default ring note.
 //  5. Each default ring note has an entry record at its note position on an entry key, with its default
 //     bit set. The record holds the note's owner key, nullifier key, amount and mint, and the commitment
 //     the input section opened. Every other position has a zero default bit and a zero record.
+//  6. A live transfer record's two last fields are the opened slot's nullifier key and data hash on an
+//     exit, and its data hash or ring data hash and its ring data hash otherwise.
 //
 // Read after audit/audit.go, audit/layout.go, shared/utxo.go, transfer/input.go.
 // Read before merge.go.
@@ -64,12 +72,31 @@ type OutputWires struct {
 	RecipientKey [32]frontend.Variable
 }
 
-func (o OutputWires) record(api frontend.API, rc frontend.Rangechecker, slot shared.Output) []frontend.Variable {
-	return RecordOpening{
-		Live: slot.Utxo, Kind: api.Add(api.Mul(slot.Ring, KindRing), api.Mul(slot.Exit, KindExit)),
-		Amount: slot.Amount, OwnerPkHash: slot.OwnerPkHash, NullifierPk: slot.NullifierPk, Asset: slot.Asset, Blinding: slot.Blinding,
-		OwnerKey: o.OwnerKey, MintChunks: o.MintChunks,
+func (o OutputWires) record(api frontend.API, rc frontend.Rangechecker, layout LayoutFlags, slot shared.Output) []frontend.Variable {
+	return TransferRecord{
+		RecordOpening: RecordOpening{
+			Live: slot.Utxo, Kind: api.Add(api.Mul(slot.Ring, KindRing), api.Mul(slot.Exit, KindExit)),
+			Amount: slot.Amount, OwnerPkHash: slot.OwnerPkHash, NullifierPk: slot.NullifierPk, Asset: slot.Asset, Blinding: slot.Blinding,
+			OwnerKey: o.OwnerKey, MintChunks: o.MintChunks,
+		},
+		Exit: slot.Exit, Data: layout.Data, DataHash: slot.DataHash, RingDataHash: slot.RingDataHash,
 	}.Encode(api, rc)
+}
+
+// TransferRecord is the record of one transfer slot, the head then two fields its class selects.
+type TransferRecord struct {
+	RecordOpening
+	// Exit and Data are boolean, the slot's class and the layout's data flag.
+	Exit, Data             frontend.Variable
+	DataHash, RingDataHash frontend.Variable
+}
+
+// Encode returns TransferRecordLen bytes, each published prefix ends on a field boundary of the slot's own wires.
+func (r TransferRecord) Encode(api frontend.API, rc frontend.Rangechecker) []frontend.Variable {
+	// The fields select before decomposition, a ring slot seals no nullifier key.
+	first := api.Select(r.Exit, r.NullifierPk, api.Select(r.Data, r.DataHash, r.RingDataHash))
+	second := api.Select(r.Exit, r.DataHash, r.RingDataHash)
+	return r.encode(api, rc, first, second)
 }
 
 // Live clear masks every byte but Kind, a dummy's Kind derives to zero. Kind excludes the ZeroKey bit, Encode derives it.
@@ -79,15 +106,24 @@ type RecordOpening struct {
 	MintChunks                                                    [2]frontend.Variable
 }
 
-// Encode mirrors OutputRecord::encode in program-libs/interface/src/proof/audit_stream.rs over the published bytes, RecordLen bytes.
+// Encode is the head and the nullifier key, RecordLen bytes, the record a merge seals before its seed.
 func (r RecordOpening) Encode(api frontend.API, rc frontend.Rangechecker) []frontend.Variable {
+	return r.encode(api, rc, r.NullifierPk)
+}
+
+// encode is the head, RingRecordLen bytes, then each tail as the one be32 below q, zero off a live record.
+func (r RecordOpening) encode(api frontend.API, rc frontend.Rangechecker, tails ...frontend.Variable) []frontend.Variable {
 	raw := identityOpening{Live: r.Live, OwnerPkHash: r.OwnerPkHash, Asset: r.Asset, OwnerKey: r.OwnerKey, MintChunks: r.MintChunks}.open(api)
 	// FieldToBytesBEWith holds the one be32 below q, UintBytesBE fails a live amount at or above 2^64.
 	blinding := ringgadget.FieldToBytesBEWith(api, rc, api.Mul(r.Live, r.Blinding))
-	nullifierPk := ringgadget.FieldToBytesBEWith(api, rc, api.Mul(r.Live, r.NullifierPk))
+	sealed := make([]frontend.Variable, 0, len(tails)*fieldLen)
+	for _, tail := range tails {
+		bytes := ringgadget.FieldToBytesBEWith(api, rc, api.Mul(r.Live, tail))
+		sealed = append(sealed, bytes[:]...)
+	}
 	zeroKey := api.Mul(r.Live, api.IsZero(api.Sub(r.NullifierPk, shared.ZeroNullifierPk)))
 	kind := api.Add(r.Kind, api.Mul(zeroKey, KindZeroKey))
-	return slices.Concat([]frontend.Variable{kind}, ringgadget.UintBytesBE(api, api.Mul(r.Live, r.Amount), amountLen), raw.ownerKey, raw.mint, blinding[:], nullifierPk[:])
+	return slices.Concat([]frontend.Variable{kind}, ringgadget.UintBytesBE(api, api.Mul(r.Live, r.Amount), amountLen), raw.ownerKey, raw.mint, blinding[:], sealed)
 }
 
 // identityOpening is a slot's owner and asset beside the raw key and mint the auditor reads.

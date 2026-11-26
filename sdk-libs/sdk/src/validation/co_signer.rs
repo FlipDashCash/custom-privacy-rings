@@ -1,8 +1,9 @@
 //! The co-signer a ring operation carries, decided by the program's own rule.
 
-use custom_ring_interface::{cosign::CoSignDemand, CustomRingError};
+use custom_ring_interface::{cosign::CoSignDemand, CustomRingError, TransferApproval};
 use solana_address::Address;
 use solana_instruction::AccountMeta;
+use solana_sdk_ids::sysvar;
 use spr_client::AsyncRpc;
 
 use crate::{CustomRing, CustomRingConfig, RingError};
@@ -41,6 +42,26 @@ impl CustomRing {
         [
             AccountMeta::new_readonly(self.co_signer_pda(&signer), false),
             AccountMeta::new_readonly(signer, true),
+        ]
+    }
+
+    /// The pair of a transfer a program calls, the signer signs its `ApproveTransfer` alone.
+    pub fn approved_co_signer_metas(self, signer: Address) -> [AccountMeta; 2] {
+        [
+            AccountMeta::new_readonly(self.co_signer_pda(&signer), false),
+            AccountMeta::new_readonly(sysvar::instructions::ID, false),
+        ]
+    }
+
+    pub fn transfer_approval_metas(
+        self,
+        signer: Address,
+    ) -> [AccountMeta; TransferApproval::ACCOUNTS] {
+        let [record, co_signer] = self.co_signer_metas(signer);
+        [
+            AccountMeta::new_readonly(self.policy_pda(), false),
+            record,
+            co_signer,
         ]
     }
 }

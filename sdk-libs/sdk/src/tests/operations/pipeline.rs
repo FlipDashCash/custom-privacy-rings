@@ -89,7 +89,7 @@ async fn stage_anonymous<'a>(
     chain: &Chain,
 ) -> Result<Staged<'a>, RingError> {
     let config = ring().require_config(chain).await?;
-    transfer.rail.stage(ring(), chain, &config).await
+    transfer.rail.stage(chain, &config).await
 }
 
 async fn exit_owner(
@@ -365,7 +365,10 @@ fn payment_at(
     position: usize,
 ) -> zolana_ring_transaction::OpenedRecipientBody {
     let body = published(staged)[position].1.expect("a recipient body");
-    open_recipient_body(body, &slot_secret(staged, reader, position)).unwrap()
+    let form = zolana_ring_transaction::BodyForm::of(&staged.proof_inputs.output_utxos)
+        .unwrap()
+        .records;
+    open_recipient_body(body, &slot_secret(staged, reader, position), form).unwrap()
 }
 
 /// The sender bundle, the first message, opened under the sender's own viewing key.
@@ -1972,7 +1975,7 @@ async fn a_recipient_the_rules_refuse_fails_before_proving() {
         owner_transfer(&sender, transaction).assemble(&client).await,
         Err(RingError::PolicyRuleUnsatisfied(RuleRefusal::Lists {
             rule: 1,
-            subject: TransferSubject::Owner(0),
+            subject: TransferSubject::Owner(1),
         }))
     ));
 }
@@ -3479,7 +3482,7 @@ async fn only_a_named_public_spend_takes_the_wallets_zero_key_note() {
     let config = ring().require_config(&chain).await.unwrap();
     let wallet = sender.shielded_address().unwrap().solana_address().unwrap();
     let public = owner_transfer(&sender, ring_transaction(vec![note.clone()])).spend_public(wallet);
-    let staged = public.rail.stage(ring(), &config).await.unwrap();
+    let staged = public.rail.stage(&config, None).await.unwrap();
     assert!(matches!(staged.spend, Spend::PublicOwners));
     assert_eq!(staged.owner_signers, [wallet]);
 
@@ -3487,7 +3490,7 @@ async fn only_a_named_public_spend_takes_the_wallets_zero_key_note() {
     let misnamed =
         owner_transfer(&sender, ring_transaction(vec![note.clone()])).spend_public(other);
     assert!(matches!(
-        misnamed.rail.stage(ring(), &config).await,
+        misnamed.rail.stage(&config, None).await,
         Err(RingError::PublicSpendWalletMismatch { named, .. }) if named == other
     ));
 
@@ -3495,12 +3498,15 @@ async fn only_a_named_public_spend_takes_the_wallets_zero_key_note() {
     let config = ring().require_config(&confidential).await.unwrap();
     let signer = owner_transfer(&sender, ring_transaction(vec![note.clone()]));
     assert!(matches!(
-        signer.rail.stage(ring(), &confidential, &config).await,
+        signer
+            .rail
+            .stage(ring(), &confidential, &config, None)
+            .await,
         Err(RingError::ZeroKeyInputUnnamed { index: 0 })
     ));
     let named = owner_transfer(&sender, ring_transaction(vec![note])).spend_public(wallet);
     assert!(matches!(
-        named.rail.stage(ring(), &config).await.unwrap().spend,
+        named.rail.stage(&config, None).await.unwrap().spend,
         Spend::Owner(_)
     ));
 }
@@ -4133,7 +4139,7 @@ async fn a_hidden_sender_pays_a_note_carrying_data() {
             zolana_ring_transaction::PayloadRead::Opened(payload) => payload.data,
             other => panic!("an opened payload, got {other:?}"),
         },
-        [&[4; 32][..], b"app"].concat()
+        b"app"
     );
     let assembled = signed
         .assemble(&enrolled(&[&sender, &reader]).client())
@@ -4255,7 +4261,7 @@ impl zolana_ring_keys::RingKeys for ProgramOwner {
 }
 
 fn pda(byte: u8) -> Address {
-    Address::new_from_array([byte; 32])
+    Address::find_program_address(&[&[byte]], &ring().program_id()).0
 }
 
 #[tokio::test]
@@ -4277,7 +4283,7 @@ async fn a_program_owner_spends_public_under_either_key_class_on_both_modes() {
                 .spend_public(wallet)
             };
             let transfer = public(pda(0x51));
-            let staged = transfer.rail.stage(ring(), &config).await.unwrap();
+            let staged = transfer.rail.stage(&config, None).await.unwrap();
             // The frame admits its public owners flag on the anonymous rail alone.
             let spends_public = match mode {
                 RingMode::Anonymous => matches!(staged.spend, Spend::PublicOwners),
@@ -4287,7 +4293,7 @@ async fn a_program_owner_spends_public_under_either_key_class_on_both_modes() {
             assert_eq!(staged.owner_signers, [pda(0x51)], "{mode:?}");
             let misnamed = public(pda(0x52));
             assert!(matches!(
-                misnamed.rail.stage(ring(), &config).await,
+                misnamed.rail.stage(&config, None).await,
                 Err(RingError::PublicSpendWalletMismatch { named, .. }) if named == pda(0x52)
             ));
         }
@@ -4860,5 +4866,761 @@ async fn anonymous_payout_keeps_all_output_slots_within_inline_limits() {
         assert!(fit
             .addresses
             .is_some_and(|count| count <= usize::from(solana_message::v1::MAX_ADDRESSES)));
+    }
+}
+
+fn program_transfer<'a>(
+    owner: &'a ProgramOwner,
+    note: &WalletUtxo,
+    paid: &RingAddress,
+) -> PublicOwnerTransfer<'a> {
+    CustomRingTransfer::new(CustomRingTransferInput {
+        ring: ring(),
+        sender: owner,
+        nullifier_key: Some(&owner.keys.nullifier_key),
+        transaction: ring_transaction(vec![note.clone()]),
+    })
+    .spend_public(pda(0x51))
+    .with_payment(payment(paid, 4))
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_committed_transfer_stages_its_program_plan_on_both_public_rails() {
+    use crate::tests::support::keypair;
+    let owner = ProgramOwner::of(pda(0x51), keypair(1));
+    let paid = ring_address(&keypair(2));
+    let note = zero_key(owner.note(0));
+    let transfer = || program_transfer(&owner, &note, &paid);
+    for mode in [RingMode::Confidential, RingMode::Anonymous] {
+        let chain = Chain::ring(RingSettings::new(mode));
+        let config = ring().require_config(&chain).await.unwrap();
+        let plan = transfer().program_plan(&config).unwrap();
+        let amounts: Vec<u64> = plan.outputs.iter().map(|output| output.amount).collect();
+        assert_eq!(amounts[..2], [6, 4], "{mode:?}");
+        assert_eq!(plan.outputs[0].owner_address, Some(owner.address));
+
+        let committed = transfer().with_program(plan.commitment());
+        let prepared = committed.prepare(&chain).await.ok().unwrap();
+        let staged = &prepared.pipeline.staged;
+        assert_eq!(staged.rail.salt(), plan.salt, "{mode:?}");
+        assert_eq!(
+            staged.rail.blinding_seed().unwrap(),
+            plan.blinding_seed,
+            "{mode:?}"
+        );
+        assert_eq!(staged.proof_inputs.blinding_seed, plan.blinding_seed);
+        assert_eq!(staged.proof_inputs.output_utxos, plan.outputs, "{mode:?}");
+        assert_eq!(staged.proof_inputs.check_shape().unwrap(), plan.shape);
+        assert_eq!(
+            staged
+                .proof_inputs
+                .padding_independent_private_tx_hash()
+                .unwrap(),
+            plan.private_tx_hash,
+            "{mode:?}"
+        );
+
+        let assembled = committed
+            .assemble(&chain.clone().client())
+            .await
+            .ok()
+            .unwrap();
+        assert_eq!(assembled.frame.parts.private_tx_hash, plan.private_tx_hash);
+
+        let other = transfer().with_program(ProgramCommitment {
+            private_tx_hash: [1; 32],
+            ..plan.commitment()
+        });
+        assert!(
+            matches!(
+                other.prepare(&chain).await,
+                Err(RingError::ProgramCommitmentMismatch { committed, staged })
+                    if committed == [1; 32] && staged == plan.private_tx_hash
+            ),
+            "{mode:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_program_commitment_is_refused_where_an_owner_signs_inside_a_proof() {
+    use crate::tests::support::keypair;
+    let sender = keypair(1);
+    let note = ring_utxo(&sender, Mint::SOL, 10, 0);
+    let transfer = || owner_transfer(&sender, ring_transaction(vec![note.clone()]));
+    let confidential = Chain::ring(RingSettings::new(RingMode::Confidential));
+    let config = ring().require_config(&confidential).await.unwrap();
+    let plan = transfer().program_plan(&config).unwrap();
+    let signer = transfer().with_program(plan.commitment());
+    assert!(signer.prepare(&confidential).await.is_ok());
+    let in_proof = || transfer().with_in_proof_owner(&sender.signing_key);
+    assert!(matches!(
+        in_proof().program_plan(&config),
+        Err(RingError::ProgramRailUnsupported)
+    ));
+    assert!(matches!(
+        in_proof()
+            .with_program(plan.commitment())
+            .prepare(&confidential)
+            .await,
+        Err(RingError::ProgramRailUnsupported)
+    ));
+
+    let anonymous = enrolled(&[&sender]);
+    let config = ring().require_config(&anonymous).await.unwrap();
+    let hidden = || transfer().with_anonymous_signer(&sender.signing_key);
+    assert!(matches!(
+        hidden().program_plan(&config),
+        Err(RingError::ProgramRailUnsupported)
+    ));
+    assert!(matches!(
+        hidden()
+            .with_program(plan.commitment())
+            .prepare(&anonymous)
+            .await,
+        Err(RingError::ProgramRailUnsupported)
+    ));
+}
+
+#[tokio::test]
+async fn a_program_transfer_takes_each_co_signer_by_an_approval_of_the_built_call() {
+    use crate::tests::support::{keypair, Registry};
+    use custom_ring_interface::{CoSignScope, TransferApproval};
+    use solana_instruction::AccountMeta;
+    use solana_sdk_ids::sysvar;
+    use spr_program::instruction::TransactSolTransferAccounts;
+    use zolana_ring_policy::MintPolicy;
+    let sender = keypair(1);
+    let approver = Address::new_from_array([77; 32]);
+    let recipient = keypair(40)
+        .shielded_address()
+        .unwrap()
+        .solana_address()
+        .unwrap();
+    let withdrawing = || {
+        let mut transaction = ring_transaction(vec![ring_utxo(&sender, Mint::SOL, 200, 0)]);
+        transaction.withdraw_sol(101, recipient).unwrap();
+        owner_transfer(&sender, transaction)
+            .with_interface_transfer_accounts(vec![TransactInterfaceTransferAccounts::Sol(
+                TransactSolTransferAccounts { recipient },
+            )])
+            .with_co_signer(approver)
+    };
+    let chain = Chain::ring(RingSettings {
+        co_signer: Some((approver, CoSignScope::APPROVE_WITHDRAWAL)),
+        ..RingSettings::new(RingMode::Confidential)
+    })
+    .with_records(Registry::new(&[]).with_mint(
+        Mint::SOL.asset,
+        MintPolicy {
+            withdrawal_threshold: 100,
+            ..MintPolicy::EMPTY
+        },
+    ));
+    let config = ring().require_config(&chain).await.unwrap();
+    let transfer = withdrawing();
+    let plan = transfer.program_plan(&config).unwrap();
+    assert_ne!(plan.transaction_hash, plan.private_tx_hash);
+    let other_transfers = transfer.with_program(ProgramCommitment {
+        transaction_hash: [1; 32],
+        ..plan.commitment()
+    });
+    let refused = other_transfers.prepare(&chain).await.err();
+    assert!(
+        matches!(
+            refused,
+            Some(RingError::ProgramTransactionHashMismatch { committed, staged })
+                if committed == [1; 32] && staged == plan.transaction_hash
+        ),
+        "{refused:?}"
+    );
+
+    let client = chain.client();
+    let record = ring().co_signer_pda(&approver);
+    let pair = |transfer: &Instruction| {
+        let record = transfer
+            .accounts
+            .iter()
+            .position(|account| account.pubkey == record)
+            .unwrap();
+        transfer.accounts[record + 1].clone()
+    };
+    let committed = other_transfers.with_program(plan.commitment());
+    let framed = committed.frame(&client).await.ok().unwrap();
+    let transfer = framed.instruction().unwrap();
+    assert_eq!(
+        pair(&transfer),
+        AccountMeta::new_readonly(sysvar::instructions::ID, false)
+    );
+    assert!(transfer
+        .accounts
+        .iter()
+        .all(|account| account.pubkey != approver));
+    let approvals = framed
+        .frame
+        .accounts
+        .transfer_approvals(&transfer, 3)
+        .unwrap();
+    let digest = TransferApproval::digest(
+        &transfer.program_id,
+        &transfer.data,
+        transfer.accounts.iter().map(|account| &account.pubkey),
+    )
+    .unwrap();
+    assert_eq!(
+        approvals,
+        [Instruction {
+            program_id: ring().program_id(),
+            accounts: vec![
+                AccountMeta::new_readonly(ring().policy_pda(), false),
+                AccountMeta::new_readonly(record, false),
+                AccountMeta::new_readonly(approver, true),
+            ],
+            data: TransferApproval {
+                position: 3,
+                digest
+            }
+            .encode()
+            .to_vec(),
+        }]
+    );
+
+    let direct = withdrawing();
+    let framed = direct.frame(&client).await.ok().unwrap();
+    let transfer = framed.instruction().unwrap();
+    assert_eq!(pair(&transfer), AccountMeta::new_readonly(approver, true));
+    assert!(matches!(
+        framed.frame.accounts.transfer_approvals(&transfer, 3),
+        Err(RingError::ApprovalOutsideProgram)
+    ));
+}
+
+#[tokio::test]
+async fn a_program_transfer_leaves_its_owner_for_the_calling_program_to_sign() {
+    use crate::tests::support::keypair;
+    let owner = ProgramOwner::of(pda(0x51), keypair(1));
+    let paid = ring_address(&keypair(2));
+    let note = zero_key(owner.note(0));
+    let chain = Chain::ring(RingSettings::new(RingMode::Confidential));
+    let config = ring().require_config(&chain).await.unwrap();
+    let client = chain.client();
+    let owner_signs = |transfer: &Instruction| {
+        let named = transfer
+            .accounts
+            .iter()
+            .find(|account| account.pubkey == pda(0x51));
+        named.unwrap().is_signer
+    };
+
+    let direct = program_transfer(&owner, &note, &paid);
+    let plan = direct.program_plan(&config).unwrap();
+    let framed = direct.frame(&client).await.ok().unwrap();
+    let transfer = framed.instruction().unwrap();
+    assert!(owner_signs(&transfer));
+    assert!(matches!(
+        framed.frame.accounts.approved_transfer(&transfer),
+        Err(RingError::ApprovalOutsideProgram)
+    ));
+
+    let called = program_transfer(&owner, &note, &paid).with_program(plan.commitment());
+    let framed = called.frame(&client).await.ok().unwrap();
+    let transfer = framed.instruction().unwrap();
+    assert!(!owner_signs(&transfer));
+    let payer = framed.frame.accounts.payer;
+    assert!(transfer
+        .accounts
+        .iter()
+        .any(|account| account.pubkey == payer && account.is_signer));
+    let approved = framed.frame.accounts.approved_transfer(&transfer).unwrap();
+    assert_eq!(approved.data.0, transfer.data);
+    assert!(approved
+        .accounts
+        .iter()
+        .map(|account| &account.0)
+        .eq(transfer.accounts.iter().map(|account| &account.pubkey)));
+}
+
+#[tokio::test]
+async fn a_program_transfer_keeps_the_signature_of_a_wallet_co_owner() {
+    use crate::tests::support::{keypair, zero_key};
+    let owner = ProgramOwner::of(pda(0x51), keypair(1));
+    let wallet = keypair(3);
+    let wallet_address = wallet.shielded_address().unwrap().solana_address().unwrap();
+    let paid = ring_address(&keypair(2));
+    let notes = [
+        zero_key(owner.note(0)),
+        zero_key(ring_utxo(&wallet, Mint::SOL, 10, 1)),
+    ];
+    let chain = Chain::ring(RingSettings::new(RingMode::Confidential));
+    let config = ring().require_config(&chain).await.unwrap();
+    let transfer = || {
+        CustomRingTransfer::new(CustomRingTransferInput {
+            ring: ring(),
+            sender: &owner,
+            nullifier_key: Some(&owner.keys.nullifier_key),
+            transaction: ring_transaction(notes.to_vec()),
+        })
+        .spend_public(pda(0x51))
+        .with_payment(payment(&paid, 4))
+        .unwrap()
+    };
+    let plan = transfer().program_plan(&config).unwrap();
+    let called = transfer().with_program(plan.commitment());
+    let framed = called.frame(&chain.client()).await.ok().unwrap();
+    assert_eq!(
+        framed.frame.accounts.owner_signers,
+        [pda(0x51), wallet_address]
+    );
+    let call = framed.instruction().unwrap();
+    let signs = |owner: Address| {
+        call.accounts
+            .iter()
+            .filter(|account| account.pubkey == owner)
+            .map(|account| account.is_signer)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(signs(pda(0x51)), [false]);
+    assert_eq!(signs(wallet_address), [true]);
+}
+
+/// One declared output of a pinned transfer, in declared order.
+#[derive(Clone, Copy)]
+enum Declared {
+    /// Through `with_payment`, to the keypair of the seed.
+    Payment(u8),
+    /// A dataless ring output to the sender's own address.
+    Own,
+    /// Through `with_payment`, to the sender's own address under application data.
+    State,
+    /// A default ring output to the keypair of the seed.
+    Exit(u8),
+}
+
+struct PinnedTransfer {
+    name: &'static str,
+    mode: RingMode,
+    pda_owner: bool,
+    compact: bool,
+    /// Mint and amount per note.
+    notes: Vec<(Mint, u64)>,
+    declared: Vec<(Declared, Mint, u64)>,
+}
+
+/// `UPDATE_PROVER_JSON=1` rewrites the plans, TS `ring-transfer-plans.test.ts` seals the same notes to them.
+#[tokio::test]
+async fn every_pinned_transfer_seals_to_the_plan_both_sdks_share() {
+    use crate::tests::support::{keypair, wallet};
+    use Declared::{Exit, Own, Payment, State};
+    const SALT: [u8; 16] = [0x5a; 16];
+    const SOL: Mint = Mint::SOL;
+    const STATE: &[u8] = b"state";
+    const STATE_HASH: [u8; 32] = [0x11; 32];
+    let spl = Mint {
+        asset: Address::new_from_array([9; 32]),
+        asset_id: 2,
+    };
+    let holder = keypair(1);
+    let program = ProgramOwner::of(pda(0x51), keypair(1));
+    let case =
+        |name, mode, notes: &[(Mint, u64)], declared: &[(Declared, Mint, u64)]| PinnedTransfer {
+            name,
+            mode,
+            pda_owner: false,
+            compact: false,
+            notes: notes.to_vec(),
+            declared: declared.to_vec(),
+        };
+    let (confidential, anonymous) = (RingMode::Confidential, RingMode::Anonymous);
+    let pinned = [
+        PinnedTransfer {
+            pda_owner: true,
+            ..case(
+                "confidential, PDA owner, partial spend",
+                confidential,
+                &[(SOL, 10)],
+                &[(Payment(2), SOL, 4)],
+            )
+        },
+        PinnedTransfer {
+            pda_owner: true,
+            ..case(
+                "anonymous, PDA owner, full spend of an SPL note",
+                anonymous,
+                &[(spl, 10)],
+                &[(Payment(2), spl, 10)],
+            )
+        },
+        PinnedTransfer {
+            pda_owner: true,
+            ..case(
+                "confidential, PDA owner, full spend with a declared zero output",
+                confidential,
+                &[(SOL, 10)],
+                &[(Own, SOL, 0), (Payment(2), SOL, 10)],
+            )
+        },
+        PinnedTransfer {
+            pda_owner: true,
+            ..case(
+                "confidential, PDA owner, a declared change ahead of a state payment",
+                confidential,
+                &[(SOL, 10)],
+                &[(Own, SOL, 6), (State, SOL, 0), (Payment(2), SOL, 4)],
+            )
+        },
+        PinnedTransfer {
+            pda_owner: true,
+            ..case(
+                "anonymous, PDA owner, a declared change ahead of a state payment",
+                anonymous,
+                &[(SOL, 10)],
+                &[(Own, SOL, 6), (State, SOL, 0), (Payment(2), SOL, 4)],
+            )
+        },
+        PinnedTransfer {
+            pda_owner: true,
+            ..case(
+                "confidential, PDA owner, a declared change, every unit paid and a spare slot",
+                confidential,
+                &[(SOL, 10)],
+                &[(Own, SOL, 4), (Payment(2), SOL, 5), (Payment(3), SOL, 1)],
+            )
+        },
+        PinnedTransfer {
+            pda_owner: true,
+            ..case(
+                "anonymous, PDA owner, a declared change, every unit paid and a spare slot",
+                anonymous,
+                &[(SOL, 10)],
+                &[(Own, SOL, 4), (Payment(2), SOL, 5), (Payment(3), SOL, 1)],
+            )
+        },
+        case(
+            "anonymous, a state output of the sender and no change",
+            anonymous,
+            &[(SOL, 10)],
+            &[(State, SOL, 0), (Payment(2), SOL, 6), (Payment(3), SOL, 4)],
+        ),
+        case(
+            "confidential, partial spend",
+            confidential,
+            &[(SOL, 10)],
+            &[(Payment(2), SOL, 4)],
+        ),
+        case(
+            "confidential, SOL spent ahead of a partial SPL spend",
+            confidential,
+            &[(SOL, 5), (spl, 10)],
+            &[(Payment(2), spl, 4)],
+        ),
+        case(
+            "confidential, full spend",
+            confidential,
+            &[(SOL, 10)],
+            &[(Payment(2), SOL, 10)],
+        ),
+        case(
+            "confidential, an own output in the asset of the change",
+            confidential,
+            &[(SOL, 10)],
+            &[(Own, SOL, 3)],
+        ),
+        case(
+            "confidential, two payments",
+            confidential,
+            &[(SOL, 10)],
+            &[(Payment(2), SOL, 4), (Payment(3), SOL, 1)],
+        ),
+        case(
+            "confidential, an exit ahead of a payment",
+            confidential,
+            &[(SOL, 10)],
+            &[(Exit(2), SOL, 2), (Payment(3), SOL, 4)],
+        ),
+        case(
+            "confidential, a payment ahead of an own output",
+            confidential,
+            &[(SOL, 10)],
+            &[(Payment(2), SOL, 5), (Own, SOL, 2)],
+        ),
+        case(
+            "confidential, an own output ahead of a payment",
+            confidential,
+            &[(SOL, 10)],
+            &[(Own, SOL, 2), (Payment(2), SOL, 5)],
+        ),
+        case(
+            "anonymous, a payment ahead of an own output",
+            anonymous,
+            &[(SOL, 10)],
+            &[(Payment(2), SOL, 5), (Own, SOL, 2)],
+        ),
+        case(
+            "anonymous, an own output ahead of a payment",
+            anonymous,
+            &[(SOL, 10)],
+            &[(Own, SOL, 2), (Payment(2), SOL, 5)],
+        ),
+        case(
+            "anonymous, partial spend",
+            anonymous,
+            &[(SOL, 10)],
+            &[(Payment(2), SOL, 4)],
+        ),
+        case(
+            "anonymous, full spend of an SPL note",
+            anonymous,
+            &[(spl, 10)],
+            &[(Payment(2), spl, 10)],
+        ),
+        PinnedTransfer {
+            compact: true,
+            ..case(
+                "anonymous, compact full spend",
+                anonymous,
+                &[(SOL, 10)],
+                &[(Payment(2), SOL, 10)],
+            )
+        },
+        case(
+            "anonymous, the full amount to an own output",
+            anonymous,
+            &[(SOL, 10)],
+            &[(Own, SOL, 10)],
+        ),
+    ];
+    let slots = |outputs: &[SppProofOutputUtxo], blinded: bool| -> Vec<serde_json::Value> {
+        outputs
+            .iter()
+            .map(|output| {
+                let mut slot = serde_json::json!({
+                    "owner": output.owner_address.map(|owner| hex::encode(owner.to_bytes())),
+                });
+                if output.owner_address.is_some() {
+                    slot["mint"] = hex::encode(output.asset.asset).into();
+                    slot["amount"] = output.amount.into();
+                    slot["ring"] = output.ring_program_id.is_some().into();
+                    slot["dataHash"] = output.data_hash.map(hex::encode).into();
+                }
+                if blinded {
+                    slot["blinding"] = hex::encode(output.blinding).into();
+                }
+                slot
+            })
+            .collect()
+    };
+    let mut cases = Vec::new();
+    for pinned in &pinned {
+        let chain = Chain::ring(RingSettings::new(pinned.mode));
+        let config = ring().require_config(&chain).await.unwrap();
+        let (sender, address): (&dyn RingSender, ShieldedAddress) = match pinned.pda_owner {
+            true => (&program, program.address),
+            false => (&holder, holder.shielded_address().unwrap()),
+        };
+        let notes: Vec<WalletUtxo> = pinned
+            .notes
+            .iter()
+            .zip(0u8..)
+            .map(|((asset, amount), leaf)| {
+                let utxo = spr_transaction::Utxo {
+                    owner: address.signing_pubkey,
+                    asset: *asset,
+                    amount: *amount,
+                    blinding: [leaf + 3; 32],
+                    ring_program_id: Some(ring().program_id()),
+                    data: Default::default(),
+                };
+                wallet(utxo, &holder.nullifier_key, TREE_ID, leaf.into())
+            })
+            .collect();
+        let transfer = || {
+            let payer = crate::tests::support::payer();
+            let program = ring().program_id();
+            let transaction = match pinned.compact {
+                true => {
+                    ConfidentialTransaction::new_compact_with_ring(notes.clone(), payer, program)
+                }
+                false => ConfidentialTransaction::new_with_ring(notes.clone(), payer, program),
+            }
+            .unwrap();
+            let start = CustomRingTransfer::new(CustomRingTransferInput {
+                ring: ring(),
+                sender,
+                nullifier_key: Some(&holder.nullifier_key),
+                transaction,
+            })
+            .spend_public(address.solana_address().unwrap());
+            pinned
+                .declared
+                .iter()
+                .fold(start, |mut transfer, (declared, asset, amount)| {
+                    let paid = |seed: u8| keypair(seed).shielded_address().unwrap();
+                    let transaction = &mut transfer.rail.owner.transaction;
+                    match *declared {
+                        Payment(seed) => {
+                            return transfer
+                                .with_payment(AnonymousPayment {
+                                    asset: *asset,
+                                    ..payment(&ring_address(&keypair(seed)), *amount)
+                                })
+                                .unwrap()
+                        }
+                        State => {
+                            let own = RingAddress {
+                                recipient: address,
+                                ..ring_address(&holder)
+                            };
+                            return transfer
+                                .with_payment(AnonymousPayment {
+                                    asset: *asset,
+                                    data: crate::NoteData {
+                                        ring_data_hash: None,
+                                        application: Some(crate::ApplicationData {
+                                            hash: STATE_HASH,
+                                            bytes: STATE.to_vec(),
+                                        }),
+                                    },
+                                    ..payment(&own, *amount)
+                                })
+                                .unwrap();
+                        }
+                        Own => {
+                            transaction.transfer_with_ring(&address, *asset, *amount, Some(program))
+                        }
+                        Exit(seed) => {
+                            transaction.transfer_with_ring(&paid(seed), *asset, *amount, None)
+                        }
+                    }
+                    .unwrap();
+                    transfer
+                })
+        };
+        let plan = ProgramPlan::of(
+            &transfer()
+                .rail
+                .seal(&config, Some(SALT))
+                .unwrap()
+                .proof_inputs,
+        )
+        .unwrap();
+        let direct = transfer().rail.seal(&config, None).unwrap().proof_inputs;
+        cases.push(serde_json::json!({
+            "name": pinned.name,
+            "mode": match pinned.mode {
+                RingMode::Anonymous => "anonymous",
+                _ => "confidential",
+            },
+            "pdaOwner": pinned.pda_owner,
+            "compact": pinned.compact,
+            "inputs": notes.iter().map(|note| serde_json::json!({
+                "mint": hex::encode(note.utxo.asset.asset),
+                "amount": note.utxo.amount,
+                "blinding": hex::encode(note.utxo.blinding),
+            })).collect::<Vec<_>>(),
+            "declared": pinned.declared.iter().map(|(declared, asset, amount)| {
+                let (kind, seed) = match declared {
+                    Payment(seed) => ("payment", Some(seed)),
+                    Own => ("own", None),
+                    State => ("state", None),
+                    Exit(seed) => ("exit", Some(seed)),
+                };
+                serde_json::json!({
+                    "kind": kind,
+                    "seed": seed,
+                    "mint": hex::encode(asset.asset),
+                    "amount": amount,
+                })
+            }).collect::<Vec<_>>(),
+            "outputs": slots(&plan.outputs, true),
+            // Under a fresh salt and no program commitment.
+            "directOutputs": slots(&direct.output_utxos, false),
+            "blindingSeed": hex::encode(plan.blinding_seed),
+            "firstNullifier": hex::encode(plan.first_nullifier),
+            "privateTxHash": hex::encode(plan.private_tx_hash),
+            "transactionHash": hex::encode(plan.transaction_hash),
+        }));
+    }
+    let built = serde_json::json!({
+        "ring": hex::encode(ring().program_id()),
+        "payer": hex::encode(crate::tests::support::payer()),
+        "pda": hex::encode(pda(0x51)),
+        "ownerSeed": 1,
+        "treeId": TREE_ID,
+        "salt": hex::encode(SALT),
+        "state": hex::encode(STATE),
+        "stateHash": hex::encode(STATE_HASH),
+        "cases": cases,
+    });
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-vectors/proof/ring-transfer-plans.json");
+    if std::env::var_os("UPDATE_PROVER_JSON").is_some() {
+        std::fs::write(&path, serde_json::to_string_pretty(&built).unwrap() + "\n").unwrap();
+    }
+    let pinned: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(pinned, built);
+}
+
+/// The address alone carries the recipient's salt, no rail asks for it a second time.
+#[tokio::test]
+async fn a_payment_address_gives_its_list_salt_to_the_policy_read_on_every_public_rail() {
+    use crate::tests::support::{keypair, Registry};
+    use custom_ring_interface::domain;
+    use zolana_ring_policy::{ListId, Rule, RuleTable, Subject};
+    let sender = keypair(1);
+    let recipient = keypair(2);
+    let wallet = sender.shielded_address().unwrap();
+    let paid = ring_address(&recipient);
+    let member = |address: &ShieldedAddress| {
+        Member::from_bytes(address.signing_pubkey.owner_proof_input_hash().unwrap()).unwrap()
+    };
+    let rules = RuleTable::builder()
+        .rule(Rule::forbid(Subject::OutputOwner, ListId::PrivateBlock))
+        .build();
+    for mode in [RingMode::Confidential, RingMode::Anonymous] {
+        let chain = Chain::ring(RingSettings::new(mode))
+            .with_registry(Registry::new(&[(&sender, 0), (&recipient, 0)]), &rules)
+            .with_tracking_tag(
+                &[wallet, paid.recipient],
+                domain::list_tag(&paid.list_salt).unwrap(),
+            );
+        let config = ring().require_config(&chain).await.unwrap();
+        let client = chain.clone().client();
+        let note = ring_utxo(&sender, Mint::SOL, 10, 0);
+        let transfer = || {
+            owner_transfer(&sender, ring_transaction(vec![note.clone()]))
+                .spend_public(wallet.solana_address().unwrap())
+                .with_payment(payment(&paid, 4))
+                .unwrap()
+                .with_list_salt(member(&wallet), paid.list_salt)
+        };
+        let direct = transfer();
+        let prepared = direct.prepare(&chain).await.ok().unwrap();
+        assert!(
+            prepared
+                .pipeline
+                .staged
+                .list_salts
+                .contains(&SubjectListSalt {
+                    member: *member(&paid.recipient).as_bytes(),
+                    list_salt: paid.list_salt,
+                }),
+            "{mode:?}"
+        );
+        assert!(direct.assemble(&client).await.is_ok(), "{mode:?}");
+        let plan = transfer().program_plan(&config).unwrap();
+        let called = transfer().with_program(plan.commitment());
+        assert!(called.assemble(&client).await.is_ok(), "{mode:?} program");
+
+        let disagreeing = transfer().with_list_salt(member(&paid.recipient), [9; 32]);
+        assert!(
+            matches!(
+                disagreeing.assemble(&client).await.err(),
+                Some(RingError::ListSaltMismatch { member: refused })
+                    if refused == *member(&paid.recipient).as_bytes()
+            ),
+            "{mode:?}"
+        );
     }
 }

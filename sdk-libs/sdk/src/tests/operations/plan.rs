@@ -102,6 +102,7 @@ impl Case {
                 outputs: spend.outputs,
                 capacity: usize::from(shape.outputs),
                 vouched: false,
+                records: Default::default(),
             },
             spans_capacity: self.approval,
         }

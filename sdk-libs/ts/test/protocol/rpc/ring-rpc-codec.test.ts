@@ -586,6 +586,17 @@ describe("co-sign", () => {
     ).toBe(`{"ring":"${ring}","message":"AwQF"}`);
     expect(
       JSON.stringify(
+        encodeCoSignTransactionRequest({
+          ring,
+          message: "AwQF" as indexerTypes.Base64String,
+          approvedTransfer: { data: "NwcI" as indexerTypes.Base64String, accounts: [ring] },
+        }),
+      ),
+    ).toBe(
+      `{"ring":"${ring}","message":"AwQF","approvedTransfer":{"data":"NwcI","accounts":["${ring}"]}}`,
+    );
+    expect(
+      JSON.stringify(
         encodeEditCoSignListRequest({
           ring,
           edit: "set",
@@ -786,6 +797,10 @@ describe("ring rpc refusals", () => {
       "customRefused",
       "listSubject",
     ]);
+  });
+
+  it("names -32176 as a simulation without exactly one approved transfer call", () => {
+    expect(ringRpcRefusalName(-32176)).toBe("approvedCallNotOnce");
   });
 
   it("names -32227 and -32228 as delegate notes outside the requested sources", () => {

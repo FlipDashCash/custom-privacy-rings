@@ -344,6 +344,7 @@ impl PreparedCustomRingMerge {
                     mint,
                     blinding: seed.output_blinding(&first_nullifier)?,
                     key: zolana_ring_transaction::carried_key(merged_owner.nullifier_pubkey),
+                    ..OutputRecord::default()
                 },
                 seed: seed.to_bytes(),
             },

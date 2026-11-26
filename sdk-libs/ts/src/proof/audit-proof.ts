@@ -30,6 +30,7 @@ import {
   type EntryRecord,
 } from "../protocol/codec/audit-stream.js";
 import {
+  auditLayoutOf,
   checkedStreamLayout,
   type AuditLayout,
   type AuditStreamLayout,
@@ -88,7 +89,7 @@ export function sealAudit(
       }),
     });
     return Object.freeze({
-      audit: Object.freeze({ entry: layout.key.entry, vouched: layout.vouched }),
+      audit: auditLayoutOf(layout),
       layout,
       ...sealed,
       exitRecords: Object.freeze(

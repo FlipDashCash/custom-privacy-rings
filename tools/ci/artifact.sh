@@ -12,8 +12,12 @@ case "$name" in
     paths=(zolana/target/deploy/shielded_pool_program.so zolana/target/deploy/spr_user_registry.so)
     ;;
   ring_program)
-    inputs=(zolana Cargo.toml Cargo.lock rust-toolchain.toml .cargo programs program-libs examples/enrollment-vault)
-    paths=(target/deploy/custom_ring_program.so target/deploy/storage_program.so target/deploy/storage_cpi_owner.so target/deploy/enrollment_vault.so)
+    inputs=(zolana Cargo.toml Cargo.lock rust-toolchain.toml .cargo programs program-libs examples/enrollment-vault program-tests/zk-ring-program)
+    paths=(target/deploy/custom_ring_program.so target/deploy/storage_program.so target/deploy/storage_cpi_owner.so target/deploy/enrollment_vault.so target/deploy/zk_ring_program.so)
+    ;;
+  zk_ring_circuits)
+    inputs=(zolana Cargo.toml Cargo.lock rust-toolchain.toml .cargo program-tests/zk-ring-program)
+    paths=(target/zk/zk-ring-program/create target/zk/zk-ring-program/update)
     ;;
   zolana_tools)
     inputs=(zolana rust-toolchain.toml .cargo)

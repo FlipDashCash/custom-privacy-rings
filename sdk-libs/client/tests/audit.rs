@@ -17,7 +17,8 @@ use std::{
 };
 
 use custom_ring_interface::{
-    AuditStreamLayout, MergeRecord, OutputRecord, RecordKey, RecordKind, RingMode,
+    encode_ring_body_output, ring_body_output, AuditStreamLayout, MergeRecord, OutputRecord,
+    RecordKey, RecordKind, RingMode,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -228,8 +229,9 @@ fn zero_key_and_enrolled_outputs_in_one_frame_are_each_identified() {
     assert!(audited.unresolved_owners().is_empty());
 }
 
+/// The record carries both hashes under the proof, a lost payload costs no opening.
 #[test]
-fn a_data_bearing_note_rebuilds_from_its_payload() {
+fn a_data_bearing_note_rebuilds_from_its_record_with_the_payload_dropped() {
     let note = UtxoFields {
         data_hash: field(0x71),
         ring_data_hash: field(0x72),
@@ -265,24 +267,42 @@ fn a_data_bearing_note_rebuilds_from_its_payload() {
     let opened = audited.outputs[0].opening.utxo().unwrap();
     assert_eq!(opened.data_hash, Some(field(0x71)));
     assert_eq!(opened.ring_data_hash, Some(field(0x72)));
-    // The commitment holds both hashes.
-    let mut cleared = built.disclosure.clone();
-    cleared.payloads.as_mut().unwrap()[0] = Default::default();
-    let forged = transfer.publish(Publish {
-        slots: built.transaction.output_slots.clone(),
-        disclosure: &cleared,
-        auditor: &auditor().pubkey(),
-        rail: built.rail,
-    });
-    let audited = audit_registered(&built, &forged).unwrap();
-    assert_eq!(
-        audited.payload_errors,
-        [slot_error(0, OutputPayloadErrorKind::Payload)]
-    );
-    // The proven record stands under the published commitment, its data hashes stay unknown.
-    let kept = audited.outputs[0].opening.utxo().unwrap();
-    assert_eq!((kept.amount, kept.owner_key), (note.amount, note.owner_key));
-    assert_eq!((kept.data_hash, kept.ring_data_hash), (None, None));
+    // A payload that decodes to nothing leaves the proven hashes whole.
+    let mut dropped = built.transaction.clone();
+    let (body, reply) = ring_body_output(&dropped.output_slots[0].payload).unwrap();
+    let record_len = built.layout.records.published_len(RecordKind::Ring);
+    let mut body = body.to_vec();
+    body[record_len] ^= 0xff;
+    dropped.output_slots[0].payload = encode_ring_body_output(&body, reply).unwrap();
+    let audited = audit_registered(&built, &dropped).unwrap();
+    assert!(audited.payload_errors.is_empty());
+    let opened = audited.outputs[0].opening.utxo().unwrap();
+    assert_eq!(opened.data_hash, Some(field(0x71)));
+    assert_eq!(opened.ring_data_hash, Some(field(0x72)));
+    // A record with another hash rebuilds nothing, the commitment holds both.
+    type Spoil = fn(&mut OutputRecord);
+    let spoils: [Spoil; 2] = [
+        |record| record.data_hash = field(0x73),
+        |record| record.ring_data_hash = field(0x73),
+    ];
+    for spoil in spoils {
+        let mut forged = built.disclosure.clone();
+        spoil(&mut forged.records[0]);
+        let forged = transfer.publish(Publish {
+            slots: built.transaction.output_slots.clone(),
+            disclosure: &forged,
+            auditor: &auditor().pubkey(),
+            rail: built.rail,
+        });
+        let audited = audit_registered(&built, &forged).unwrap();
+        assert_eq!(
+            audited.payload_errors,
+            [slot_error(0, OutputPayloadErrorKind::Payload)]
+        );
+        let kept = audited.outputs[0].opening.utxo().unwrap();
+        assert_eq!((kept.amount, kept.owner_key), (note.amount, note.owner_key));
+        assert_eq!((kept.data_hash, kept.ring_data_hash), (None, None));
+    }
 }
 
 #[test]
@@ -317,7 +337,7 @@ fn each_record_field_changed_fails_the_rebuild() {
             if (name, slot) == ("owner_key", 0) {
                 assert!(audited.payload_errors.is_empty(), "{name} of slot {slot}");
                 let kept = audited.outputs[slot].opening.utxo().unwrap();
-                assert!(matches!(kept.owner, UtxoOwner::Unresolved { .. }));
+                assert_eq!(kept.owner, UtxoOwner::Unresolved);
                 continue;
             }
             assert_eq!(
@@ -479,9 +499,9 @@ fn an_exit_opens_with_its_published_owner_tag() {
     ));
 }
 
-/// An exit's data sits in its scheme 3 body, the auditor opens its record without the data hashes.
+/// An exit's record carries its data hash, the auditor rebuilds the commitment with no scheme 3 body.
 #[test]
-fn an_honest_data_bearing_exit_opens() {
+fn a_data_bearing_exit_rebuilds_from_its_record() {
     let exit = UtxoFields {
         data_hash: field(0x75),
         ..utxo(0xe5, SOL, 40)
@@ -499,9 +519,11 @@ fn an_honest_data_bearing_exit_opens() {
         (opened.owner_key, opened.amount, opened.owner.nullifier_pk()),
         (exit.owner_key, exit.amount, Some(exit.nullifier_pk))
     );
+    assert_eq!(opened.data_hash, Some(exit.data_hash));
+    assert!(audited.payload_errors.is_empty());
     assert_eq!(
-        audited.payload_errors,
-        [slot_error(0, OutputPayloadErrorKind::Payload)]
+        built.layout.records.published_len(RecordKind::Exit),
+        custom_ring_interface::TRANSFER_RECORD_LEN
     );
 }
 
@@ -599,6 +621,7 @@ fn merged(transfer: &Transfer, spend: &Spend) -> Confirmed {
                 mint: spend.utxo.asset_address.to_bytes(),
                 blinding,
                 key: zolana_ring_transaction::carried_key(spend.utxo.nullifier_pk),
+                ..OutputRecord::default()
             },
             seed: MERGE_SEED,
         },

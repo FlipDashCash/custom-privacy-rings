@@ -37,13 +37,14 @@ import type {
 import { CUSTOM_RING_PROOF_LENGTH } from "../proof/custom-ring-proof.js";
 import {
   PAYLOAD_LENGTH_LEN,
-  EXIT_RECORD_LEN,
-  RING_RECORD_LEN,
+  RecordKind,
   checkedStreamLayout,
   envelopeRegion,
+  publishedRecordLen,
   recipientKeysLen,
   type AuditLayout,
   type AuditStreamLayout,
+  type RecordForm,
 } from "../codec/ring-disclosure-layout.js";
 import { MIN_REPLY_LEN, SENDER_BUNDLE_LEN } from "../codec/anonymous-delivery.js";
 import {
@@ -141,7 +142,7 @@ export type SlotBody =
 export interface RingOutput {
   readonly hash: Bytes32;
   readonly ownerTag: Bytes32;
-  /** `slotRecordLen(body)` sealed bytes, in the slot's SPP data or, on an exit, the auditor message. */
+  /** `slotRecordLen(body, form)` sealed bytes, in the slot's SPP data or, on an exit, the auditor message. */
   readonly record: Uint8Array;
   readonly body: SlotBody;
 }
@@ -152,9 +153,9 @@ export interface PublishedSenderBundle {
   readonly body: Uint8Array;
 }
 
-/** Rust `SlotBody::record_len`, an exit alone publishes its record's key. */
-export function slotRecordLen(body: Pick<SlotBody, "kind">): number {
-  return body.kind === "exit" ? EXIT_RECORD_LEN : RING_RECORD_LEN;
+/** Rust `SlotBody::record_len`, the one length the slot's kind takes under the frame's form. */
+export function slotRecordLen(body: Pick<SlotBody, "kind">, form: RecordForm): number {
+  return publishedRecordLen(form, body.kind === "exit" ? RecordKind.exit : RecordKind.ring);
 }
 
 /** Every reply of a frame, one length, a hidden dummy matches a recipient, Rust `Replies`. */
@@ -193,8 +194,10 @@ export interface RingTransactData {
   readonly salt: Bytes16;
   readonly extensions: FrameExtensions;
   readonly interfaceTransfers: readonly InterfaceTransfer[];
-  /** Every non-exit slot carries a payload of one length. */
+  /** Every record publishes `data_hash` and every non-exit slot carries a payload of one length. */
   readonly hasData: boolean;
+  /** Every non-exit record publishes `ring_data_hash`. */
+  readonly ringData: boolean;
   /** The key with entry capacity. */
   readonly entry: boolean;
   /** The key with its full owner rows, a hidden owner count needs the frame to name the key. */
@@ -329,6 +332,8 @@ export function ringStreamLayout(
     /** The selected key's flag, unset fits the published counts alone. */
     wideOwners?: boolean;
     vouched?: boolean;
+    /** Clear by default. */
+    records?: RecordForm;
   }>,
 ): AuditStreamLayout {
   const fitted = fittedSpend({
@@ -345,8 +350,9 @@ export function ringStreamLayout(
   const flags: FrameFlags = {
     defaultOwnerTag: false,
     publicOwners: shape.publicOwners ?? false,
-    hasData: false,
+    hasData: shape.records?.data ?? false,
     entry: shape.entry,
+    ringData: shape.records?.ringData ?? false,
     wideOwners: spend.wide,
     vouched: shape.vouched ?? false,
   };
@@ -391,8 +397,18 @@ export const RingTransactData = Object.freeze({
     }
   },
 
-  auditLayout(data: Pick<RingTransactData, "entry" | "vouched">): AuditLayout {
-    return Object.freeze({ entry: data.entry, vouched: data.vouched });
+  recordForm(data: Pick<RingTransactData, "hasData" | "ringData">): RecordForm {
+    return Object.freeze({ data: data.hasData, ringData: data.ringData });
+  },
+
+  auditLayout(
+    data: Pick<RingTransactData, "entry" | "vouched" | "hasData" | "ringData">,
+  ): AuditLayout {
+    return Object.freeze({
+      entry: data.entry,
+      vouched: data.vouched,
+      records: RingTransactData.recordForm(data),
+    });
   },
 
   streamLayout(data: RingTransactData): AuditStreamLayout {
@@ -510,6 +526,10 @@ const Flag = Object.freeze({
 const ShapeFlag = Object.freeze({ defaultOwnerTag: 1 << 6, publicOwners: 1 << 7 });
 /** Byte 2, the published input count below these flags, Rust `input_flag`. */
 const InputFlag = Object.freeze({ hasData: 1 << 6, entry: 1 << 7 });
+/** Byte 3 past `m`, Rust `output_flag::RING_DATA`, every non-exit record publishes `ring_data_hash`. */
+const RING_DATA = 1 << 5;
+/** Rust `output_flag::COUNT`, the widest key capacity stays below the lowest flag. */
+const OUTPUT_COUNT = RING_DATA - 1;
 /** Byte 3 past `m`, Rust `output_flag::WIDE_OWNERS`, the proof's key opens its full owner rows. */
 const WIDE_OWNERS = 1 << 7;
 /** Byte 3 past `m`, Rust `output_flag::VOUCHED`, the voucher's sealed key follows the recipient keys. */
@@ -538,6 +558,8 @@ interface FrameFlags {
   readonly hasData: boolean;
   /** Input byte bit 7. */
   readonly entry: boolean;
+  /** Output count byte bit 5. */
+  readonly ringData: boolean;
   /** Output count byte bit 7. */
   readonly wideOwners: boolean;
   /** Output count byte bit 6. */
@@ -599,6 +621,7 @@ function streamOf(rail: RingRail, header: FrameHeader): AuditStreamLayout {
       outputs,
       capacity: shape.outputs,
       vouched: flags.vouched,
+      records: Object.freeze({ data: flags.hasData, ringData: flags.ringData }),
     }),
   );
 }
@@ -635,7 +658,7 @@ function readCompact(bytes: Reader, rail: RingRail): RingTransactData {
     : [];
   const exits = readBitmap(bytes, outputCount);
   const outputs: readonly RingOutput[] = Array.from({ length: outputCount }, (_, slot) =>
-    readSlot(bytes, header.flags.hasData, bitAt(exits, slot)),
+    readSlot(bytes, stream.records, bitAt(exits, slot)),
   );
   const replies = has(flags, Flag.replyMetadata) ? readReplies(bytes, outputs) : undefined;
   const sender: PublishedSenderBundle | undefined = isAnonymousFrame(rail)
@@ -690,6 +713,7 @@ function readCompact(bytes: Reader, rail: RingRail): RingTransactData {
     extensions,
     interfaceTransfers: Object.freeze(interfaceTransfers),
     hasData: header.flags.hasData,
+    ringData: header.flags.ringData,
     entry: header.flags.entry,
     wideOwners: header.flags.wideOwners,
     vouched: header.flags.vouched,
@@ -710,8 +734,8 @@ function readCompact(bytes: Reader, rail: RingRail): RingTransactData {
 }
 
 /** `[u16le(extra_len)] ‖ hash ‖ tag ‖ record_ct ‖ extra`, a plain frame fixes the extra's length. */
-function readSlot(bytes: Reader, hasData: boolean, exit: boolean): RingOutput {
-  const length = hasData
+function readSlot(bytes: Reader, form: RecordForm, exit: boolean): RingOutput {
+  const length = form.data
     ? bytes.u16("output.extraLen")
     : exit
       ? CONFIDENTIAL_DATA_FREE_BODY_LEN
@@ -721,9 +745,10 @@ function readSlot(bytes: Reader, hasData: boolean, exit: boolean): RingOutput {
   const ownerTag = exit
     ? field32(bytes, "output.ownerTag")
     : unframedSlotTag(bytes.bytes(SLOT_TAG_LEN, "output.ownerTag"));
-  const record = bytes.bytes(exit ? EXIT_RECORD_LEN : RING_RECORD_LEN, "output.record");
+  const kind = exit ? "exit" : "recipient";
+  const record = bytes.bytes(slotRecordLen({ kind }, form), "output.record");
   const payload = bytes.bytes(length, "output.extra");
-  const body: SlotBody = Object.freeze({ kind: exit ? "exit" : "recipient", payload });
+  const body: SlotBody = Object.freeze({ kind, payload });
   return Object.freeze({ hash, ownerTag, record, body });
 }
 
@@ -884,7 +909,7 @@ function writeCompact(data: RingTransactData): Uint8Array {
     (data.sender !== undefined && data.sender.body.length !== SENDER_BUNDLE_LEN) ||
     data.envelope.length !== envelopeRegion(stream).length ||
     data.recipientKeys.length !== recipientKeysLen(stream) ||
-    !data.outputs.every((output) => slotFits(output, data.hasData))
+    !data.outputs.every((output) => slotFits(output, stream.records))
   )
     throw invalid("RingTransactLength");
   checkReplies(data);
@@ -912,7 +937,7 @@ function writeCompact(data: RingTransactData): Uint8Array {
     out,
     data.outputs.map((output) => output.body.kind === "exit"),
   );
-  for (const output of data.outputs) writeSlot(out, output, data.hasData);
+  for (const output of data.outputs) writeSlot(out, output, stream.records);
   if (data.replies !== undefined)
     out.u16(data.replies.length, "replyLen").bytes(data.replies.region);
   if (data.sender !== undefined)
@@ -953,24 +978,24 @@ function writeCompact(data: RingTransactData): Uint8Array {
   return out.finish();
 }
 
-function writeSlot(out: Writer, output: RingOutput, hasData: boolean): void {
+function writeSlot(out: Writer, output: RingOutput, form: RecordForm): void {
   const extra = output.body.payload;
-  if (hasData) {
+  if (form.data) {
     if (extra.length > 0xffff) throw invalid("OutputBodyLength");
     out.u16(extra.length, "output.extraLen");
   }
   out.bytes(output.hash, 32, "output.hash");
   if (output.body.kind === "exit") out.bytes(output.ownerTag, 32, "output.ownerTag");
   else out.bytes(framedSlotTag(output.ownerTag), SLOT_TAG_LEN, "output.ownerTag");
-  out.bytes(output.record, slotRecordLen(output.body), "output.record").bytes(extra);
+  out.bytes(output.record, slotRecordLen(output.body, form), "output.record").bytes(extra);
 }
 
 /** A frame with no data carries no payload and each exit body at its plain length. */
-function slotFits(output: RingOutput, hasData: boolean): boolean {
-  if (output.record.length !== slotRecordLen(output.body)) return false;
+function slotFits(output: RingOutput, form: RecordForm): boolean {
+  if (output.record.length !== slotRecordLen(output.body, form)) return false;
   if (output.body.kind !== "exit" && !equalBytes(slotTag(output.ownerTag), output.ownerTag))
     return false;
-  if (hasData) return true;
+  if (form.data) return true;
   return (
     output.body.payload.length ===
     (output.body.kind === "exit" ? CONFIDENTIAL_DATA_FREE_BODY_LEN : 0)
@@ -1052,11 +1077,12 @@ function readHeader(bytes: Reader, rail: RingRail): FrameHeader {
     publicOwners: has(shapeByte, ShapeFlag.publicOwners),
     hasData: has(inputByte, InputFlag.hasData),
     entry: has(inputByte, InputFlag.entry),
+    ringData: has(outputByte, RING_DATA),
     wideOwners: has(outputByte, WIDE_OWNERS),
     vouched: has(outputByte, VOUCHED),
   };
   checkFrameFlags(flags, rail);
-  const outputCount = outputByte & ~(WIDE_OWNERS | VOUCHED);
+  const outputCount = outputByte & OUTPUT_COUNT;
   if (outputCount < 1 || outputCount > shape.outputs) throw invalid("OutputCountOutOfRange");
   return {
     nIn: shape.inputs,
@@ -1073,6 +1099,7 @@ function headerOf(data: RingTransactData): FrameHeader {
     publicOwners: data.publicOwners,
     hasData: data.hasData,
     entry: data.entry,
+    ringData: data.ringData,
     wideOwners: data.wideOwners,
     vouched: data.vouched,
   };
@@ -1093,7 +1120,8 @@ function headerBytes(header: FrameHeader): readonly [number, number, number] {
     (shape) => shape.inputs === header.nIn && shape.outputs === header.nOut,
   );
   if (index < 0) throw invalid("RingShapeUnkeyed");
-  if (header.inputCount > HEADER_LOW) throw invalid("RingTransactLength");
+  if (header.inputCount > HEADER_LOW || header.outputCount > OUTPUT_COUNT)
+    throw invalid("RingTransactLength");
   const { flags } = header;
   const bit = (set: boolean, value: number) => (set ? value : 0);
   return [
@@ -1101,7 +1129,10 @@ function headerBytes(header: FrameHeader): readonly [number, number, number] {
       bit(flags.defaultOwnerTag, ShapeFlag.defaultOwnerTag) |
       bit(flags.publicOwners, ShapeFlag.publicOwners),
     header.inputCount | bit(flags.hasData, InputFlag.hasData) | bit(flags.entry, InputFlag.entry),
-    header.outputCount | bit(flags.wideOwners, WIDE_OWNERS) | bit(flags.vouched, VOUCHED),
+    header.outputCount |
+      bit(flags.ringData, RING_DATA) |
+      bit(flags.wideOwners, WIDE_OWNERS) |
+      bit(flags.vouched, VOUCHED),
   ];
 }
 
