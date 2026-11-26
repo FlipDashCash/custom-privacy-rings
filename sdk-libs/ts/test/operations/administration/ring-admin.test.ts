@@ -139,6 +139,26 @@ describe("initialize and policy update", () => {
     expect(metas(auditOnly)).toEqual(head);
   });
 
+  it.each<readonly [RingKind, number]>([
+    ["auditOnly", 0],
+    ["anonymous", 2],
+  ])("binds records under an empty rule table on the %s kind", async (kind, byte) => {
+    const auditor = X25519Keypair.generate().publicKey();
+    const instruction = await initializeRingInstruction({
+      ringProgramId: RING,
+      payer: PAYER,
+      authority: AUTHORITY,
+      auditorPublicKey: auditor,
+      kind,
+      roles: ROLES,
+      policy: { records: RECORDS, table: buildRuleTable({ rules: [] }) },
+    });
+    expect(instruction.data).toEqual(
+      Uint8Array.of(53, ...auditor.toBytes(), byte, ...ROLE_BYTES, 1, 0, 0),
+    );
+    expect(metas(instruction).at(-1)).toEqual([RECORDS, READ]);
+  });
+
   it("rebinds the records to a registry the trailing account names", async () => {
     const instruction = await updateRingPolicyInstruction({
       ringProgramId: RING,

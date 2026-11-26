@@ -44,7 +44,7 @@ pub struct CustomRingCoSigner {
 pub struct RingRegistration {
     pub activated: bool,
     pub paused: bool,
-    /// The delegate rail the activation enables.
+    /// The delegate rail, set with `activated` at creation and by governance after.
     pub authority_rail: bool,
 }
 

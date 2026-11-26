@@ -15,6 +15,8 @@ export { ringAuthAddress, ringCoSignerAddress, ringPolicyAddress } from "../prot
 export {
   CUSTOM_RING_PROOF_LENGTH,
   GRACE_SLOTS,
+  RING_COSIGN_APPROVE_OUTFLOW,
+  RING_COSIGN_APPROVE_WITHDRAWAL,
   RING_COSIGN_DEPOSITS,
   RING_COSIGN_SCOPE_MASK,
   RING_COSIGN_TRANSFERS,
@@ -44,9 +46,11 @@ export {
   BPF_LOADER_UPGRADEABLE_ID,
   fetchRingCoSignerRecord,
   fetchRingPolicy,
+  fetchSppRingConfig,
   fetchStorageRegistry,
   requireActiveRing,
   ringProgramDataAddress,
+  type SppRingConfig,
 } from "../protocol/membership/config.js";
 export { ringRole, type RingRole } from "../protocol/membership/role.js";
 export { listRegisteredRings, type RegisteredRing } from "../rpc/ring-directory.js";
@@ -81,6 +85,7 @@ export {
   RENT_SYSVAR,
   RingProgramBinary,
   closeBufferInstruction,
+  closeRingProgramInstruction,
   decodeRingProgramData,
   deployRingProgram,
   deployWithMaxDataLenInstruction,
@@ -202,6 +207,7 @@ export type {
 export { approveRingUnattended, ringIntentHash } from "../protocol/transaction/intent.js";
 export type {
   RingAnonymousTransferIntent,
+  RingMultiTransferIntent,
   RingApprovalHandler,
   RingApprovalRequest,
   RingTransactionIntent,
@@ -339,6 +345,7 @@ export type {
 } from "../operations/workflow/pipeline.js";
 export type { BoundPolicy, BoundRoot, PolicyReadClient } from "../proof/policy-proof.js";
 export {
+  MAX_RING_TRANSFER_PAYMENTS,
   buildRingEntryTransaction,
   buildRingExitTransaction,
   buildRingTransferTransaction,
@@ -368,9 +375,11 @@ export type {
   RingRelaySpendParams,
   RingEntryTransactionParams,
   RingExitTransactionParams,
+  RingMultiTransferParams,
   RingSpendParams,
   RingTransferClient,
   RingTransfersInput,
+  RingTransferPayment,
   RingTransferTransactionParams,
   RingWithdrawalTransactionParams,
 } from "../operations/payments/transfer.js";

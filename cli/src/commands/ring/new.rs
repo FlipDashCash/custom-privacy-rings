@@ -44,7 +44,7 @@ pub fn run(args: NewArgs, ask: &mut dyn Ask, catalogue: Option<&str>) -> Result<
         curators: &mut |target: Target, rpc_url: &str| live_catalogue(catalogue, target, rpc_url),
         localnet: Urls {
             rpc: local(8899),
-            indexer: local(8784),
+            indexer: local(8786),
             prover: local(3001),
             ring_rpc: local(8785),
             ring_rpc_pubkey: None,

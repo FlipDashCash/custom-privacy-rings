@@ -374,7 +374,7 @@ ring-new *args:
     cargo run -q -p custom-ring-cli -- new {{args}}
 
 # Local validator and services for a ring, ring creation is permissionless.
-ring-localnet: check-custom-ring-keys build-programs zolana::build-cli build-photon build-ring-indexer
+ring-localnet: check-custom-ring-keys build-programs zolana::build-cli zolana::ensure-surfpool build-photon build-ring-indexer
     #!/usr/bin/env bash
     set -euo pipefail
     eval "$(cd zolana && tools/ci/xtask.sh program-ids)"
@@ -386,6 +386,9 @@ ring-localnet: check-custom-ring-keys build-programs zolana::build-cli build-pho
     [[ "$photon_bin" = /* ]] || photon_bin="$PWD/$photon_bin"
     export ZOLANA_PHOTON_BIN="$photon_bin"
     export ZOLANA_PROVER_KEYS_DIR="{{spp-keys-dir}}"
+    export SURFPOOL_BIN="${SURFPOOL_BIN:-$PWD/zolana/target/tools/surfpool}"
+    # Surfpool gives empty slots synthetic hashes, only the fixture keeps ring blocks linked.
+    export ZOLANA_RING_SURFPOOL_FIXTURE=1
     for port in {{localnet-rpc-port}} {{localnet-photon-port}} {{localnet-prover-port}} {{localnet-ring-indexer-port}}; do
       lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     done
@@ -415,13 +418,18 @@ ring-localnet: check-custom-ring-keys build-programs zolana::build-cli build-pho
     echo "run 'just ring-localnet-kms' in a second terminal"
     echo "use 'just ring-localnet-custody single-ring' for a writable ring or 'just ring-localnet-custody derived' for 'just ring-rpc-derived'"
 
-# Stops the validator, photon, the ring indexer, the prover and a ring RPC a ring's `just pipeline` left.
+# Ring localnet, a test mint and a ring RPC for the demo, then `demo.env` by tools/demo-env.md.
+demo-localnet:
+    tools/demo-localnet.sh
+
+# Stops the validator, photon, the ring indexer, the prover, a ring RPC and the local KMS a ring's `just pipeline` or `just demo-localnet` left.
 ring-localnet-stop:
     lsof -ti "tcp:{{localnet-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti "tcp:{{localnet-photon-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti "tcp:{{localnet-ring-indexer-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
     lsof -ti "tcp:{{localnet-prover-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill -9 2>/dev/null || true
     lsof -ti "tcp:{{localnet-ring-rpc-port}}" -sTCP:LISTEN 2>/dev/null | xargs kill 2>/dev/null || true
+    pkill -f 'localnet-kms\.mjs {{localnet-kms-port}}$' 2>/dev/null || true
     {{stop-localnet-backends}}
 
 # Photon, the ring indexer and the prover against a cluster from its current slot, RING_INDEXER_START_SLOT moves the ring indexer start.
@@ -464,6 +472,10 @@ ring-devnet-services rpc_url: check-custom-ring-keys build-prover-server build-p
     echo "  indexer   {{localnet-ring-indexer-url}}  (ring indexer, log $workdir/ring-indexer/ring-indexer.log)"
     echo "  photon    {{localnet-photon-url}}  (indexing {{rpc_url}}, log $workdir/photon.log)"
     echo "  prover    {{localnet-prover-url}}  (log $workdir/prover.log)"
+
+# Loopback prover for devnet that reads the hosted ring indexer.
+ring-devnet-prover:
+    tools/ring-devnet-prover.sh
 
 # Stops photon, the ring indexer, the prover and a ring RPC started for devnet.
 ring-devnet-services-stop:
@@ -518,6 +530,10 @@ ring-rpc-derived dir="target/ring-localnet/custody": build-ring-rpc
 release tag *args: build-programs check-custom-ring-keys
     cargo run -p ring-xtask -- create-release --tag {{tag}} {{args}}
 
+# Pack both TS SDKs into dest and print the SHA-256 and length of each tarball.
+pack-ts dest="target/pack":
+    tools/pack-ts.sh {{dest}}
+
 # Build one service image of tools/images.json and publish it by zolana's rules.
 publish-image service *args:
     zolana/tools/publish-image.sh {{service}} {{args}}
@@ -525,6 +541,10 @@ publish-image service *args:
 # Manage the ECS test deployment.
 rings-test command *args:
     tools/rings-test-deploy.sh {{command}} {{args}}
+
+# ECS ring devnet stack, every resource named zolana-ring-devnet-*, `just ring-devnet up`.
+ring-devnet command *args:
+    tools/ring-devnet-deploy.sh {{command}} {{args}}
 
 # Move the zolana pin, `just zolana-bump origin/main`.
 zolana-bump rev:

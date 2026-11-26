@@ -1,6 +1,7 @@
 //! Sets the ring's permanent delegate, once.
 //!
-//! SPP's authority rail moves notes with no owner signature, and governance opens it per ring in `RingConfig`.
+//! SPP's authority rail moves notes with no owner signature. `RingConfig` opens it at creation on a pool with
+//! permissionless activation, and governance opens it per ring on any other pool.
 //! The delegate is the ring's own gate on the rail. A delegate frame reads no policy root, owes no co-signer,
 //! carries no approval bit and takes no deposit leg. The ring proof still shows the auditor opens its slots.
 //!

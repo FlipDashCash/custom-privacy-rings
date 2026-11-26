@@ -44,7 +44,7 @@ import {
 import type { Wallet, WalletUtxo } from "@heliuslabs/spr/transaction";
 import { ringSpendTransfer } from "./ring-spend.js";
 import type { RingListSalt } from "../../proof/policy-proof.js";
-import { frameKeyShape } from "../../protocol/proof/transfer-shapes.js";
+import { frameKeyShape, TRANSFER_SHAPES } from "../../protocol/proof/transfer-shapes.js";
 import type { ReplyMetadata } from "../../protocol/codec/anonymous-delivery.js";
 import { RingAddress, RingPaymentRequest } from "../../crypto/keys/ring-address.js";
 
@@ -174,7 +174,7 @@ export type RingAnonymousRelayRail = Readonly<{
 
 /** Ring RPC pays and co-signs a relayed spend. */
 export type RingRelaySpendParams<
-  P extends RingSpendParams = RingSpendParams,
+  P extends Omit<RingSpendParams, "amount"> = RingSpendParams,
   R extends RingRelayRail = RingRelayRail,
 > = Omit<P, "feePayer" | "cosigner" | "priorityFeeLamports"> & R;
 
@@ -187,6 +187,27 @@ export interface RingTransferTransactionParams extends RingSpendParams {
   /** `"default"` funds only from default UTXOs. `"ring-or-default"` mixes both pools, an anonymous ring funds from one pool alone. */
   readonly inputs?: "ring" | "ring-or-default" | "default";
 }
+
+/** One payment of the transfer's asset. */
+export interface RingTransferPayment {
+  readonly recipient: RingTransferTransactionParams["recipient"];
+  readonly amount: bigint;
+}
+
+/** Each payment takes one output, the inputs cover their sum. */
+export interface RingMultiTransferParams extends Omit<
+  RingTransferTransactionParams,
+  "recipient" | "amount"
+> {
+  /** One to `MAX_RING_TRANSFER_PAYMENTS`, every one in `asset`. */
+  readonly payments: readonly RingTransferPayment[];
+  readonly recipient?: never;
+  readonly amount?: never;
+}
+
+/** The widest transfer key's outputs less the change output. */
+export const MAX_RING_TRANSFER_PAYMENTS =
+  Math.max(...TRANSFER_SHAPES.map(({ outputs }) => outputs)) - 1;
 
 export type RingEntryTransactionParams = RingSpendParams;
 
@@ -203,27 +224,28 @@ export interface RingWithdrawalTransactionParams extends RingSpendParams {
 
 /** Unsigned, the fee payer and any co-signer sign. */
 export async function buildRingTransferTransaction(
-  input: RingTransferTransactionParams & RingOwnerRail,
+  input: (RingTransferTransactionParams | RingMultiTransferParams) & RingOwnerRail,
   context?: RequestContext,
 ): Promise<Transaction> {
   return (
     await buildRingSend(
-      { params: input, rail: ownerRail(input), destination: "ring", retry: {} },
+      { params: paidSpend(input), rail: ownerRail(input), destination: "ring", retry: {} },
       context,
     )
   ).transaction;
 }
 
 export function createRingTransferSubmission(
-  input: RingTransferTransactionParams & RingDirectRail,
+  input: (RingTransferTransactionParams | RingMultiTransferParams) & RingDirectRail,
   context?: RequestContext,
 ): Promise<RingTransactionSubmission> {
+  const params = paidSpend(input);
   return RingTransactionSubmission.fromBuilder(
     {
       wallet: input.wallet,
       registry: input.client,
       build: (retry, buildContext) =>
-        buildRingSend({ params: input, rail: input, destination: "ring", retry }, buildContext),
+        buildRingSend({ params, rail: input, destination: "ring", retry }, buildContext),
     },
     context,
   );
@@ -239,7 +261,7 @@ export async function buildRingExitTransaction(
 ): Promise<Transaction> {
   return (
     await buildRingSend(
-      { params: input, rail: ownerRail(input), destination: "default", retry: {} },
+      { params: paidSpend(input), rail: ownerRail(input), destination: "default", retry: {} },
       context,
     )
   ).transaction;
@@ -249,12 +271,13 @@ export function createRingExitSubmission(
   input: RingExitTransactionParams & RingDirectRail,
   context?: RequestContext,
 ): Promise<RingTransactionSubmission> {
+  const params = paidSpend(input);
   return RingTransactionSubmission.fromBuilder(
     {
       wallet: input.wallet,
       registry: input.client,
       build: (retry, buildContext) =>
-        buildRingSend({ params: input, rail: input, destination: "default", retry }, buildContext),
+        buildRingSend({ params, rail: input, destination: "default", retry }, buildContext),
     },
     context,
   );
@@ -313,17 +336,21 @@ export function createRingWithdrawalSubmission(
 
 /** Ring RPC reads the paths and records, proves and sends. */
 export function prepareRingTransferRelay<R extends RingRelayRail>(
-  input: RingRelaySpendParams<RingTransferTransactionParams, R>,
+  input:
+    | RingRelaySpendParams<RingTransferTransactionParams, R>
+    | RingRelaySpendParams<RingMultiTransferParams, R>,
   context?: RequestContext,
 ): Promise<PreparedSpendRelay> {
-  return relayRingSpend({ params: input, strategy: sendStrategy(input, "ring") }, context);
+  const params = paidSpend(input);
+  return relayRingSpend({ params, strategy: sendStrategy(params, "ring") }, context);
 }
 
 export function prepareRingExitRelay<R extends RingRelayRail>(
   input: RingRelaySpendParams<RingExitTransactionParams, R>,
   context?: RequestContext,
 ): Promise<PreparedSpendRelay> {
-  return relayRingSpend({ params: input, strategy: sendStrategy(input, "default") }, context);
+  const params = paidSpend(input);
+  return relayRingSpend({ params, strategy: sendStrategy(params, "default") }, context);
 }
 
 /** Anonymous rings alone, the in-proof owner of a confidential relay refuses every default-ring note. */
@@ -420,7 +447,7 @@ function ownerRail(input: RingOwnerRail): RingOwnerRail {
 
 function buildRingSend(
   input: Readonly<{
-    params: RingTransferTransactionParams | RingExitTransactionParams;
+    params: RingSpendParams & PaidSpend;
     rail: RingDirectRail;
     destination: "ring" | "default";
     retry: RingSubmissionBuildState;
@@ -463,20 +490,42 @@ function buildRingWithdrawal(
   return buildRingSpend({ params, rail, strategy: withdrawalStrategy(params), retry }, context);
 }
 
-type SendParams = SpendBase &
-  Pick<RingTransferTransactionParams, "recipient"> &
+/** A spend whose recipients are its payments, `amount` their sum. */
+type PaidSpend = SpendBase &
   Partial<Pick<RingTransferTransactionParams, "inputs">> &
+  Readonly<{ payments: readonly RingTransferPayment[] }>;
+
+/** A single recipient is one payment. */
+function paidSpend<
+  P extends
+    | Readonly<{ recipient: RingTransferPayment["recipient"]; amount: bigint }>
+    | Readonly<{ payments: readonly RingTransferPayment[] }>,
+>(input: P): P & Readonly<{ amount: bigint; payments: readonly RingTransferPayment[] }> {
+  const payments: readonly RingTransferPayment[] =
+    "payments" in input ? input.payments : [{ recipient: input.recipient, amount: input.amount }];
+  const amount = payments.reduce((sum, payment) => sum + payment.amount, 0n);
+  return { ...input, amount, payments };
+}
+
+type SendParams = PaidSpend &
   Readonly<{ anonymous?: AnonymousSpendOwner; spendPublic?: RingPublicSpend }>;
 
 function sendStrategy(
   params: SendParams,
   destination: "ring" | "default",
-): RingSpendStrategy<ShieldedAddress | AnonymousRecipient> {
+): RingSpendStrategy<readonly (ShieldedAddress | AnonymousRecipient)[]> {
+  const { payments } = params;
   return {
     errorCode: "RING_BUILD_TRANSFER",
     selection: destination === "ring" ? (params.inputs ?? "ring") : "ring",
-    resolve: (context) => resolveSendRecipient(params, destination, context),
-    configure: ({ transfer, resolved, selected, asset, payment }) => {
+    payments: payments.length,
+    resolve: (context) => {
+      checkPayments(payments);
+      return Promise.all(
+        payments.map((paid) => resolveSendRecipient(params, paid, destination, context)),
+      );
+    },
+    configure: ({ transfer, resolved: recipients, selected, asset, payment }) => {
       // Change of a default UTXO becomes ring bound.
       const defaultFunding = selected
         .filter((entry) => entry.utxo.ringProgramId === undefined)
@@ -485,6 +534,29 @@ function sendStrategy(
         defaultFunding === 0n
           ? ""
           : `, moves ${String(defaultFunding)} ${assetLabel(asset)} of default UTXOs into the ring`;
+      if (recipients.length > 1) {
+        const paid = recipients.map((resolved, index) => {
+          const { amount } = payments[index] as RingTransferPayment;
+          if (resolved instanceof ShieldedAddress) {
+            transfer.send(resolved, asset, amount);
+            return { recipient: resolved, amount };
+          }
+          payment(resolved.to, asset, amount, resolved.reply);
+          return { recipient: resolved.to, amount };
+        });
+        return {
+          intent: {
+            kind: "ringMultiTransfer",
+            ringProgramId: params.ringProgramId,
+            asset,
+            payments: paid,
+            defaultFunding,
+          },
+          summary: `ring transfer of ${String(params.amount)} ${assetLabel(asset)} in ring ${params.ringProgramId} to ${String(paid.length)} recipients${crossing}`,
+        };
+      }
+      const [resolved] = recipients;
+      if (resolved === undefined) throw new RingError("RING_ZERO_AMOUNT", { details: { asset } });
       if (!(resolved instanceof ShieldedAddress)) {
         payment(resolved.to, asset, params.amount, resolved.reply);
         return {
@@ -605,6 +677,8 @@ interface RingSpendPlan {
 interface RingSpendStrategy<R> {
   readonly errorCode: "RING_BUILD_ENTRY" | "RING_BUILD_TRANSFER" | "RING_BUILD_WITHDRAWAL";
   readonly selection: "ring" | "ring-or-default" | "default";
+  /** Outputs the spend pays beside its change, one when unset. */
+  readonly payments?: number;
   resolve(context: RequestContext | undefined): Promise<R>;
   configure(
     input: Readonly<{
@@ -632,7 +706,7 @@ interface StagedSpend {
   readonly rail: CustomRingTransfer;
   readonly plan: RingSpendPlan;
   readonly planned: Bytes32;
-  readonly anonymousPayment: AnonymousPayment | undefined;
+  readonly anonymousPayments: readonly AnonymousPayment[];
   readonly owner: ShieldedAddress;
 }
 
@@ -771,9 +845,10 @@ function proveDirect(
 ): Promise<ProvenRingTransfer> {
   const { staged, rail, approval } = input;
   if (rail.spendPublic !== undefined) {
-    const named = staged.rail.spendPublic(rail.spendPublic.wallet);
-    const paying =
-      staged.anonymousPayment === undefined ? named : named.withPayment(staged.anonymousPayment);
+    const paying = staged.anonymousPayments.reduce(
+      (named, payment) => named.withPayment(payment),
+      staged.rail.spendPublic(rail.spendPublic.wallet),
+    );
     return paying.proveApproved(input.client, approval, context);
   }
   if (rail.anonymous !== undefined)
@@ -784,9 +859,10 @@ function proveDirect(
 }
 
 function anonymousTransfer(staged: StagedSpend, owner: AnonymousSpendOwner): AnonymousTransfer {
-  const signed = staged.rail.withAnonymousSigner(owner.signer);
-  const paying =
-    staged.anonymousPayment === undefined ? signed : signed.withPayment(staged.anonymousPayment);
+  const paying = staged.anonymousPayments.reduce(
+    (signed, payment) => signed.withPayment(payment),
+    staged.rail.withAnonymousSigner(owner.signer),
+  );
   const exposed =
     owner.ownerExposure === undefined ? paying : paying.withOwnerExposure(owner.ownerExposure);
   return owner.exitTokenOwner === undefined
@@ -836,7 +912,7 @@ async function stageRingSpend<R>(
   const selected =
     retry.entries ??
     (route !== "public" && anonymousRing
-      ? selectAnonymousInputs(pool, strategy.selection)
+      ? selectAnonymousInputs(pool, strategy.selection, strategy.payments)
       : selectRingInputs({
           ...pool,
           inputs:
@@ -852,7 +928,7 @@ async function stageRingSpend<R>(
     inputs: await ringProofInputs(selected, () => owner, params.client, context),
     feePayer: input.feePayer,
   }).withOutputTreeId(outputTree.treeId);
-  let anonymousPayment: AnonymousPayment | undefined;
+  const anonymousPayments: AnonymousPayment[] = [];
   const plan = strategy.configure({
     transfer,
     resolved,
@@ -860,11 +936,11 @@ async function stageRingSpend<R>(
     asset,
     owner,
     payment: (to, paidAsset, amount, reply) => {
-      if (!anonymousRing || anonymousPayment !== undefined)
+      if (!anonymousRing)
         throw new RingError("RING_NOT_ANONYMOUS", {
           details: { ringProgramId: params.ringProgramId },
         });
-      anonymousPayment = { to, asset: paidAsset, amount, reply };
+      anonymousPayments.push({ to, asset: paidAsset, amount, reply });
     },
   });
   const planned = ringIntentHash(plan.intent);
@@ -888,7 +964,7 @@ async function stageRingSpend<R>(
         : ownerRail.withWithdrawalAccounts(plan.withdrawal, plan.withdrawalOwner),
     plan,
     planned,
-    anonymousPayment,
+    anonymousPayments: Object.freeze(anonymousPayments),
     owner,
   });
 }
@@ -916,9 +992,10 @@ async function approveSpend(
 export function selectAnonymousInputs(
   pool: Omit<Parameters<typeof selectRingInputs>[0], "inputs" | "maxInputs">,
   selection: "ring" | "ring-or-default" | "default",
+  payments = 1,
 ): readonly WalletUtxo[] {
   const select = (inputs: "ring" | "entry") =>
-    selectRingInputs({ ...pool, inputs, maxInputs: anonymousInputCap(inputs) });
+    selectRingInputs({ ...pool, inputs, maxInputs: anonymousInputCap(inputs, payments) });
   if (selection !== "ring-or-default") return select(selection === "ring" ? "ring" : "entry");
   try {
     return select("ring");
@@ -938,23 +1015,30 @@ export function selectAnonymousInputs(
 }
 
 function spendListSalts(params: SpendBase): readonly RingListSalt[] {
-  const recipient = "recipient" in params ? params.recipient : undefined;
-  const address =
-    recipient instanceof RingPaymentRequest
-      ? recipient.address
-      : recipient instanceof RingAddress
-        ? recipient
-        : undefined;
+  const recipients =
+    "payments" in params
+      ? (params as PaidSpend).payments.map((payment) => payment.recipient)
+      : "recipient" in params
+        ? [params.recipient]
+        : [];
   return [
     ...(params.listSalts ?? []),
-    ...(address === undefined || isZero(address.listSalt)
-      ? []
-      : [
-          {
-            owner: address.recipient.signingPublicKey.ownerProofInputHash(),
-            salt: address.listSalt,
-          },
-        ]),
+    ...recipients.flatMap((recipient) => {
+      const address =
+        recipient instanceof RingPaymentRequest
+          ? recipient.address
+          : recipient instanceof RingAddress
+            ? recipient
+            : undefined;
+      return address === undefined || isZero(address.listSalt)
+        ? []
+        : [
+            {
+              owner: address.recipient.signingPublicKey.ownerProofInputHash(),
+              salt: address.listSalt,
+            },
+          ];
+    }),
   ];
 }
 
@@ -973,14 +1057,18 @@ function balanceShortfall(cause: RingError): boolean {
 
 /** @internal Padded inputs are published, the widest shape an anonymous key serves for `payments` and the sender change bounds a spend. */
 export function anonymousInputCap(selection: "ring" | "entry", payments = 1): number {
+  // Only the narrow sixteen output key holds a frame past eight outputs.
   const keyed = (inputs: number) =>
-    frameKeyShape({
-      rail: "anonymous",
-      inputs,
-      outputs: payments + 1,
-      spendsDefaultRing: selection === "entry",
-      wide: true,
-    }) !== undefined;
+    [true, false].some(
+      (wide) =>
+        frameKeyShape({
+          rail: "anonymous",
+          inputs,
+          outputs: payments + 1,
+          spendsDefaultRing: selection === "entry",
+          wide,
+        }) !== undefined,
+    );
   let inputs = MAX_TRANSACT_INPUTS;
   while (inputs > 0 && !keyed(inputs)) inputs -= 1;
   return inputs;
@@ -991,20 +1079,31 @@ type AnonymousRecipient = Readonly<{
   reply: ReplyMetadata | null;
 }>;
 
+/** One to `MAX_RING_TRANSFER_PAYMENTS` payments, each one nonzero. */
+function checkPayments(payments: readonly RingTransferPayment[]): void {
+  if (payments.length > MAX_RING_TRANSFER_PAYMENTS)
+    throw new RingError("RING_TRANSFER_TOO_WIDE", {
+      details: { payments: payments.length, limit: MAX_RING_TRANSFER_PAYMENTS },
+    });
+  if (payments.length > 1 && payments.some((payment) => payment.amount <= 0n))
+    throw new RingError("RING_ZERO_AMOUNT", { details: { reason: "payment" } });
+}
+
 /** A ring address or request pays on the anonymous rail, any other recipient resolves to its shielded address. */
 async function resolveSendRecipient(
   params: SendParams,
+  paid: RingTransferPayment,
   destination: "ring" | "default",
   context: RequestContext | undefined,
 ): Promise<ShieldedAddress | AnonymousRecipient> {
-  const { recipient } = params;
+  const { recipient } = paid;
   if (recipient instanceof RingAddress || recipient instanceof RingPaymentRequest) {
     const to = recipient instanceof RingAddress ? recipient : recipient.address;
     if (destination !== "ring" || to.ringProgramId !== params.ringProgramId)
       throw new RingError("RING_FOREIGN_RING", {
         details: { address: to.ringProgramId, ring: params.ringProgramId },
       });
-    checkRequestTerms(params, recipient);
+    checkRequestTerms(params, paid.amount, recipient);
     return Object.freeze({ to, reply: replyChoice(params) });
   }
   return resolveShieldedRecipient(
@@ -1026,10 +1125,14 @@ function replyChoice(params: SendParams): ReplyMetadata | null {
 }
 
 /** A request names its amount and mint. */
-function checkRequestTerms(params: SendParams, recipient: RingAddress | RingPaymentRequest): void {
+function checkRequestTerms(
+  params: SendParams,
+  amount: bigint,
+  recipient: RingAddress | RingPaymentRequest,
+): void {
   if (recipient instanceof RingAddress) return;
   const asset = params.asset ?? SOL_MINT;
-  if (recipient.amount !== undefined && recipient.amount !== params.amount)
+  if (recipient.amount !== undefined && recipient.amount !== amount)
     throw ringIntentMismatch("amount");
   if (recipient.mint !== undefined && recipient.mint !== asset) throw ringIntentMismatch("asset");
 }

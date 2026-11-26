@@ -9,6 +9,7 @@ import { compileUnsignedTransaction, encodeBase58 } from "@heliuslabs/spr/intern
 import { ringComputeUnitLimit } from "../../../src/operations/management/admin.js";
 import { SIZE_PROBE_LIFETIME } from "../../../src/operations/workflow/compile.js";
 import { FunderApproval } from "../../../src/proof/cosign.js";
+import { PendingRelaySignature } from "../../../src/rpc/relay.js";
 import { anonymousPartyIdentities } from "../../../src/protocol/membership/parties.js";
 import { ringAuthAddress, ringPolicyAddress } from "../../../src/protocol/pda/index.js";
 import { RingInstructionTag } from "../../../src/protocol/transaction/instruction-tag.js";
@@ -104,6 +105,27 @@ describe("a public funder's check", () => {
       relayId: RELAY_ID,
       message: bytes,
       terms: terms([{ amount: 5n }]),
+      config: { mode: "confidential" },
+    }).pending();
+    expect(pending.verify(FUNDER).signer).toBe(FUNDER);
+  });
+
+  it("signs a sealed deposit frame through the funder's own terms and the returned message", async () => {
+    const bytes = await message({ transfers: [solLeg(5n)], groups: solGroup });
+    const named = terms([{ amount: 5n }]);
+    const sealed = new PendingRelaySignature(RELAY_ID, bytes, {
+      kind: "sealed",
+      terms: [],
+      funders: [named],
+      chargedOutflows: [],
+    });
+    expect(() => sealed.verify(FUNDER)).toThrow("RING_RELAY_MESSAGE_INVALID");
+    const funder = sealed.funderTerms(FUNDER);
+    if (funder === undefined) throw new Error("no funder terms");
+    const pending = await new FunderApproval({
+      relayId: RELAY_ID,
+      message: sealed.message(),
+      terms: funder,
       config: { mode: "confidential" },
     }).pending();
     expect(pending.verify(FUNDER).signer).toBe(FUNDER);

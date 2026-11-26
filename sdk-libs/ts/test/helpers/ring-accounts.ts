@@ -56,14 +56,18 @@ export async function sppRingRegistration(
     ringProgramId: Address;
     activated?: boolean;
     paused?: boolean;
+    /** Follows `activated` as creation sets both, governance can set it apart. */
+    authorityRail?: boolean;
   }>,
 ): Promise<readonly [Address, RpcAccount]> {
+  const activated = input.activated !== false;
   const data = new Uint8Array(69);
   data[0] = StateDiscriminator.ringConfig;
   data.set(addressBytes(input.authority), 1);
   data.set(addressBytes(input.ringProgramId), 33);
+  data[65] = (input.authorityRail ?? activated) ? 1 : 0;
   data[66] = input.paused === true ? 1 : 0;
-  data[67] = input.activated === false ? 0 : 1;
+  data[67] = activated ? 1 : 0;
   return [await ringAuthAddress(input.ringProgramId), ownedAccount(SHIELDED_POOL_PROGRAM_ID, data)];
 }
 

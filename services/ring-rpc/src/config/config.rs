@@ -60,7 +60,7 @@ pub struct ServeArgs {
     #[arg(
         long,
         env = "RING_RPC_INDEXER_URL",
-        default_value = "http://127.0.0.1:8784"
+        default_value = "http://127.0.0.1:8786"
     )]
     pub indexer_url: String,
     #[arg(

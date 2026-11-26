@@ -79,16 +79,25 @@ export async function fetchRingCoSignerRecord(
   return record;
 }
 
-/** Rust `CustomRing::require_active`, every SPP call through the ring refuses one unregistered, inactive or paused. */
-export async function requireActiveRing(
-  client: AccountReader,
+/** The flags of SPP's `RingConfig`, the account at the ring's `ring_auth` address. */
+export interface SppRingConfig {
+  /** Set at creation on a pool with permissionless activation, by governance on any other pool. */
+  readonly activated: boolean;
+  /** The pauser stopped every operational ring instruction. */
+  readonly paused: boolean;
+  /** The ring authority rail is open, set with `activated` at creation and by governance after. */
+  readonly ringAuthorityTransactIsEnabled: boolean;
+}
+
+/** `undefined` while the pool holds no config for the ring. */
+export async function fetchSppRingConfig(
+  rpc: AccountReader,
   ringProgramId: Address,
   context?: RequestContext,
-): Promise<void> {
+): Promise<SppRingConfig | undefined> {
   const address = await ringAuthAddress(ringProgramId);
-  const account = await client.getAccount(address, context);
-  if (account === undefined)
-    throw new RingError("RING_NOT_REGISTERED", { details: { ringProgramId } });
+  const account = await rpc.getAccount(address, context);
+  if (account === undefined) return undefined;
   if (account.owner !== SHIELDED_POOL_PROGRAM_ID)
     throw new RingError("RING_CONFIG_INVALID", { details: { ringProgramId, address } });
   let registration;
@@ -99,6 +108,22 @@ export async function requireActiveRing(
   }
   if (registration.programId !== ringProgramId)
     throw new RingError("RING_CONFIG_INVALID", { details: { ringProgramId, address } });
+  return Object.freeze({
+    activated: registration.activated,
+    paused: registration.paused,
+    ringAuthorityTransactIsEnabled: registration.ringAuthorityTransactIsEnabled,
+  });
+}
+
+/** Rust `CustomRing::require_active`, every SPP call through the ring refuses one unregistered, inactive or paused. */
+export async function requireActiveRing(
+  client: AccountReader,
+  ringProgramId: Address,
+  context?: RequestContext,
+): Promise<void> {
+  const registration = await fetchSppRingConfig(client, ringProgramId, context);
+  if (registration === undefined)
+    throw new RingError("RING_NOT_REGISTERED", { details: { ringProgramId } });
   if (!registration.activated)
     throw new RingError("RING_NOT_ACTIVATED", { details: { ringProgramId } });
   if (registration.paused) throw new RingError("RING_PAUSED", { details: { ringProgramId } });

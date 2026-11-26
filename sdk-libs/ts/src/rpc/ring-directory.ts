@@ -22,13 +22,15 @@ export interface RegisteredRing {
   /** The ring's own program. This is what a utxo's `ringProgramId` names. */
   readonly programId: Address;
   readonly authority: Address;
+  /** The ring authority rail is open, set with `activated` at creation and by governance after. */
   readonly ringAuthorityTransactIsEnabled: boolean;
   /** Every operational ring instruction is refused while this is set. */
   readonly paused: boolean;
   /**
-   * Whether governance has admitted this ring. An unactivated ring refuses
-   * every operational instruction, so a caller choosing a deposit target
-   * should filter on this as deliberately as on `paused`.
+   * Set at creation on a pool with permissionless activation, by governance on
+   * any other pool. An unactivated ring refuses every operational instruction,
+   * so a caller choosing a deposit target should filter on this as deliberately
+   * as on `paused`.
    */
   readonly activated: boolean;
 }

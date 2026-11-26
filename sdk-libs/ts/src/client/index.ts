@@ -3,6 +3,15 @@ export {
   createCustomRingClient,
   type CustomRingClientConfig,
 } from "../rpc/client.js";
+export {
+  RING_FEATURES,
+  ringCapabilities,
+  type RingCapabilities,
+  type RingCapability,
+  type RingCapabilityClient,
+  type RingCapabilityReason,
+  type RingFeature,
+} from "../rpc/ring-capabilities.js";
 export { ringInputOpening, ringOutputOpening } from "../rpc/prover/assembly.js";
 export { customRingProof } from "../rpc/prover/proof.js";
 export { CUSTOM_RING_PROOF_LENGTH } from "../protocol/proof/custom-ring-proof.js";

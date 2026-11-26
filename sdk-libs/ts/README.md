@@ -80,8 +80,9 @@ Set a Ring up in this order.
 3. `initializeRingInstruction`, signed by the upgrade authority, stores the
    auditor key and the tier, binds the records, pins a policy Ring's rule table
    and registers the Ring with the pool.
-4. On a permissioned pool the governance authority activates the Ring with
-   `getSetRingActivationInstructionAsync` from `@heliuslabs/spr/instructions`.
+4. On a permissioned pool the governance authority activates the Ring and
+   opens its authority rail with `getSetRingActivationInstructionAsync` from
+   `@heliuslabs/spr/instructions`. A permissionless pool sets both at creation.
 5. `AuthorityRecordUpdate` fills the lists through `RingRpc.submitRecordUpdate`.
 
 A wallet sends its operations through the Ring RPC relay by default, or
