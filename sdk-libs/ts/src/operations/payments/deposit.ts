@@ -23,11 +23,7 @@ import {
   splInterfaceWithBump,
   type SignerAccount,
 } from "@heliuslabs/spr/internal";
-import {
-  SHIELDED_POOL_PROGRAM_ID,
-  SPL_TOKEN_PROGRAM_ID,
-  decodeSplAssetRegistry,
-} from "@heliuslabs/spr/interface";
+import { decodeSplAssetRegistry } from "@heliuslabs/spr/interface";
 import type { Address, Bytes32, RequestContext, Transaction } from "@heliuslabs/spr/interface";
 import {
   NullifierKey,
@@ -196,7 +192,6 @@ export class PreparedRingDeposit {
           ...(params.cosigner === undefined ? {} : { coSigners: [signerAddress(params.cosigner)] }),
         },
         context,
-        "indexed",
       );
     } catch (cause) {
       throw wrapRingError("RING_BUILD_DEPOSIT", cause);
@@ -216,7 +211,6 @@ export class PreparedRingDeposit {
       const prepared = await PreparedRingDeposit.#frame(
         { ...params, feePayer: quote.feePayer },
         context,
-        "relay",
       );
       const intent = prepared.intent();
       const approval = await (params.approve ?? approveUnattended)({
@@ -285,6 +279,10 @@ export class PreparedRingDeposit {
     review: (proven: ProvenRingTransfer) => Promise<void> | void,
     context?: RequestContext,
   ): Promise<ProvenRingTransfer> {
+    if (client.proofDataSource !== "prover")
+      throw new RingError("RING_DEPOSIT_PROOF_DATA_SOURCE", {
+        details: { proofDataSource: client.proofDataSource },
+      });
     const proven = await this.proveTransfer(client, context);
     await review(proven);
     return proven;
@@ -292,10 +290,6 @@ export class PreparedRingDeposit {
 
   /** @internal A second proof is refused, a retry prepares a new frame. */
   proveTransfer(client: RingDepositClient, context?: RequestContext): Promise<ProvenRingTransfer> {
-    if (client.proofDataSource !== "prover")
-      throw new RingError("RING_DEPOSIT_PROOF_DATA_SOURCE", {
-        details: { proofDataSource: client.proofDataSource },
-      });
     if (this.#proved) throw new RingError("RING_DEPOSIT_FRAME_REUSED");
     this.#proved = true;
     return this.#rail.prove(client, context);
@@ -316,7 +310,6 @@ export class PreparedRingDeposit {
     params: Omit<RingDepositParams, "depositor" | "cosigner"> &
       Readonly<{ depositor: SignerAccount; coSigners?: readonly Address[] }>,
     context: RequestContext | undefined,
-    route: "indexed" | "relay",
   ): Promise<PreparedRingDeposit> {
     await initializePoseidon();
     const { client, ringProgramId } = params;
@@ -350,9 +343,6 @@ export class PreparedRingDeposit {
       nullifierKey.publicKey(),
       fresh.viewingKey().publicKey(),
     );
-    // This narrowly ports local indexed preparation, not the relay release.
-    if (route !== "indexed")
-      throw new RingError("RING_BUILD_DEPOSIT", { details: { reason: "deposit unavailable" } });
     const transfer = ConfidentialTransfer.newDeposit(sender, outputTree.treeId, params.feePayer);
     // 2. One public leg funds the output, the funder signs the leg's accounts.
     let deposit: TransactDeposit;
@@ -362,10 +352,6 @@ export class PreparedRingDeposit {
       deposit = { kind: "sol", funder: params.depositor };
     } else {
       const { mint, sourceTokenAccount, tokenProgram } = settlement.accounts;
-      if (tokenProgram !== SPL_TOKEN_PROGRAM_ID)
-        throw new RingError("RING_BUILD_DEPOSIT", {
-          details: { reason: "composed deposit requires legacy SPL funding" },
-        });
       const [splTokenInterface, splInterfaceBump] = await splInterfaceWithBump(mint);
       source = { kind: "spl", sourceTokenAccount, splInterfaceBump };
       deposit = {
@@ -510,8 +496,7 @@ async function depositAssets(
 ): Promise<AssetRegistry> {
   if (asset === SOL_MINT) return new AssetRegistry();
   const account = await client.getAccount(await splAssetRegistryAddress(asset), context);
-  const registry =
-    account?.owner === SHIELDED_POOL_PROGRAM_ID ? decodeSplAssetRegistry(account.data) : undefined;
+  const registry = account === undefined ? undefined : decodeSplAssetRegistry(account.data);
   if (registry?.mint !== asset)
     throw new RingError("RING_BUILD_DEPOSIT", { details: { reason: "unregistered mint", asset } });
   return new AssetRegistry([[registry.assetId, asset]]);

@@ -18,8 +18,10 @@ type AuditHead struct {
 	// Envelope and Keys are the transmitted envelope and recipient key ciphertexts, their digest head element 7.
 	Envelope []byte
 	Keys     []byte
-	Salt     [16]byte
-	Layout   int64
+	// Voucher is the transmitted voucher region, empty off a vouched frame.
+	Voucher []byte
+	Salt    [16]byte
+	Layout  int64
 }
 
 // ElementsUnder is the head under domain.
@@ -27,9 +29,13 @@ func (h AuditHead) ElementsUnder(t testing.TB, domain int64) []*big.Int {
 	t.Helper()
 	txLo, txHi := ringprotocol.Pack33(ringprotocol.Tagged(h.TxViewingU[:]))
 	auditorLo, auditorHi := ringprotocol.Pack33(h.AuditorPubkey)
+	voucher := new(big.Int)
+	if len(h.Voucher) != 0 {
+		voucher = ringtest.HashBytes(t, h.Voucher)
+	}
 	return []*big.Int{
 		big.NewInt(domain), h.FirstNullifier, h.RingProgramID, txLo, txHi,
-		auditorLo, auditorHi, ringtest.MustPoseidonHash(t, ringprotocol.EnvelopeDigest(t, h.Envelope), ringprotocol.EnvelopeDigest(t, h.Keys)), new(big.Int).SetBytes(h.Salt[:]), big.NewInt(h.Layout),
+		auditorLo, auditorHi, ringtest.MustPoseidonHash(t, ringprotocol.EnvelopeDigest(t, h.Envelope), ringprotocol.EnvelopeDigest(t, h.Keys), voucher), new(big.Int).SetBytes(h.Salt[:]), big.NewInt(h.Layout),
 	}
 }
 
@@ -37,6 +43,8 @@ func (h AuditHead) ElementsUnder(t testing.TB, domain int64) []*big.Int {
 type StatementOutput struct {
 	Record  []byte
 	Omitted bool
+	// Exit is the frame's claim, the cell's tag.
+	Exit bool
 }
 
 // SignerChain mirrors transfer.OpenSigners over a run of the key's slots, zero at a count of zero.
@@ -63,14 +71,14 @@ func OutputCount(outputs []StatementOutput) int {
 	return count
 }
 
-// RecordChain mirrors record_chain, zero past m.
+// RecordChain mirrors record_chain, each cell Poseidon(exit, hash_bytes(record)) and zero past m.
 func RecordChain(t testing.TB, outputs []StatementOutput) *big.Int {
 	t.Helper()
 	hashes := make([]*big.Int, len(outputs))
 	for i, output := range outputs {
 		hashes[i] = big.NewInt(0)
 		if !output.Omitted {
-			hashes[i] = ringtest.HashBytes(t, output.Record)
+			hashes[i] = ringtest.MustPoseidonHash(t, big.NewInt(ringtest.Bit(output.Exit)), ringtest.HashBytes(t, output.Record))
 		}
 	}
 	return spptest.MustHashChain4(t, hashes)

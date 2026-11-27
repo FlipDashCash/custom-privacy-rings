@@ -428,6 +428,18 @@ impl EnrollOwners<'_> {
             })?;
             send(env.client.rpc(), &env.payer, &proven.instructions)?;
         }
+        self.wait_applied()
+    }
+
+    pub fn submit(self, rpc: &custom_ring_cli::RingRpcClient) -> Result<()> {
+        for write in self.signed_writes()? {
+            rpc.submit_enrollment(write)?;
+        }
+        self.wait_applied()
+    }
+
+    fn wait_applied(&self) -> Result<()> {
+        let env = self.env;
         // The indexer serves every leaf at the owner's viewing key on return, a lagging read answers later.
         wait_for("the applied enrollments", || {
             for owner in self.owners {
@@ -488,11 +500,15 @@ impl EnrollOwners<'_> {
     }
 }
 
+pub fn actor_owners(env: &TestEnv) -> [&ShieldedKeypair; 2] {
+    [&env.sender.keypair, &env.recipient.keypair]
+}
+
 /// A keyed note needs its owner's tracking row on every ring.
 pub fn enroll_actors(env: &TestEnv, ring: CustomRing) -> Result<()> {
     EnrollOwners {
         ring,
-        owners: &[&env.sender.keypair, &env.recipient.keypair],
+        owners: &actor_owners(env),
         env,
     }
     .send()

@@ -6,17 +6,27 @@ pub(crate) fn signature_fees(signatures: usize) -> u64 {
         .saturating_mul(LAMPORTS_PER_SIGNATURE)
 }
 
+use std::str::FromStr;
+
 use async_trait::async_trait;
 use custom_ring_sdk::SignatureHistory;
 use solana_address::Address;
 use solana_commitment_config::{CommitmentConfig, CommitmentLevel};
 use solana_hash::Hash;
 use solana_message::VersionedMessage;
-use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
+use solana_rpc_client_api::{
+    client_error::{Error as RpcClientError, ErrorKind},
+    config::RpcSimulateTransactionConfig,
+    custom_error::JSON_RPC_SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE,
+    request::RpcError,
+};
 use solana_signature::Signature;
 use solana_transaction::versioned::VersionedTransaction;
 use solana_transaction_error::TransactionError;
-use solana_transaction_status_client_types::{TransactionConfirmationStatus, TransactionStatus};
+use solana_transaction_status_client_types::{
+    TransactionConfirmationStatus, TransactionStatus, UiInnerInstructions, UiInstruction,
+    UiParsedInstruction,
+};
 use spr_client::{AsyncRpc, AsyncSolanaRpc, ClientError, RpcSendTransactionConfig};
 
 use crate::{error::RingRpcError, relay::RelayError};
@@ -47,8 +57,17 @@ pub trait ChainSubmit: Send + Sync {
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Simulation {
-    Passed,
+    Passed { calls: Vec<InnerCall> },
     Refused { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InnerCall {
+    /// Index of the top-level instruction the call ran under.
+    pub position: u8,
+    pub program: Address,
+    pub accounts: Vec<Address>,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,6 +107,45 @@ impl From<(Hash, u64)> for LatestBlockhash {
             blockhash,
             last_valid_block_height,
         }
+    }
+}
+
+impl InnerCall {
+    /// `None` on an index outside the message keys or text outside base58.
+    fn decode(
+        message: &VersionedMessage,
+        simulated: Vec<UiInnerInstructions>,
+    ) -> Option<Vec<Self>> {
+        let keys = message.static_account_keys();
+        let key = |index: &u8| keys.get(usize::from(*index)).copied();
+        let address = |text: &String| Address::from_str(text).ok();
+        let bytes = |text: &str| bs58::decode(text).into_vec().ok();
+        let mut calls = Vec::new();
+        for group in simulated {
+            for instruction in group.instructions {
+                let (program, accounts, data) = match instruction {
+                    UiInstruction::Compiled(call) => (
+                        key(&call.program_id_index)?,
+                        call.accounts.iter().map(key).collect::<Option<_>>()?,
+                        bytes(&call.data)?,
+                    ),
+                    UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(call)) => (
+                        address(&call.program_id)?,
+                        call.accounts.iter().map(address).collect::<Option<_>>()?,
+                        bytes(&call.data)?,
+                    ),
+                    // The node parses only calls of the programs it knows, their bytes are gone.
+                    UiInstruction::Parsed(UiParsedInstruction::Parsed(_)) => continue,
+                };
+                calls.push(Self {
+                    position: group.index,
+                    program,
+                    accounts,
+                    data,
+                });
+            }
+        }
+        Some(calls)
     }
 }
 
@@ -153,24 +211,13 @@ impl ChainSubmit for SolanaChain {
             preflight_commitment: Some(CommitmentLevel::Confirmed),
             ..RpcSendTransactionConfig::default()
         };
-        let Err(error) = self
+        match self
             .rpc
             .send_transaction_with_config(transaction, config)
             .await
-        else {
-            return Ok(());
-        };
-        let refusal = match &error {
-            ClientError::SolanaRpcTransaction { source, .. } => source.get_transaction_error(),
-            _ => None,
-        };
-        match refusal {
-            Some(TransactionError::AlreadyProcessed) => Ok(()),
-            Some(refused) => Err(RelayError::SendRefused {
-                reason: refused.to_string(),
-            }
-            .into()),
-            None => Err(error.into()),
+        {
+            Ok(_) => Ok(()),
+            Err(error) => send_refusal(error),
         }
     }
 
@@ -198,6 +245,7 @@ impl ChainSubmit for SolanaChain {
             sig_verify: false,
             replace_recent_blockhash: true,
             commitment: Some(CommitmentConfig::confirmed()),
+            inner_instructions: true,
             ..RpcSimulateTransactionConfig::default()
         };
         let simulated = self
@@ -207,13 +255,40 @@ impl ChainSubmit for SolanaChain {
             .await
             .map_err(|error| ClientError::Rpc(format!("simulate_transaction: {error}")))?
             .value;
-        Ok(match simulated.err {
-            None => Simulation::Passed,
-            Some(error) => Simulation::Refused {
+        if let Some(error) = simulated.err {
+            return Ok(Simulation::Refused {
                 reason: error.to_string(),
-            },
-        })
+            });
+        }
+        let calls = InnerCall::decode(message, simulated.inner_instructions.unwrap_or_default())
+            .ok_or_else(|| ClientError::Rpc("simulate_transaction: inner instructions".into()))?;
+        Ok(Simulation::Passed { calls })
     }
+}
+
+fn send_refusal(error: ClientError) -> Result<(), RingRpcError> {
+    let ClientError::SolanaRpcTransaction { source, .. } = &error else {
+        return Err(error.into());
+    };
+    match source.get_transaction_error() {
+        Some(TransactionError::AlreadyProcessed) => Ok(()),
+        _ if surfpool_already_processed(source) => Ok(()),
+        Some(refused) => Err(RelayError::SendRefused {
+            reason: refused.to_string(),
+        }
+        .into()),
+        None => Err(error.into()),
+    }
+}
+
+/// Surfpool names a resent landed transaction only in the text of its preflight failure.
+fn surfpool_already_processed(error: &RpcClientError) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::RpcError(RpcError::RpcResponseError { code, message, .. })
+            if *code == JSON_RPC_SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE
+                && message.contains("already been processed")
+    )
 }
 
 fn finalized_outcome(status: TransactionStatus) -> Option<ChainOutcome> {
@@ -245,7 +320,7 @@ mod tests {
             &self,
             _message: &solana_message::VersionedMessage,
         ) -> Result<Simulation, RingRpcError> {
-            Ok(Simulation::Passed)
+            Ok(Simulation::Passed { calls: Vec::new() })
         }
 
         async fn account_data(
@@ -309,6 +384,71 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_inner_call_reads_the_same_from_indices_and_from_addresses() {
+        use solana_transaction_status_client_types::{
+            ParsedInstruction, UiCompiledInstruction, UiPartiallyDecodedInstruction,
+        };
+
+        let keys = [1, 2, 3].map(|seed| Address::new_from_array([seed; 32]));
+        let message = VersionedMessage::Legacy(solana_message::Message {
+            account_keys: keys.to_vec(),
+            ..solana_message::Message::default()
+        });
+        let data = bs58::encode([9, 8]).into_string();
+        let compiled = UiInstruction::Compiled(UiCompiledInstruction {
+            program_id_index: 2,
+            accounts: vec![1, 0],
+            data: data.clone(),
+            stack_height: Some(2),
+        });
+        let addressed = |accounts: [Address; 2]| {
+            UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(
+                UiPartiallyDecodedInstruction {
+                    program_id: keys[2].to_string(),
+                    accounts: accounts.iter().map(Address::to_string).collect(),
+                    data: data.clone(),
+                    stack_height: Some(2),
+                },
+            ))
+        };
+        let parsed = UiInstruction::Parsed(UiParsedInstruction::Parsed(ParsedInstruction {
+            program: "system".to_owned(),
+            program_id: keys[0].to_string(),
+            parsed: serde_json::Value::Null,
+            stack_height: Some(3),
+        }));
+        let under = |index, instructions| UiInnerInstructions {
+            index,
+            instructions,
+        };
+        let call = |position| InnerCall {
+            position,
+            program: keys[2],
+            accounts: vec![keys[1], keys[0]],
+            data: vec![9, 8],
+        };
+        let simulated = vec![
+            under(0, vec![compiled.clone(), parsed]),
+            under(3, vec![addressed([keys[1], keys[0]])]),
+        ];
+        assert_eq!(
+            InnerCall::decode(&message, simulated),
+            Some(vec![call(0), call(3)])
+        );
+
+        let outside = UiInstruction::Compiled(UiCompiledInstruction {
+            program_id_index: 3,
+            accounts: Vec::new(),
+            data,
+            stack_height: None,
+        });
+        assert_eq!(
+            InnerCall::decode(&message, vec![under(0, vec![outside])]),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn unfinalized_success_and_failure_keep_the_attempt_pending() {
         for confirmation in [
@@ -367,6 +507,22 @@ mod tests {
                 Landing::Landed(expected),
             );
         }
+    }
+
+    #[test]
+    fn a_surfpool_resend_of_a_landed_transaction_counts_as_sent() {
+        let preflight = |message: &str| ClientError::SolanaRpcTransaction {
+            operation: "send_transaction_with_config",
+            source: ErrorKind::RpcError(RpcError::RpcResponseError {
+                code: JSON_RPC_SERVER_ERROR_SEND_TRANSACTION_PREFLIGHT_FAILURE,
+                message: message.to_owned(),
+                data: solana_rpc_client_api::request::RpcResponseErrorData::Empty,
+            })
+            .into(),
+        };
+        let landed = r#"Transaction verification failed for transaction Internal error: "Transaction error: This transaction has already been processed""#;
+        assert!(send_refusal(preflight(landed)).is_ok());
+        assert!(send_refusal(preflight("Transaction simulation failed")).is_err());
     }
 
     #[tokio::test]

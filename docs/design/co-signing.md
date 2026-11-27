@@ -12,6 +12,7 @@ A ring bounds what moves in three places. The ring program checks co-signer appr
 - Each signer must cover a class the earlier signers left. An unrelated record covers nothing and is refused.
 - One record may cover several classes, and separate signers may cover separate classes.
 - A co-signer differs from every owner in the run and from the in-proof owner. The party check refuses a hidden owner as its own approver.
+- A co-signer signs the transaction, or approves one call of a program with `ApproveTransfer`, see [program owners](owner-rails.md#program-owners).
 - Ring RPC co-signs only with its own key and only for classes its `approve` set names. An empty set refuses every operation but a delegate frame.
 
 ## Limits in the transfer proof
@@ -46,7 +47,7 @@ As an example, S spends 1000, deposits 1000, returns 1000 to S and exits 1000 to
 - The sender cap counts one owner's outflow. The volume cap counts what the ring moves.
 - Ring RPC checks them when it decides whether to co-sign, and the program checks only the co-signature.
 - Ring RPC derives each row from the frame it signs. It refuses an input it cannot name with `LimitsUnavailable`, and it refuses an asset without a record.
-- A co-signed message contains one ring instruction, and Ring RPC refuses a second relevant instruction. It also refuses a message that is not version 1.
+- A co-signed message contains one ring instruction, and Ring RPC refuses a second relevant instruction. A program transfer's message instead holds the `ApproveTransfer` instructions and the one program instruction they name. Ring RPC also refuses a message that is not version 1.
 - `owner_debits` in `program-libs/policy/src/quantities.rs` is the Rust computation. A shared vector pins it to the circuit.
 - The window read and the reservation commit in one database transaction, so no allowance is granted twice.
 - Admission reads its slot after the asset locks and before the window totals. A backward slot or a changed final slot refuses the reservation.
@@ -81,6 +82,7 @@ The lists are the centralized form of the ring's proven lists. The ring proves n
 - `coSignTransaction` takes the wallet's message and returns Ring RPC's signature or a named refusal.
 - Ring RPC simulates the message first. No co-signer rule verifies the ring proof, and the simulation runs the program's check of it.
 - The same rules then run as on a relayed transfer.
+- A program transfer adds `approvedTransfer`, the data and ordered accounts of the ring call. Ring RPC signs the `ApproveTransfer` only when its digest commits to that call and the simulation makes the call exactly once. It refuses a digest of another call with `-32164` and a call the simulation makes other than once with `-32176`.
 - Ring RPC never learns whether such a transaction landed. Its window reservation stays held and counts in each window.
 
 ### Limits of the lists

@@ -89,7 +89,7 @@ impl ChainSubmit for StubChain {
         &self,
         _message: &solana_message::VersionedMessage,
     ) -> Result<zolana_ring_rpc::Simulation, RingRpcError> {
-        Ok(zolana_ring_rpc::Simulation::Passed)
+        Ok(zolana_ring_rpc::Simulation::Passed { calls: Vec::new() })
     }
 
     async fn account_data(
@@ -292,6 +292,7 @@ impl RecordsSetup<'_> {
                 },
                 mode: RingMode::Confidential,
                 delegate: None,
+                ring_list_tag: [0; 32],
             }),
             accounts: Mutex::default(),
             sent: Mutex::default(),
@@ -304,7 +305,7 @@ impl RecordsSetup<'_> {
         let hub = Hub::builder(self.source, identity(GENESIS))
             .with_origins(origins())
             .with_store(store)
-            .with_storage_chain(chain.clone(), storage_authority())
+            .with_storage_chain(chain.clone(), Arc::new(storage_authority()))
             .with_reader_grants(self.reader_grants)
             .with_grant_rows_key(grant_rows_key())
             .local(RING, self.fixture.auditor.clone())
@@ -964,6 +965,7 @@ async fn an_invalid_mint_limits_update_is_refused_at_admission() {
             update: limits_update(limits),
             signer: authority().pubkey().into(),
             signature: Signature::default().into(),
+            unregistered_owners: Vec::new(),
         };
         assert_eq!(
             refusal(records.submit(unsigned).await),
@@ -1264,7 +1266,19 @@ struct HeldOwner {
 
 const SALTED_KEY: [u8; 32] = [0x0d; 32];
 const LIST_SALT: [u8; 32] = [0x2a; 32];
+const RING_SALT: [u8; 32] = [0x2b; 32];
 const TRACKING_REVISION: u64 = 40;
+
+fn unregistered_owner() -> Address {
+    Address::new_from_array([0x0f; 32])
+}
+
+fn ring_salted_key(owner: Address, salt: &[u8; 32]) -> [u8; 32] {
+    let member = Member::owner_tag(owner.as_array()).expect("member");
+    *Member::ring_salted(&member, salt)
+        .expect("list key")
+        .as_bytes()
+}
 
 fn salted_owner() -> Address {
     Address::new_from_array([0x0e; 32])
@@ -1283,6 +1297,11 @@ impl PrivateWrites for HeldOwner {
                 list_salt: LIST_SALT,
             }),
         )
+    }
+
+    async fn ring_salt(&self, ring: Address) -> Result<[u8; 32], RingRpcError> {
+        assert_eq!(ring, RING);
+        Ok(RING_SALT)
     }
 
     async fn prove(
@@ -1348,6 +1367,87 @@ async fn a_salted_owner_write_sends_its_tracking_revision_and_the_pinned_registr
 async fn a_salted_owner_write_without_a_private_write_source_sends_nothing() {
     let records = Records::new().await;
     records.submit_salted_write().await;
+
+    records.writer.flush().await.expect("flush");
+
+    assert!(records.chain.sent.lock().unwrap().is_empty());
+}
+
+impl Records {
+    fn commit_ring_salt(&self, salt: &[u8; 32]) {
+        let tag = custom_ring_interface::domain::list_tag(salt).expect("tag");
+        self.policy(|policy| policy.ring_list_tag = tag);
+    }
+
+    fn unregistered_write(&self, key: [u8; 32]) -> SubmitRecordUpdateRequest {
+        signed(
+            &authority(),
+            vec![
+                list_write(SALTED_KEY, ListId::PrivateBlock),
+                list_write(key, ListId::PrivateBlock),
+            ],
+        )
+        .with_unregistered_owners(&[unregistered_owner()])
+    }
+}
+
+#[tokio::test]
+async fn an_unregistered_owner_write_lands_under_the_ring_salt_beside_a_registered_one() {
+    let records = Records::new().await;
+    let held = records.serve_salted_owner();
+    records.commit_ring_salt(&RING_SALT);
+    let key = ring_salted_key(unregistered_owner(), &RING_SALT);
+    records
+        .submit(records.unregistered_write(key))
+        .await
+        .expect("queued");
+
+    let flushed = records.flushed().await;
+
+    assert_eq!(flushed.members, [SALTED_KEY, key]);
+    assert_eq!(
+        *held.proved.lock().unwrap(),
+        [
+            (0, salted_owner(), LIST_SALT),
+            (1, unregistered_owner(), RING_SALT)
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_unregistered_owner_write_is_refused_off_the_committed_ring_salt() {
+    let records = Records::new().await;
+    records.serve_salted_owner();
+    let key = ring_salted_key(unregistered_owner(), &RING_SALT);
+    let refused = |request| async { refusal(records.submit(request).await) };
+
+    let uncommitted = RecordUpdateRefusal::RingSaltNotCommitted.code();
+    assert_eq!(refused(records.unregistered_write(key)).await, uncommitted);
+    records.commit_ring_salt(&[0x2c; 32]);
+    assert_eq!(refused(records.unregistered_write(key)).await, uncommitted);
+
+    records.commit_ring_salt(&RING_SALT);
+    let other_salt = ring_salted_key(unregistered_owner(), &[0x2c; 32]);
+    assert_eq!(
+        refused(records.unregistered_write(other_salt)).await,
+        RecordUpdateRefusal::UnregisteredOwnerUnmatched.code()
+    );
+    assert!(records.chain.sent.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_ring_salted_write_with_no_named_owner_sends_nothing() {
+    let records = Records::new().await;
+    records.serve_salted_owner();
+    records.commit_ring_salt(&RING_SALT);
+    let key = ring_salted_key(unregistered_owner(), &RING_SALT);
+    records
+        .submit(signed(
+            &authority(),
+            vec![list_write(key, ListId::PrivateBlock)],
+        ))
+        .await
+        .expect("queued");
 
     records.writer.flush().await.expect("flush");
 

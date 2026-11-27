@@ -12,7 +12,7 @@ use zolana_ring_client::rpc::RelayId;
 use zolana_ring_policy::Member;
 
 use crate::{
-    cosign::{AssetFlow, CoSignFlows, OwnerFlow},
+    cosign::{AssetFlow, CoSignFlows, OwnerFlow, Ticket},
     relay_submit::CollectedSignature,
 };
 
@@ -50,7 +50,7 @@ pub(crate) enum RelayState {
     },
 }
 
-/// A stored one awaits at least one wallet signer and reserves no co-sign allowance.
+/// A stored one awaits at least one wallet signer, it holds a co-sign allowance only after a failed co-signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Awaiting {
     pub signatures: Vec<CollectedSignature>,
@@ -168,6 +168,21 @@ impl RelayRevision {
     }
 }
 
+impl RelayRecord {
+    /// `None` until the co-signer signed, bound to the required signer the co-signature verifies under.
+    pub fn ticket(&self) -> Option<Ticket> {
+        let co_signature = self.state.co_signature()?;
+        let bytes = self.message.serialize();
+        let required = usize::from(self.message.header().num_required_signatures);
+        self.message
+            .static_account_keys()
+            .iter()
+            .take(required)
+            .find(|signer| co_signature.verify(signer.as_ref(), &bytes))
+            .map(|signer| Ticket::of(signer, &self.message))
+    }
+}
+
 impl RelayState {
     /// A relay awaiting no wallet signer goes to `Sent`, only with the closing signatures.
     pub fn open(awaiting: Awaiting, closing: Option<Closing>) -> Result<Self, TransitionError> {
@@ -206,7 +221,7 @@ impl RelayState {
                 reason,
                 co_signature: sent.co_signature,
             },
-            // An expired message never reached the co-signer, it holds no allowance.
+            // An expired message carries no co-signature, `transition` frees an unsigned admission.
             (Self::AwaitingSignature(_), RelayEvent::Dropped { reason }) => Self::Failed {
                 reason,
                 co_signature: None,
@@ -614,6 +629,9 @@ fn corrupt(column: &str) -> DbErr {
 
 #[cfg(test)]
 mod tests {
+    use solana_instruction::{AccountMeta, Instruction};
+    use solana_keypair::Keypair;
+    use solana_signer::Signer;
     use spr_client::{compile_message, ComputeBudgetConfig};
 
     use super::*;
@@ -730,6 +748,57 @@ mod tests {
         let stored = relays.get(&id).await.expect("read").expect("row");
         assert_eq!(stored.revision, RelayRevision(1));
         assert_eq!(stored.record.state, expired);
+    }
+
+    #[test]
+    fn a_ticket_names_the_required_signer_the_co_signature_verifies_under() {
+        let [wallet, co_signer, stranger, unsigned] =
+            [11, 12, 13, 14].map(|seed| Keypair::new_from_array([seed; 32]));
+        let instruction = Instruction {
+            program_id: Address::new_from_array([3; 32]),
+            accounts: vec![
+                AccountMeta::new_readonly(wallet.pubkey(), true),
+                AccountMeta::new_readonly(co_signer.pubkey(), true),
+                AccountMeta::new_readonly(unsigned.pubkey(), false),
+            ],
+            data: Vec::new(),
+        };
+        let message = compile_message(
+            &FEE_PAYER,
+            &[instruction],
+            Default::default(),
+            ComputeBudgetConfig::new(1),
+        )
+        .expect("message");
+        let record = |state| RelayRecord {
+            message: message.clone(),
+            last_valid_block_height: 1,
+            state,
+        };
+        let sent = |signer: Option<&Keypair>| {
+            let co_signature = signer.map(|signer| signer.sign_message(&message.serialize()));
+            record(RelayState::Sent(SentAttempt {
+                signature: Signature::from([9; 64]),
+                signatures: Vec::new(),
+                co_signature,
+            }))
+        };
+        let co_signed = Some(Ticket::of(&co_signer.pubkey(), &message));
+
+        assert_eq!(record(awaiting(&[wallet.pubkey()])).ticket(), None);
+        assert_eq!(sent(None).ticket(), None);
+        assert_eq!(sent(Some(&co_signer)).ticket(), co_signed);
+        assert_eq!(
+            sent(Some(&wallet)).ticket(),
+            Some(Ticket::of(&wallet.pubkey(), &message))
+        );
+        assert_eq!(sent(Some(&stranger)).ticket(), None);
+        assert_eq!(sent(Some(&unsigned)).ticket(), None);
+        let failed = record(RelayState::Failed {
+            reason: "expired".to_owned(),
+            co_signature: Some(co_signer.sign_message(&message.serialize())),
+        });
+        assert_eq!(failed.ticket(), co_signed);
     }
 
     /// Deposit legs sum past `u64::MAX`, the stored amounts read back exact.

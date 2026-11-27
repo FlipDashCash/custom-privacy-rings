@@ -15,6 +15,8 @@ export { ringAuthAddress, ringCoSignerAddress, ringPolicyAddress } from "../prot
 export {
   CUSTOM_RING_PROOF_LENGTH,
   GRACE_SLOTS,
+  RING_COSIGN_APPROVE_OUTFLOW,
+  RING_COSIGN_APPROVE_WITHDRAWAL,
   RING_COSIGN_DEPOSITS,
   RING_COSIGN_SCOPE_MASK,
   RING_COSIGN_TRANSFERS,
@@ -44,9 +46,11 @@ export {
   BPF_LOADER_UPGRADEABLE_ID,
   fetchRingCoSignerRecord,
   fetchRingPolicy,
+  fetchSppRingConfig,
   fetchStorageRegistry,
   requireActiveRing,
   ringProgramDataAddress,
+  type SppRingConfig,
 } from "../protocol/membership/config.js";
 export { ringRole, type RingRole } from "../protocol/membership/role.js";
 export { listRegisteredRings, type RegisteredRing } from "../rpc/ring-directory.js";
@@ -81,6 +85,7 @@ export {
   RENT_SYSVAR,
   RingProgramBinary,
   closeBufferInstruction,
+  closeRingProgramInstruction,
   decodeRingProgramData,
   deployRingProgram,
   deployWithMaxDataLenInstruction,
@@ -187,8 +192,8 @@ export type {
   SentPayment,
 } from "../state/anonymous-sync.js";
 export type { PlannedPayment } from "../operations/payments/output-rail.js";
-export { openRingNotes, syncRingWallet } from "../state/ring-sync.js";
-export type { RingNotes, RingSyncClient, RingSyncInput } from "../state/ring-sync.js";
+export { ringNoteCodec, syncRingWallet } from "../state/ring-sync.js";
+export type { RingNoteCodecInput, RingSyncClient, RingSyncInput } from "../state/ring-sync.js";
 export { LocalRingKeys, isRingKeys, ringWalletKeys } from "../state/ring-keys.js";
 export type {
   RingDeliveryRequest,
@@ -202,10 +207,12 @@ export type {
 export { approveRingUnattended, ringIntentHash } from "../protocol/transaction/intent.js";
 export type {
   RingAnonymousTransferIntent,
+  RingMultiTransferIntent,
   RingApprovalHandler,
   RingApprovalRequest,
   RingTransactionIntent,
 } from "../protocol/transaction/intent.js";
+export type { VouchSigner } from "../proof/vouch.js";
 export type {
   AnonymousPayment,
   AnonymousSpendSigner,
@@ -292,6 +299,7 @@ export type {
   CoSignListEntry,
   CoSignListsPage,
   CoSignSubjectKind,
+  ApprovedTransfer,
   CoSignTransactionRequest,
   CoSignTransactionResponse,
   CreateRecordsRegistryRequest,
@@ -318,8 +326,18 @@ export type {
   TokenAccountSetup,
 } from "../protocol/ring-rpc/ring-rpc-types.js";
 export { ProvenRingTransfer, ringTransactInstruction } from "../operations/workflow/pipeline.js";
+export { ProgramPlan } from "../operations/workflow/program-commitment.js";
+export type { ProgramCommitment } from "../operations/workflow/program-commitment.js";
+export {
+  MAX_TRANSFER_ACCOUNTS,
+  TransferApproval,
+  approveTransferInstruction,
+  approvedTransferCall,
+} from "../protocol/transaction/transfer-approval.js";
+export type { ApprovedTransferCall } from "../protocol/transaction/transfer-approval.js";
 export type {
   AnonymousSpendValues,
+  CoSignerForm,
   RingBoundState,
   RingProvingClient,
   RingTransactAccounts,
@@ -327,6 +345,7 @@ export type {
 } from "../operations/workflow/pipeline.js";
 export type { BoundPolicy, BoundRoot, PolicyReadClient } from "../proof/policy-proof.js";
 export {
+  MAX_RING_TRANSFER_PAYMENTS,
   buildRingEntryTransaction,
   buildRingExitTransaction,
   buildRingTransferTransaction,
@@ -335,6 +354,8 @@ export {
   createRingExitSubmission,
   createRingTransferSubmission,
   createRingWithdrawalSubmission,
+  anonymousRingTransfers,
+  ownerRingTransfers,
   prepareRingEntryRelay,
   prepareRingExitRelay,
   prepareRingTransferRelay,
@@ -354,8 +375,11 @@ export type {
   RingRelaySpendParams,
   RingEntryTransactionParams,
   RingExitTransactionParams,
+  RingMultiTransferParams,
   RingSpendParams,
   RingTransferClient,
+  RingTransfersInput,
+  RingTransferPayment,
   RingTransferTransactionParams,
   RingWithdrawalTransactionParams,
 } from "../operations/payments/transfer.js";
@@ -421,7 +445,6 @@ export type {
   AuditedRingTransaction,
   AuditedSender,
   AuditedUtxo,
-  ClaimedData,
   CreatedRingUtxo,
   InputOpening,
   KnownNote,
@@ -642,7 +665,12 @@ export {
   type TrackingRecord,
   type TrackingRegistry,
 } from "../protocol/membership/tracking.js";
-export { privateListKey, publicListKey } from "../protocol/membership/private-list.js";
+export {
+  committedRingListKey,
+  privateListKey,
+  publicListKey,
+  ringListKey,
+} from "../protocol/membership/private-list.js";
 export { listSaltOf, listTagOf } from "../crypto/keys/list-salt.js";
 export {
   ENROLLMENT_BATCH,
@@ -709,6 +737,3 @@ export {
 export { noteNullifierPublicKey, ringProofInput } from "../operations/workflow/selection.js";
 export { RECOVERY_DIAGNOSTIC_SAMPLES } from "../state/recovery-session.js";
 export type { RecoveryCoverage, RecoveryWallet } from "../state/recovery-session.js";
-
-export { PlannedSplExit } from "../operations/payments/planned-spl-exit.js";
-export type { CompositionConsumer } from "../operations/payments/transfer-rails.js";

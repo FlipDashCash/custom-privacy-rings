@@ -13,10 +13,10 @@ use custom_ring_interface::{
     stream::slot_tag,
     tag, AnonymousProofData, AppMessage, CustomRingError, CustomRingMergeIxData, CustomRingProof,
     FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees, PlainGroth16Proof, PolicyProof,
-    RecipientPayload, Replies, RingOutput, RingPolicy, RingRail, RingTransactData, RootRead,
-    SealedMergeRecord, SlotBody, EXIT_RECORD_LEN, MAX_CPI_DATA_LEN, MERGE_ENVELOPE_LEN,
-    MERGE_RECORD_LEN, MIN_REPLY_LEN, RECIPIENT_KEY_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
-    TAGGED_X25519_KEY_LEN,
+    RecipientPayload, RecordForm, RecordKind, Replies, RingOutput, RingPolicy, RingRail,
+    RingTransactData, RootRead, SealedMergeRecord, SlotBody, TransferApproval, MAX_CPI_DATA_LEN,
+    MERGE_ENVELOPE_LEN, MERGE_RECORD_LEN, MIN_REPLY_LEN, RECIPIENT_KEY_LEN, SENDER_BUNDLE_LEN,
+    TAGGED_X25519_KEY_LEN, TRANSFER_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{AccountMeta, Instruction};
@@ -54,6 +54,8 @@ const DELEGATE: Address = address(0xa8);
 const COSIGNER_RECORD: Address = address(0xac);
 const COSIGNER: Address = address(0xad);
 const TOKEN_PROGRAM: Address = address(0xab);
+const INSTRUCTIONS_SYSVAR: Address =
+    Address::from_str_const("Sysvar1nstructions1111111111111111111111111");
 
 const fn address(seed: u8) -> Address {
     Address::new_from_array([seed; 32])
@@ -131,6 +133,17 @@ impl FrameRail {
     const fn has_owner_run(self) -> bool {
         !self.rail().is_delegate()
     }
+
+    /// A PDA has no key to sign inside a proof.
+    const fn admits_program_owner(self) -> bool {
+        matches!(self, Self::Signer | Self::PublicOwners)
+    }
+
+    fn loads(self) -> impl Iterator<Item = Load> {
+        LOADS
+            .into_iter()
+            .filter(move |load| !load.program || self.admits_program_owner())
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -153,7 +166,12 @@ struct Load {
     priority_fee: bool,
     /// The last slot exits.
     every_body: bool,
+    /// A data hash in every record and an empty payload on every recipient body.
     has_data: bool,
+    /// A ring data hash in every non-exit record.
+    ring_data: bool,
+    /// `zk_ring_program` forwards the transfer, its PDA the owner, each co-signer approves at the top level.
+    program: bool,
     replies: bool,
     reply_len: usize,
     /// Every extension but the cache and the messages.
@@ -173,6 +191,8 @@ const MIN: Load = Load {
     priority_fee: false,
     every_body: false,
     has_data: false,
+    ring_data: false,
+    program: false,
     replies: false,
     reply_len: MIN_REPLY_LEN,
     extensions: false,
@@ -190,7 +210,7 @@ const FULL: Load = Load {
     every_body: true,
     ..MIN
 };
-const LOADS: [Load; 6] = [
+const LOADS: [Load; 9] = [
     MIN,
     FULL,
     Load {
@@ -211,6 +231,27 @@ const LOADS: [Load; 6] = [
     Load {
         name: "full+2tree",
         second_tree: true,
+        ..FULL
+    },
+    Load {
+        name: "full+data+ring",
+        has_data: true,
+        ring_data: true,
+        ..FULL
+    },
+    Load {
+        name: "full+data+program",
+        has_data: true,
+        program: true,
+        legs: Legs::None,
+        ..FULL
+    },
+    Load {
+        name: "full+data+ring+program",
+        has_data: true,
+        ring_data: true,
+        program: true,
+        legs: Legs::None,
         ..FULL
     },
 ];
@@ -249,16 +290,16 @@ impl Fit {
         over.join(", ")
     }
 
-    fn of(instruction: &Instruction, payer: &Address, priority_fee: bool) -> Result<Self> {
+    fn of(instructions: &[Instruction], payer: &Address, priority_fee: bool) -> Result<Self> {
         let budget = ComputeBudgetConfig::new(0);
         let budget = match priority_fee {
             true => budget.with_priority_fee(1),
             false => budget,
         };
-        let size = transaction_size(payer, std::slice::from_ref(instruction), budget)?;
-        let signers: BTreeSet<_> = instruction
-            .accounts
+        let size = transaction_size(payer, instructions, budget)?;
+        let signers: BTreeSet<_> = instructions
             .iter()
+            .flat_map(|instruction| &instruction.accounts)
             .filter(|meta| meta.is_signer)
             .map(|meta| meta.pubkey)
             .chain([*payer])
@@ -351,16 +392,16 @@ impl Transfer {
         };
         let spp_proof = proof.groth16;
         let field = [6u8; 32];
-        let record = [7u8; EXIT_RECORD_LEN];
+        let record = [7u8; TRANSFER_RECORD_LEN];
         let salt = [9u8; 16];
-        let ring_data = load.has_data.then_some([10u8; 32]);
-        // A recipient body is the record, then under `has_data` one padded payload.
-        let mut recipient_body = record[..RING_RECORD_LEN].to_vec();
+        // Under `has_data` every record publishes a data hash and a recipient body ends in one empty payload.
+        let form = RecordForm {
+            data: load.has_data,
+            ring_data: load.ring_data,
+        };
+        let mut recipient_body = record[..form.published_len(RecordKind::Ring)].to_vec();
         if load.has_data {
-            let payload = RecipientPayload {
-                ring_data_hash: ring_data,
-                data: Vec::new(),
-            };
+            let payload = RecipientPayload::default();
             recipient_body.extend(payload.encode_padded(payload.encoded_len())?);
         }
         let exit_body = vec![
@@ -371,9 +412,9 @@ impl Transfer {
                     amount: 1,
                     blinding: [11; 32],
                     ring_program_id: None,
-                    data: match ring_data {
-                        Some(hash) => Data::new(vec![DataRecord::RingData(hash.to_vec())]),
-                        None => Data::default(),
+                    data: match load.has_data {
+                        true => Data::new(vec![DataRecord::UtxoData(vec![10; 32])]),
+                        false => Data::default(),
                     },
                 }
                 .serialize()?
@@ -403,7 +444,7 @@ impl Transfer {
                     hash: &field,
                     owner_tag: slot_tag(field),
                     body,
-                    record: &record[..body.record_len()],
+                    record: &record[..body.record_len(form)],
                 }
             })
             .collect();
@@ -458,6 +499,7 @@ impl Transfer {
             extensions,
             interface_transfers,
             has_data: load.has_data,
+            ring_data: form.ring_data,
             entry: frame.entry(),
             wide_owners: TransferSpend {
                 rail,
@@ -481,6 +523,7 @@ impl Transfer {
             }),
             envelope: &[],
             recipient_keys: &[],
+            vouched: false,
             private_tx_hash: &field,
             anonymous: frame.hidden_sender().then_some(AnonymousProofData {
                 commitment: &field,
@@ -566,7 +609,7 @@ impl Transfer {
                     input_trees,
                     output_tree: input_tree,
                     ring_program_id: RING_PROGRAM,
-                    owner_signers,
+                    owner_signers: owner_signers.clone(),
                     interface_transfer_accounts: accounts,
                     data: expanded,
                 }
@@ -593,12 +636,20 @@ impl Transfer {
             config: &config,
             read,
             co_signer,
+            approved: load.program,
         }
         .metas();
         if delegate {
             metas.push(AccountMeta::new_readonly(DELEGATE, true));
         }
         metas.extend(spp);
+        if load.program {
+            // The PDA signs the inner call alone.
+            metas
+                .iter_mut()
+                .filter(|meta| owner_signers.contains(&meta.pubkey))
+                .for_each(|meta| meta.is_signer = false);
+        }
         let ring_tag = match delegate {
             true => tag::AUTHORITY_TRANSFER,
             false => tag::TRANSFER,
@@ -610,8 +661,12 @@ impl Transfer {
             accounts: metas,
             data: frame_bytes,
         };
+        let instructions = match load.program {
+            true => through_program(instruction, co_signer),
+            false => vec![instruction],
+        };
         Ok(TransferFit::Measured(Measured {
-            fit: Fit::of(&instruction, &payer, load.priority_fee)?,
+            fit: Fit::of(&instructions, &payer, load.priority_fee)?,
             frame_len,
             spp_cpi_len,
         }))
@@ -669,6 +724,37 @@ impl Transfer {
     }
 }
 
+/// Each approval, then the call as `zk_ring_program::client::ProvenInstruction` frames it.
+fn through_program(transfer: Instruction, co_signer: bool) -> Vec<Instruction> {
+    let approval = co_signer.then(|| Instruction {
+        program_id: transfer.program_id,
+        accounts: vec![
+            transfer.accounts[0].clone(),
+            AccountMeta::new_readonly(COSIGNER_RECORD, false),
+            AccountMeta::new_readonly(COSIGNER, true),
+        ],
+        data: TransferApproval {
+            position: 1,
+            digest: [17; 32],
+        }
+        .encode()
+        .into(),
+    });
+    let mut accounts = vec![AccountMeta::new_readonly(transfer.program_id, false)];
+    accounts.extend(transfer.accounts);
+    let call = Instruction {
+        program_id: zk_ring_program::ID,
+        accounts,
+        data: [
+            &[zk_ring_program::tag::UPDATE][..],
+            &[18; zk_ring_program::instruction::PROOF_LEN],
+            &transfer.data,
+        ]
+        .concat(),
+    };
+    approval.into_iter().chain([call]).collect()
+}
+
 fn ring_config(curator: bool) -> Box<RingPolicy> {
     let mut config: Box<RingPolicy> = bytemuck::zeroed_box();
     config.auditor_pubkey[0] = 4;
@@ -688,6 +774,8 @@ struct RingPrefix<'a> {
     config: &'a RingPolicy,
     read: RootRead,
     co_signer: bool,
+    /// The pair names the instructions sysvar in place of the signing co-signer.
+    approved: bool,
 }
 
 impl RingPrefix<'_> {
@@ -701,7 +789,10 @@ impl RingPrefix<'_> {
         );
         if self.co_signer {
             metas.push(AccountMeta::new_readonly(COSIGNER_RECORD, false));
-            metas.push(AccountMeta::new_readonly(COSIGNER, true));
+            metas.push(match self.approved {
+                true => AccountMeta::new_readonly(INSTRUCTIONS_SYSVAR, false),
+                false => AccountMeta::new_readonly(COSIGNER, true),
+            });
         }
         metas
     }
@@ -751,6 +842,7 @@ fn merge_fit(width: usize) -> Result<Fit> {
         config: &ring_config(true),
         read: RootRead::merge(),
         co_signer: false,
+        approved: false,
     }
     .metas();
     metas.extend(spp);
@@ -759,7 +851,7 @@ fn merge_fit(width: usize) -> Result<Fit> {
         accounts: metas,
         data: [&[tag::MERGE][..], &encoded].concat(),
     };
-    Fit::of(&instruction, &PAYER, true)
+    Fit::of(&[instruction], &PAYER, true)
 }
 
 pub fn run() -> Result<()> {
@@ -773,7 +865,7 @@ fn table() -> Result<String> {
         table,
         "Measured with the frame encoders, SPP's account builders and the v1 compiler. Ceilings {MAX_TRANSACTION_SIZE} B, {MAX_ADDRESSES} accounts, {MAX_SIGNATURES} signatures."
     )?;
-    writeln!(table, "min: tracking root, no co-signer, no leg, no fee, the payer an owner where it may be. full: own, curator and tracking roots, one co-signer, {LEGS} SOL legs, a fee, an outside payer, a body on every slot and one exit. The owner run is the ceilings' bound under full, the key's rows bound it apart. A shape's every input and output slot is published.")?;
+    writeln!(table, "min: tracking root, no co-signer, no leg, no fee, the payer an owner where it may be. full: own, curator and tracking roots, one co-signer, {LEGS} SOL legs, a fee, an outside payer, a body on every slot and one exit. data: a data hash in every record. ring: a ring data hash in every non-exit record. program: the test program forwards the transfer under its proof and takes no leg, its PDA the one owner, and the co-signer approves at the top level. The owner run is the ceilings' bound under full, the key's rows bound it apart. A shape's every input and output slot is published.")?;
     writeln!(table, "Every row is one transaction. fits: the row clears the transaction and CPI ceilings. limit: what refuses a row, rail for a shape the rail has no SPP key for, else the excess in accounts, signatures, bytes or CPI data at that row's load. A missing catalog key has no encoded measurement.")?;
     writeln!(table, "| shape | rail | load | catalog key | bytes | accounts | signatures | owner run | frame | SPP CPI | fits | limit |")?;
     writeln!(table, "|---|---|---|---|---|---|---|---|---|---|---|---|")?;
@@ -789,7 +881,7 @@ fn table() -> Result<String> {
                 )?;
                 continue;
             }
-            for load in LOADS {
+            for load in frame.loads() {
                 let transfer = Transfer {
                     frame,
                     shape,
@@ -1101,7 +1193,7 @@ mod tests {
                 if !frame.rail().supports(shape) {
                     continue;
                 }
-                for load in LOADS {
+                for load in frame.loads() {
                     Transfer {
                         frame,
                         shape,

@@ -1,5 +1,3 @@
-import { PlannedSplExit } from "../../../src/operations/payments/planned-spl-exit.js";
-import type { ViewingKey } from "@heliuslabs/spr/keypair";
 import { openingTotals } from "../../../src/protocol/membership/approval-totals.js";
 import {
   authorizeHiddenOwner,
@@ -7,6 +5,7 @@ import {
   concatBytes,
   encodeBase58,
   prepareTransfer,
+  treeAddress,
 } from "@heliuslabs/spr/internal";
 import type { NoteData, OwnerExposure } from "../../../src/operations/payments/anonymous.js";
 import { EMPTY_MINT_POLICY } from "../../../src/protocol/membership/mint-policy.js";
@@ -34,7 +33,7 @@ import {
   associatedTokenAddress,
   splInterfaceWithBump,
 } from "@heliuslabs/spr/internal";
-import { initializePoseidon } from "@heliuslabs/spr";
+import { buildRingPaymentTransaction, initializePoseidon } from "@heliuslabs/spr";
 import {
   SOL_INTERFACE,
   SPL_TOKEN_2022_PROGRAM_ID,
@@ -63,12 +62,14 @@ import {
   Wallet,
   SppProofInputs,
   Data,
+  intentHash,
   type PreparedTransfer,
   type ProofOutputUtxo,
 } from "@heliuslabs/spr/transaction";
 import {
   checkRingPreparedTransfer,
   approveRingUnattended,
+  ringIntentHash,
   type RingApprovalRequest,
 } from "../../../src/protocol/transaction/intent.js";
 import { ringProofCircuit } from "../../../src/rpc/prover/ring.js";
@@ -98,11 +99,13 @@ import {
   type AnonymousTransfer,
 } from "../../../src/operations/payments/transfer-rails.js";
 import {
+  anonymousRingTransfers,
   buildRingEntryTransaction,
   buildRingExitTransaction,
   buildRingTransferTransaction,
   buildRingWithdrawalTransaction,
   createRingEntrySubmission,
+  ownerRingTransfers,
   prepareRingEntryRelay,
   prepareRingTransferRelay,
   prepareRingWithdrawalRelay,
@@ -297,6 +300,7 @@ function openedBody(
   const opened = openOutputSlot(
     slotSecretOf(reader, data, call, slotIndex),
     concatBytes(output.record, output.body.payload),
+    RingTransactData.recordForm(data),
   );
   const payload = opened.payload.kind === "opened" ? opened.payload.payload.data : undefined;
   return { ...opened.record, data: payload ?? new Uint8Array() };
@@ -759,8 +763,8 @@ describe("anonymous delivery slots", () => {
       const { fixture, recipients, anonymous } = await paying([400n, 300n], {
         replies: [claim(sayer), null],
       });
-      anonymous.withShape({ inputs: 1, outputs: 4 });
-      const expand = await expanded(fixture, await anonymous.prove(fixture.client), "anonymous");
+      const shaped = anonymous.withShape({ inputs: 1, outputs: 4 });
+      const expand = await expanded(fixture, await shaped.prove(fixture.client), "anonymous");
       return { ...expand, recipients };
     };
     const { data, call, recipients } = await build();
@@ -812,7 +816,7 @@ describe("anonymous delivery slots", () => {
       utxos: [
         {
           utxo,
-          outputContext: { hash, tree: TREE, leafIndex: 0n },
+          outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: 0n },
           nullifier: utxo.nullifier(hash, sender.keypair.nullifierKey()),
           spent: false,
         },
@@ -1198,9 +1202,11 @@ describe("anonymous ring exits and entries", () => {
 
     it("commits a ring data hash with no owner signature", async () => {
       const ringDataHash = small(0x33);
-      const { proven, output } = await pay({ ringDataHash });
+      const { proven, output, frame, bob, call, slot } = await pay({ ringDataHash });
       expect(output.ringDataHash).toEqual(ringDataHash);
       expect(proven.accounts.ownerSigners).toEqual([]);
+      expect([frame.hasData, frame.ringData]).toEqual([false, true]);
+      expect(openedBody(bob, frame, call, slot).ringDataHash).toEqual(ringDataHash);
     });
 
     it("holds application data to a signing owner and carries it in the body", async () => {
@@ -1217,7 +1223,9 @@ describe("anonymous ring exits and entries", () => {
       const body = frame.outputs[slot]?.body;
       if (body?.kind !== "recipient") throw new Error("no body");
       const opened = openedBody(bob, frame, call, slot);
-      expect(opened.data).toEqual(Uint8Array.of(...hash, ...bytes));
+      // The record carries the hash the commitment reads, the payload the bytes alone.
+      expect(opened.dataHash).toEqual(hash);
+      expect(opened.data).toEqual(bytes);
     });
 
     it("keeps a payment's data on its slot past an exit", async () => {
@@ -1246,22 +1254,21 @@ describe("anonymous ring exits and entries", () => {
       const fixture = await anonymousRing();
       const sender = anonymousSender();
       const to = await addressOf(fixture, ShieldedKeypair.generate());
-      await expect(
-        rail({ fixture, sender, transfer: spend(fixture, sender) })
-          .withPayment({
-            to,
-            asset: SOL_MINT,
-            amount: 400n,
-            reply: null,
-            data: {
-              application: {
-                hash: new Uint8Array(32) as Bytes32,
-                bytes: new TextEncoder().encode("app"),
-              },
+      const built = rail({ fixture, sender, transfer: spend(fixture, sender) });
+      expect(() =>
+        built.withPayment({
+          to,
+          asset: SOL_MINT,
+          amount: 400n,
+          reply: null,
+          data: {
+            application: {
+              hash: new Uint8Array(32) as Bytes32,
+              bytes: new TextEncoder().encode("app"),
             },
-          })
-          .prove(fixture.client),
-      ).rejects.toThrow(ringError("RING_NOTE_DATA_UNBOUND"));
+          },
+        }),
+      ).toThrow(ringError("RING_NOTE_DATA_UNBOUND"));
       noProofs(fixture);
     });
   });
@@ -1590,7 +1597,7 @@ describe("anonymous ring relay", () => {
         const hash = utxo.proofInput(nullifierPublicKey, TREE_ID, note.dataHash).hash();
         return {
           utxo,
-          outputContext: { hash, tree: TREE, leafIndex: BigInt(index) },
+          outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: BigInt(index) },
           nullifier: utxo.nullifier(hash, sender.keypair.nullifierKey()),
           ...(note.dataHash === undefined ? {} : { dataHash: note.dataHash }),
           spent: false,
@@ -2656,369 +2663,121 @@ function hex(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("hex");
 }
 
-describe("planned SPL composition profile", () => {
-  async function fixturePlan() {
-    const fixture = await anonymousRing();
-    const sender = anonymousSender();
-    const mint = randomAddress();
-    const base = ShieldedKeypair.generate().shieldedAddress().solanaAddress();
-    const payer = ShieldedKeypair.generate().shieldedAddress().solanaAddress();
-    let plan: PlannedSplExit | undefined;
-    for (let index = 0; plan === undefined && index < 100; index++) {
-      try {
-        plan = await PlannedSplExit.create({
-          payer,
-          base,
-          mint,
-          seed: `composition-${index}`,
-          rent: 2039280n,
-        });
-      } catch {
-        /* Seeded addresses are accepted only when off curve. */
-      }
-    }
-    if (plan === undefined) throw new Error("no off-curve fixture address");
-    const mintData = new Uint8Array(82);
-    mintData[45] = 1;
-    fixture.accounts.set(mint, { owner: SPL_TOKEN_PROGRAM_ID, lamports: 1n, data: mintData });
-    const [splTokenInterface, splInterfaceBump] = await splInterfaceWithBump(mint);
-    const transfer = spend(fixture, sender, { asset: mint, payer });
-    transfer.withdraw(
-      mint,
-      400n,
-      WithdrawalTarget.spl({
-        recipientTokenAccount: plan.address,
-        splTokenInterface,
-        splInterfaceBump,
-      }),
-    );
-    const anonymous = rail({
-      fixture,
-      sender,
-      transfer,
-      withdrawal: TransactWithdrawal.spl({
-        mint,
-        splTokenInterface,
-        recipientTokenAccount: plan.address,
-        tokenProgram: SPL_TOKEN_PROGRAM_ID,
-      }),
+describe("ring payment adapters", () => {
+  type Options = Readonly<{
+    payer?: "owner";
+    signer?: false;
+    payee?: "unknown";
+    ring?: "confidential";
+  }>;
+
+  function defaultWallet(sender: Sender): Wallet {
+    const { keypair } = sender;
+    const wallet = new Wallet({ identity: keypair.shieldedAddress(), registry: assets });
+    const utxo = new Utxo({
+      owner: keypair.signingPublicKey(),
+      asset: SOL_MINT,
+      amount: 10_000n,
+      blinding: randomBlinding(),
     });
-    return { fixture, sender, mint, base, plan, anonymous, transfer };
+    const hash = utxo.proofInput(keypair.nullifierPublicKey(), TREE_ID).hash();
+    wallet._replace({
+      utxos: [
+        {
+          utxo,
+          outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: 0n },
+          nullifier: utxo.nullifier(hash, keypair.nullifierKey()),
+          spent: false,
+        },
+      ],
+      transactions: [],
+      nullifiers: new Set(),
+    });
+    return wallet;
   }
 
-  it("admits only an explicit same-mint companion and preserves the ordinary one-SPL restriction", async () => {
-    const f = await fixturePlan();
-    const recipientOwner = ShieldedKeypair.generate().shieldedAddress().solanaAddress();
-    const recipientTokenAccount = await associatedTokenAddress(
-      recipientOwner,
-      f.mint,
-      SPL_TOKEN_PROGRAM_ID,
-    );
-    f.fixture.accounts.set(recipientTokenAccount, tokenAccount(recipientOwner, { mint: f.mint }));
-    const companion = { recipientOwner, recipientTokenAccount, amount: 1n };
-    const plan = await PlannedSplExit.create({
-      payer: f.plan.payer,
-      base: f.base,
-      seed: f.plan.seed,
-      mint: f.mint,
-      rent: f.plan.rent,
-      companionWithdrawal: companion,
-    });
-    const [splTokenInterface, splInterfaceBump] = await splInterfaceWithBump(f.mint);
-    const transfer = spend(f.fixture, f.sender, { asset: f.mint, payer: f.plan.payer });
-    transfer.withdrawMany([
-      {
-        asset: f.mint,
-        amount: 400n,
-        target: WithdrawalTarget.spl({
-          recipientTokenAccount: plan.address,
-          splTokenInterface,
-          splInterfaceBump,
-        }),
-      },
-      {
-        asset: f.mint,
-        amount: 1n,
-        target: WithdrawalTarget.spl({
-          recipientTokenAccount,
-          splTokenInterface,
-          splInterfaceBump,
-        }),
-      },
-    ]);
-    rail({ fixture: f.fixture, sender: f.sender, transfer });
-    const prepared = transfer.prepare(),
-      hidden = f.sender.signing.publicKey().ed25519();
-    await expect(
-      plan.validate(f.fixture.client, prepared, f.fixture.ringProgramId, hidden),
-    ).resolves.toBeUndefined();
-    await expect(
-      anonymousExitTokenOwner({
-        client: f.fixture.client,
-        transfers: prepared.interfaceTransfers,
-        hiddenOwner: hidden,
-        tokenOwner: plan.base,
-        plannedSplExit: plan,
-      }),
-    ).resolves.toBe(plan.base);
-    await expect(
-      f.plan.validate(f.fixture.client, prepared, f.fixture.ringProgramId, hidden),
-    ).rejects.toThrow("PLANNED_SPL_EXIT_PROFILE_REFUSED");
-    const legs = prepared.interfaceTransfers;
-    for (const changed of [
-      [legs[0]!, { ...legs[1]!, amount: 2n }],
-      [legs[0]!, { ...legs[1]!, tokenAccount: randomAddress() }],
-      [legs[0]!, { ...legs[1]!, mint: randomAddress() }],
-      [legs[0]!, { ...legs[1]!, isDeposit: true }],
-      [legs[1]!, legs[0]!],
-      [legs[0]!],
-      [...legs, legs[1]!],
-    ])
-      await expect(
-        plan.validate(
-          f.fixture.client,
-          { ...prepared, interfaceTransfers: changed } as PreparedTransfer,
-          f.fixture.ringProgramId,
-          hidden,
-        ),
-      ).rejects.toThrow("PLANNED_SPL_EXIT_PROFILE_REFUSED");
-    for (const others of [
-      { mint: randomAddress() },
-      { delegate: DESTINATION },
-      { closeAuthority: DESTINATION },
-    ]) {
-      f.fixture.accounts.set(
-        recipientTokenAccount,
-        tokenAccount(recipientOwner, { mint: f.mint, ...others }),
-      );
-      await expect(
-        plan.validate(f.fixture.client, prepared, f.fixture.ringProgramId, hidden),
-      ).rejects.toThrow("PLANNED_SPL_EXIT_PROFILE_REFUSED");
-    }
-    f.fixture.accounts.delete(recipientTokenAccount);
-    await expect(
-      plan.validate(f.fixture.client, prepared, f.fixture.ringProgramId, hidden),
-    ).rejects.toThrow("PLANNED_SPL_EXIT_PROFILE_REFUSED");
-    for (const patch of [
-      { amount: 0n },
-      { amount: -1n },
-      { amount: 1n << 64n },
-      { recipientTokenAccount: randomAddress() },
-    ])
-      await expect(
-        PlannedSplExit.create({
-          payer: f.plan.payer,
-          base: f.base,
-          seed: f.plan.seed,
-          mint: f.mint,
-          rent: f.plan.rent,
-          companionWithdrawal: { ...companion, ...patch },
-        }),
-      ).rejects.toThrow("PLANNED_SPL_EXIT_PROFILE_REFUSED");
-    noProofs(f.fixture);
-  });
-
-  it("admits only the real absent seeded account and keeps the original key alive exactly during consumption", async () => {
-    const { fixture, plan, anonymous } = await fixturePlan();
-    let original: ProvenRingTransfer | undefined;
-    let borrowed: ViewingKey | undefined;
-    const result = await anonymous
-      .withPlannedSplExit(plan)
-      .proveForComposition(fixture.client, async (proven, key) => {
-        original = proven;
-        borrowed = key;
-        expect(key.publicKey().u()).toHaveLength(32);
-        expect(proven.outputs.length).toBeGreaterThan(0);
-        expect(fixture.accounts.has(plan.address)).toBe(false);
-      });
-    expect(result).toBe(original);
-    expect(() => borrowed!.secretBytes()).toThrow();
-    expect(plan.instructions()).toHaveLength(2);
-  });
-
-  it("destroys the original key when composition validation rejects", async () => {
-    const { fixture, plan, anonymous } = await fixturePlan();
-    let borrowed: ViewingKey | undefined;
-    await expect(
-      anonymous
-        .withPlannedSplExit(plan)
-        .proveForComposition(fixture.client, async (_proven, key) => {
-          borrowed = key;
-          throw new Error("review rejected");
-        }),
-    ).rejects.toThrow("review rejected");
-    expect(() => borrowed!.secretBytes()).toThrow();
-  });
-
-  it("refuses generic relay before staging or reading private inputs", async () => {
-    const { fixture, plan, anonymous, sender } = await fixturePlan();
-    await expect(
-      anonymous.withPlannedSplExit(plan).prepareRelay(fixture.client, {
-        quote: { feePayer: plan.payer, validUntilSlot: 100n },
-        nullifierKey: sender.keypair.nullifierKey(),
-        notes: [],
-      }),
-    ).rejects.toThrow("PLANNED_SPL_EXIT_RELAY_REFUSED");
-    noProofs(fixture);
-  });
-
-  it("does not let a pre-existing account masquerade as a planned destination", async () => {
-    const { fixture, plan, anonymous } = await fixturePlan();
-    fixture.accounts.set(plan.address, {
-      owner: SYSTEM_PROGRAM,
-      lamports: 1n,
-      data: new Uint8Array(),
-    });
-    await expect(anonymous.withPlannedSplExit(plan).prove(fixture.client)).rejects.toThrow(
-      "PLANNED_SPL_EXIT_PROFILE_REFUSED",
-    );
-    noProofs(fixture);
-  });
-
-  it("refuses hidden-owner exposure and an uninitialized mint", async () => {
-    const { fixture, plan, anonymous, mint } = await fixturePlan();
-    await expect(
-      anonymous.withPlannedSplExit(plan).withOwnerExposure("accepted").prove(fixture.client),
-    ).rejects.toThrow("PLANNED_SPL_EXIT_PROFILE_REFUSED");
-    fixture.accounts.set(mint, {
-      owner: SPL_TOKEN_PROGRAM_ID,
-      lamports: 1n,
-      data: new Uint8Array(82),
-    });
-    await expect(anonymous.withPlannedSplExit(plan).prove(fixture.client)).rejects.toThrow(
-      "PLANNED_SPL_EXIT_PROFILE_REFUSED",
-    );
-    noProofs(fixture);
-  });
-
-  it("rejects default-ring entry, data and mint/amount changes at the profile boundary", async () => {
-    const { fixture, plan, sender, transfer, mint } = await fixturePlan();
-    const prepared = transfer.prepare();
-    const hidden = sender.signing.publicKey().ed25519();
-    await expect(
-      plan.validate(fixture.client, prepared, fixture.ringProgramId, hidden),
-    ).resolves.toBeUndefined();
-    for (const inputs of [
-      [noteInput(sender.keypair, 10_000n, undefined, mint)],
-      prepared.inputs.map(
-        (input) =>
-          new ProofInputUtxo({
-            ...input,
-            dataHash: new Uint8Array(32).fill(1) as Bytes32,
-            nullifier: input.nullifier(),
-          }),
-      ),
-    ])
-      await expect(
-        plan.validate(fixture.client, { ...prepared, inputs }, fixture.ringProgramId, hidden),
-      ).rejects.toThrow("PLANNED_SPL_EXIT_PROFILE_REFUSED");
-    for (const change of [{ amount: 0n }, { mint: randomAddress() }]) {
-      const leg = prepared.interfaceTransfers[0]!;
-      await expect(
-        plan.validate(
-          fixture.client,
-          { ...prepared, interfaceTransfers: [{ ...leg, ...change }] },
-          fixture.ringProgramId,
-          hidden,
-        ),
-      ).rejects.toThrow("PLANNED_SPL_EXIT_PROFILE_REFUSED");
-    }
-  });
-  it("carries the gated SPL exit and payer SOL reimbursement through every account and output", async () => {
-    const { fixture, sender, mint, plan } = await fixturePlan();
-    fixture.accounts.set(plan.payer, {
-      owner: SYSTEM_PROGRAM,
-      lamports: 1n,
-      data: new Uint8Array(),
-    });
-    const [splTokenInterface, splInterfaceBump] = await splInterfaceWithBump(mint);
-    const transfer = new ConfidentialTransfer(
-      sender.keypair.shieldedAddress(),
-      [
-        noteInput(sender.keypair, 10_000n, fixture.ringProgramId, mint),
-        noteInput(sender.keypair, 500n, fixture.ringProgramId, SOL_MINT),
-      ],
-      plan.payer,
-    );
-    transfer.withdrawMany([
-      {
-        asset: mint,
-        amount: 400n,
-        target: WithdrawalTarget.spl({
-          recipientTokenAccount: plan.address,
-          splTokenInterface,
-          splInterfaceBump,
-        }),
-      },
-      { asset: SOL_MINT, amount: 100n, target: WithdrawalTarget.sol({ recipient: plan.payer }) },
-    ]);
-    const owner = CustomRingTransfer.new({
-      ringProgramId: fixture.ringProgramId,
+  async function payment(options: Options) {
+    const fixture = options.ring === "confidential" ? await ringFixture() : await anonymousRing();
+    const sender = anonymousSender();
+    fixture.enroll(sender.keypair.shieldedAddress());
+    const to = await addressOf(fixture, ShieldedKeypair.generate());
+    const outputTree = fixture.client.treeId + 1;
+    const client = {
+      ...fixture.client,
+      tree: treeAddress(outputTree),
+      treeId: outputTree,
+      getLatestBlockhash: async () => BLOCKHASH,
+    };
+    const input = { client, ringProgramId: fixture.ringProgramId, assets };
+    const ring =
+      options.ring === "confidential"
+        ? ownerRingTransfers(input)
+        : anonymousRingTransfers({ ...input, payees: options.payee === "unknown" ? [] : [to] });
+    const owner = sender.keypair.shieldedAddress().solanaAddress();
+    const proved = buildRingPaymentTransaction({
+      client,
+      ring,
+      wallet: defaultWallet(sender),
       keys: walletKeys(sender.keypair),
-      transfer,
-      assets,
+      feePayer: options.payer === "owner" ? owner : fixture.authority,
+      recipient: to.recipient,
+      amount: 400n,
+      ...(options.signer === false
+        ? {}
+        : {
+            owner: {
+              signingPublicKey: () => sender.signing.publicKey(),
+              sign: (message: Uint8Array) => sender.signing.sign(message),
+            },
+          }),
     });
-    const named = [
-      TransactWithdrawal.spl({
-        mint,
-        splTokenInterface,
-        recipientTokenAccount: plan.address,
-        tokenProgram: SPL_TOKEN_PROGRAM_ID,
-      }),
-      TransactWithdrawal.sol({ recipient: plan.payer }),
-    ];
-    const anonymous = owner
-      .withWithdrawalsAccounts(named)
-      .withAnonymousSigner(signingKeySpendSigner(sender.signing))
-      .withPlannedSplExit(plan);
-    const result = await anonymous.prove(fixture.client);
-    const instruction = await result.instruction();
-    const accounts = instruction.accounts!.map((account) => account.address);
-    const splIndex = accounts.indexOf(plan.address);
-    const solIndex = accounts.indexOf(SOL_INTERFACE);
-    expect(splIndex).toBeGreaterThan(0);
-    expect(solIndex).toBeGreaterThan(splIndex);
-    expect(accounts[solIndex + 1]).toBe(plan.payer);
-    const prepared = transfer.prepare();
-    expect(prepared.interfaceTransfers.map((leg) => [leg.kind, leg.amount])).toEqual([
-      ["spl", 400n],
-      ["sol", 100n],
-    ]);
-    expect(
-      prepared.outputs
-        .filter((output) => output.amount > 0n)
-        .map((output) => [output.asset, output.amount]),
-    ).toEqual([
-      [mint, 9600n],
-      [SOL_MINT, 400n],
-    ]);
-    await expect(
-      owner
-        .withWithdrawalsAccounts([named[0]!])
-        .withAnonymousSigner(signingKeySpendSigner(sender.signing))
-        .withPlannedSplExit(plan)
-        .prove(fixture.client),
-    ).rejects.toThrow("RING_SETTLEMENT_ACCOUNTS_INVALID");
-    await expect(
-      owner
-        .withWithdrawalsAccounts([...named].reverse())
-        .withAnonymousSigner(signingKeySpendSigner(sender.signing))
-        .withPlannedSplExit(plan)
-        .prove(fixture.client),
-    ).rejects.toThrow("RING_SETTLEMENT_ACCOUNTS_INVALID");
-    await expect(
-      plan.validate(
-        fixture.client,
-        {
-          ...prepared,
-          interfaceTransfers: [
-            prepared.interfaceTransfers[0]!,
-            { kind: "sol", isDeposit: false, amount: 100n, userSolAccount: plan.base },
-          ],
-        },
-        fixture.ringProgramId,
-        sender.signing.publicKey().ed25519(),
-      ),
-    ).rejects.toThrow("PLANNED_SPL_EXIT_PROFILE_REFUSED");
+    return { fixture, sender, to, proved, outputTree };
+  }
+
+  it.each([
+    ["anonymous", {}],
+    ["confidential", { ring: "confidential", signer: false }],
+  ] as const)(
+    "pays a %s ring from core's wallet into the client's tree, change kept in the ring",
+    async (_, options) => {
+      const { fixture, sender, to, proved, outputTree } = await payment(options);
+      await expect(proved).resolves.toBeDefined();
+      const { proofInputs } = itemAt(fixture.sppCalls, 0);
+      expect(proofInputs.outputTreeId).toBe(outputTree);
+      const paid = proofInputs.outputs
+        .filter((output) => !output.isDummy() && output.amount > 0n)
+        .map((output) => [output.ownerAddress?.toBytes(), output.amount, output.ringProgramId]);
+      expect(paid).toEqual([
+        [sender.keypair.shieldedAddress().toBytes(), 9_600n, fixture.ringProgramId],
+        [to.recipient.toBytes(), 400n, fixture.ringProgramId],
+      ]);
+    },
+  );
+
+  it("hashes an anonymous transfer apart from core's ring deposit", async () => {
+    const fixture = await anonymousRing();
+    const to = await addressOf(fixture, ShieldedKeypair.generate());
+    const fields = { ringProgramId: fixture.ringProgramId, asset: SOL_MINT, amount: 400n };
+    const anonymous = {
+      kind: "ringAnonymousTransfer",
+      ...fields,
+      recipient: to,
+      defaultFunding: 0n,
+    } as const;
+    const deposit = { kind: "ringDeposit", ...fields, recipient: to.recipient } as const;
+    expect(ringIntentHash(anonymous)).not.toEqual(intentHash(deposit));
+  });
+
+  it("refuses no signer, the hidden owner as payer, an unknown enrolled payee and an in-proof owner on default notes", async () => {
+    for (const [options, code] of [
+      [{ signer: false }, "RING_ANONYMOUS_SIGNER_REQUIRED"],
+      [{ ring: "confidential" }, "RING_IN_PROOF_DEFAULT_RING_INPUT"],
+      [{ payer: "owner" }, "RING_ANONYMOUS_SIGNER_LINKS_OWNER"],
+      [{ payee: "unknown" }, "KEYPAIR_INVALID_RING_ADDRESS_LIST_SALT"],
+    ] as const) {
+      const { fixture, proved } = await payment(options);
+      await expect(proved).rejects.toMatchObject({ cause: { code } });
+      noProofs(fixture);
+    }
   });
 });

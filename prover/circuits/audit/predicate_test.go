@@ -24,8 +24,8 @@ func TestRecordPreimagesFailAtTheirPredicate(t *testing.T) {
 		mutate func(*ringaudit.Audit)
 		frame  string
 	}{
-		"ring owner key": {func(s *ringaudit.Audit) { s.Outputs[ring].OwnerKey[0] ^= 1 }, "audit.RecordOpening.Encode"},
-		"exit owner key": {func(s *ringaudit.Audit) { s.Outputs[exit].OwnerKey[0] ^= 1 }, "audit.RecordOpening.Encode"},
+		"ring owner key": {func(s *ringaudit.Audit) { s.Outputs[ring].OwnerKey[0] ^= 1 }, "audit.TransferRecord.Encode"},
+		"exit owner key": {func(s *ringaudit.Audit) { s.Outputs[exit].OwnerKey[0] ^= 1 }, "audit.TransferRecord.Encode"},
 		"ring mint":      {func(s *ringaudit.Audit) { s.Outputs[ring].Mint[0] ^= 1 }, "audit.assertMint"},
 		"exit mint":      {func(s *ringaudit.Audit) { s.Outputs[exit].Mint[0] ^= 1 }, "audit.assertMint"},
 	} {

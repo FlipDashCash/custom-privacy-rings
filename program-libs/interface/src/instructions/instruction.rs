@@ -64,6 +64,8 @@ instruction_tags! {
     SetCoSigner = SET_CO_SIGNER: 27 => ACCOUNT_UNITS,
     ClearCoSigner = CLEAR_CO_SIGNER: 62 => ACCOUNT_UNITS,
     SetDelegate = SET_DELEGATE: 64 => ACCOUNT_UNITS,
+    /// Signed by a co-signer at the top level, it writes nothing.
+    ApproveTransfer = APPROVE_TRANSFER: 65 => ACCOUNT_UNITS,
     AuthorityTransfer = AUTHORITY_TRANSFER: 56 => PROOF_UNITS,
     /// Signed by the upgrade authority, one budget for the ring account, its policy, the tracking and SPP CPIs.
     Initialize = INITIALIZE: 53 => 3 * ACCOUNT_UNITS + POLICY_UNITS,
@@ -198,6 +200,9 @@ pub enum UpdatePolicyIxData {
     /// One trailing records registry under any authority.
     #[wincode(tag = 2)]
     Records,
+    /// `list_tag` of the ring salt, zero commits none.
+    #[wincode(tag = 3)]
+    RingListTag([u8; 32]),
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]

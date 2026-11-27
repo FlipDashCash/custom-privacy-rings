@@ -1,7 +1,8 @@
-import { isZero, poseidon } from "@heliuslabs/spr/internal";
+import { equalBytes, isZero, poseidon } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
 
 import { domainField, RingDomain } from "../../crypto/derivation/ring-domain.js";
+import { listTagOf } from "../../crypto/keys/list-salt.js";
 import { RingError } from "../error.js";
 
 /**
@@ -17,6 +18,20 @@ export function privateListKey(ownerPkHash: Bytes32, listSalt: Bytes32): Bytes32
   if (isZero(listSalt))
     throw new RingError("RING_ENTRY_INVALID", { details: { reason: "zeroSalt" } });
   return lookupKey(ownerPkHash, listSalt);
+}
+
+/** `Poseidon(CRPR, owner_pk_hash, ring_salt)`, Rust `Member::ring_salted`. */
+export function ringListKey(ownerPkHash: Bytes32, ringSalt: Bytes32): Bytes32 {
+  return poseidon([domainField(RingDomain.ringListPosition), ownerPkHash, ringSalt]) as Bytes32;
+}
+
+/** Refused unless the salt opens the tag the policy commits. */
+export function committedRingListKey(
+  input: Readonly<{ ownerPkHash: Bytes32; ringSalt: Bytes32; ringListTag: Bytes32 }>,
+): Bytes32 {
+  if (isZero(input.ringListTag) || !equalBytes(listTagOf(input.ringSalt), input.ringListTag))
+    throw new RingError("RING_ENTRY_INVALID", { details: { reason: "ringSaltUncommitted" } });
+  return ringListKey(input.ownerPkHash, input.ringSalt);
 }
 
 const ZERO_SALT = new Uint8Array(32) as Bytes32;

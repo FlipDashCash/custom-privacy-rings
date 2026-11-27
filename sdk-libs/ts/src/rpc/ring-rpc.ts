@@ -1284,6 +1284,7 @@ export interface DecryptedRingTransaction {
   readonly signers: readonly Address[];
   /** Empty when nothing left the ring. */
   readonly withdrawals: readonly DecryptedRingWithdrawal[];
+  readonly vouchedBy?: Address;
 }
 
 export type {
@@ -1352,7 +1353,7 @@ export interface RingWalletNote {
   readonly mint?: Address;
   readonly amount: bigint;
   readonly blinding: Bytes32;
-  /** Absent with `ringDataHash` while no payload rebuilt the published commitment. */
+  /** The record's proven hash, absent with `ringDataHash` on a record that rebuilt no commitment. */
   readonly dataHash?: Bytes32;
   readonly ringDataHash?: Bytes32;
   readonly treeId: number;
@@ -2191,7 +2192,7 @@ export class RingRpc {
     );
   }
 
-  /** `undefined` while the owner has no tracking row. */
+  /** The owner's salt, or with no tracking row the ring salt the policy commits. */
   async getListSalt(
     request: GetListSaltRequest,
     context?: RequestContext,
@@ -2202,7 +2203,8 @@ export class RingRpc {
       NO_FIELDS,
       "result",
     );
-    return absent(wire["listSalt"]) ? undefined : hash(wire["listSalt"], "result.listSalt");
+    const salt = wire["listSalt"] ?? wire["ringSalt"];
+    return absent(salt) ? undefined : hash(salt, "result.listSalt");
   }
 
   async prepareAuthorityTransfer(
@@ -2528,6 +2530,7 @@ function decodeTransaction(wire: Record<string, unknown>): DecryptedRingTransact
       list(wire["signers"], "signers").map((key, index) => address(key, `signers[${index}]`)),
     ),
     withdrawals: decodeWithdrawals(wire["withdrawals"]),
+    ...(absent(wire["vouchedBy"]) ? {} : { vouchedBy: address(wire["vouchedBy"], "vouchedBy") }),
   });
 }
 
@@ -2766,7 +2769,7 @@ function decodeDecryptedUtxo(wire: Record<string, unknown>, path: string): Audit
   });
 }
 
-/** Rust `DecryptedKnownUtxo`, `ownerHash` for a deposited UTXO, neither for an unresolved owner with no data hash. */
+/** Rust `DecryptedKnownUtxo`, `ownerHash` for a deposited UTXO, neither for an unresolved owner. */
 function decodeKnownUtxo(wire: Record<string, unknown>, path: string): KnownUtxo {
   const nullifierPk = wire["nullifierPk"];
   const ownerHash = wire["ownerHash"];
@@ -2776,8 +2779,6 @@ function decodeKnownUtxo(wire: Record<string, unknown>, path: string): KnownUtxo
   if (fields.mint !== undefined && !equalBytes(assetField(fields.mint), fields.asset))
     throw invalid(`${path}.mint`);
   const unresolved = absent(nullifierPk) && absent(ownerHash);
-  if (unresolved && (fields.dataHash !== undefined || fields.ringDataHash !== undefined))
-    throw invalid(`${path}.dataHash`);
   return Object.freeze({
     ...fields,
     owner: unresolved
@@ -3102,7 +3103,7 @@ const DEFAULT_INPUT_FIELDS = new Set([
   "amount",
   "commitment",
 ]);
-const LIST_SALT_FIELDS = new Set(["listSalt"]);
+const LIST_SALT_FIELDS = new Set(["listSalt", "ringSalt"]);
 const NO_FIELDS = new Set<string>();
 const AUDITED_MERGES_PAGE_FIELDS = new Set(["opened", "cursor"]);
 const AUDITED_MERGE_REQUIRED_FIELDS = new Set([

@@ -24,8 +24,9 @@ use custom_ring_sdk::{
 use solana_address::Address;
 use solana_instruction::Instruction;
 use solana_keypair::Keypair;
+use solana_message::VersionedMessage;
 use solana_signature::Signature;
-use solana_signer::Signer;
+use solana_signer::{Signer, SignerError};
 use spr_client::{
     compile_message,
     prover::{indexed::ProofDataSource, SERVER_ADDRESS},
@@ -539,6 +540,15 @@ pub fn setup() -> Result<TestEnv> {
 /// Every extra address deploys the same ring image again as a full second ring,
 /// every PDA derives from the runtime program id.
 pub fn setup_with_extra_rings(extra_ring_programs: &[Address]) -> Result<TestEnv> {
+    bring_up(extra_ring_programs, &[])
+}
+
+/// Each image loads at its address from genesis, the path from the ring workspace root.
+pub fn setup_with_programs(programs: &[(Address, &str)]) -> Result<TestEnv> {
+    bring_up(&[], programs)
+}
+
+fn bring_up(extra_ring_programs: &[Address], programs: &[(Address, &str)]) -> Result<TestEnv> {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../zolana");
     let artifacts = WorkspaceArtifacts::new(root);
     let ring_artifacts = ring_artifacts();
@@ -581,6 +591,11 @@ pub fn setup_with_extra_rings(extra_ring_programs: &[Address]) -> Result<TestEnv
             GENESIS_PROGRAMS
                 .iter()
                 .map(|program| (program.address, ring_artifacts.path(program.path).into())),
+        )
+        .chain(
+            programs
+                .iter()
+                .map(|(address, path)| (*address, ring_artifacts.path(path).into())),
         )
         .collect(),
         slot_time: None,
@@ -857,6 +872,46 @@ impl RejectedTransact<'_> {
                 source,
             }),
         }
+    }
+}
+
+/// A message one signer signed away from the test, the payer signs beside it.
+#[must_use]
+pub struct CoSigned<'a> {
+    pub payer: &'a dyn Signer,
+    pub message: VersionedMessage,
+    pub co_signer: Address,
+    pub co_signature: Signature,
+}
+
+/// Returns the signature it holds over the one message it was made for.
+struct HeldSignature {
+    signer: Address,
+    signature: Signature,
+}
+
+impl Signer for HeldSignature {
+    fn try_pubkey(&self) -> Result<Address, SignerError> {
+        Ok(self.signer)
+    }
+
+    fn try_sign_message(&self, _message: &[u8]) -> Result<Signature, SignerError> {
+        Ok(self.signature)
+    }
+
+    fn is_interactive(&self) -> bool {
+        false
+    }
+}
+
+impl CoSigned<'_> {
+    pub fn send(self, rpc: &SolanaRpc) -> Result<Signature> {
+        let held = HeldSignature {
+            signer: self.co_signer,
+            signature: self.co_signature,
+        };
+        let transaction = sign_transaction(self.message, &[self.payer, &held])?;
+        Ok(rpc.client().send_and_confirm_transaction(&transaction)?)
     }
 }
 

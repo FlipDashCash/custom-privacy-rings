@@ -2,21 +2,19 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context as _, Result};
 use serde::Deserialize;
-use solana_keypair::Keypair;
-use solana_signer::Signer;
 
 use crate::{
-    config::{expand_tilde, parse_ring_toml, Base58Address, RingConfig, Target, Urls},
+    config::{
+        expand_tilde, parse_ring_toml, Base58Address, OperatorManifest, RingConfig, Target, Urls,
+    },
     file, line,
     policy::PolicySpec,
     ui::{self, icon, Ask},
     wizard::{live_catalogue, Wizard},
-    NewArgs, PROGRAM_KEYPAIR_FILE, RING_TOML,
+    NewArgs, RING_TOML,
 };
-
-pub const DEFAULT_AUTHORITY_KEYPAIR: &str = "~/.config/solana/id.json";
 
 const DEVNET_RPC: &str = "https://api.devnet.solana.com";
 const DEVNET_INDEXER: &str = "https://d2xah7tnhdhcom.cloudfront.net";
@@ -46,7 +44,7 @@ pub fn run(args: NewArgs, ask: &mut dyn Ask, catalogue: Option<&str>) -> Result<
         curators: &mut |target: Target, rpc_url: &str| live_catalogue(catalogue, target, rpc_url),
         localnet: Urls {
             rpc: local(8899),
-            indexer: local(8784),
+            indexer: local(8786),
             prover: local(3001),
             ring_rpc: local(8785),
             ring_rpc_pubkey: None,
@@ -64,18 +62,12 @@ pub fn run(args: NewArgs, ask: &mut dyn Ask, catalogue: Option<&str>) -> Result<
     .run(args.name, preset)?;
     let ring_dir = args.dest.join(&answers.name);
     refuse_existing(&ring_dir)?;
-    let program = Keypair::new();
+    let manifest = OperatorManifest::load(&expand_tilde(&args.operator_manifest)?)?;
     let config = RingConfig {
         name: answers.name,
         target: answers.target,
-        program_id: Base58Address(program.pubkey()),
-        authority_keypair: PathBuf::from(&args.authority_keypair),
-        upgrade_authority_keypair: None,
-        policy_authority_keypair: None,
-        admin_keypair: None,
-        pauser_keypair: None,
-        cosign_admin_keypair: None,
-        enrollment_writer_keypair: None,
+        program_id: Base58Address(manifest.program.address),
+        operator_manifest: Some(recorded_path(args.operator_manifest)?),
         mode: answers.mode,
         policy: answers.policy,
         cosigner: None,
@@ -90,14 +82,15 @@ pub fn run(args: NewArgs, ask: &mut dyn Ask, catalogue: Option<&str>) -> Result<
         "nothing written, the preview was not confirmed"
     );
 
-    file::write_keypair(&program, &ring_dir.join(PROGRAM_KEYPAIR_FILE))?;
+    file::create_dir_all(&args.dest)?;
+    std::fs::create_dir(&ring_dir)
+        .with_context(|| format!("cannot create ring directory {}", ring_dir.display()))?;
     file::write(&ring_dir.join(RING_TOML), rendered)?;
     file::write(&ring_dir.join(".gitignore"), "keys/\n.env\n")?;
-    ensure_authority(&args.authority_keypair)?;
 
     ui::heading(icon::RING, &config.name);
     line("ring", ring_dir.display());
-    line("program id", program.pubkey());
+    line("program id", manifest.program.address);
     println!(
         "next, `cd {}` and `zolana-ring localnet` or `zolana-ring devnet`",
         ring_dir.display()
@@ -112,30 +105,20 @@ pub(crate) fn read_policy(path: &Path) -> Result<PolicySpec> {
     Ok(file.policy)
 }
 
+/// ring.toml resolves a relative path against the ring directory.
+fn recorded_path(given: PathBuf) -> Result<PathBuf> {
+    if given.is_absolute() || given.starts_with("~") {
+        return Ok(given);
+    }
+    std::path::absolute(&given).with_context(|| format!("cannot resolve {}", given.display()))
+}
+
 fn refuse_existing(dir: &Path) -> Result<()> {
     ensure!(
         !dir.exists(),
         "destination {} already exists",
         dir.display()
     );
-    Ok(())
-}
-
-/// Only the default path is created, any other missing path is the operator's to mount.
-fn ensure_authority(recorded: &str) -> Result<()> {
-    let path = expand_tilde(Path::new(recorded))?;
-    if path.is_file() {
-        line("authority", file::read_keypair(&path)?.pubkey());
-    } else if recorded == DEFAULT_AUTHORITY_KEYPAIR {
-        let keypair = Keypair::new();
-        file::write_keypair(&keypair, &path)?;
-        line(
-            "authority",
-            format_args!("{} created at {recorded}", keypair.pubkey()),
-        );
-    } else {
-        eprintln!("note: no authority keypair at {recorded}, mount it before `zolana-ring deploy`");
-    }
     Ok(())
 }
 
@@ -146,6 +129,7 @@ mod tests {
     use super::*;
     use crate::{
         config::ModeName,
+        operator_manifest::tests::document as manifest_document,
         policy::PolicyError,
         ui::{Answer, Defaults, Scripted},
     };
@@ -157,11 +141,14 @@ mod tests {
     }
 
     fn args(name: Option<&str>, dest: &Path, silent: bool) -> NewArgs {
+        let manifest = dest.join("operator.json");
+        std::fs::create_dir_all(dest).unwrap();
+        std::fs::write(&manifest, manifest_document().to_string()).unwrap();
         NewArgs {
             name: name.map(str::to_owned),
             dest: dest.to_path_buf(),
             silent,
-            authority_keypair: dest.join("authority.json").to_string_lossy().into_owned(),
+            operator_manifest: manifest,
             policy_from: None,
         }
     }
@@ -173,10 +160,11 @@ mod tests {
 
         let ring_dir = dest.join("smoke");
         let config = RingConfig::load(&ring_dir.join(RING_TOML)).expect("load");
-        let program = file::read_keypair(&ring_dir.join(PROGRAM_KEYPAIR_FILE)).expect("keypair");
-        assert_eq!(config.program_id.0, program.pubkey());
+        let recorded = config.operator_manifest.as_deref().expect("recorded");
+        let manifest = OperatorManifest::load(recorded).expect("manifest");
+        assert_eq!(config.program_id.0, manifest.program.address);
         assert_eq!(config.target, Target::Localnet);
-        assert_eq!(config.authority_keypair, dest.join("authority.json"));
+        assert_eq!(recorded, dest.join("operator.json"));
         assert_eq!(config.mode, ModeName::Confidential);
         assert!(config.policy.is_none());
         assert_eq!(
@@ -205,6 +193,28 @@ mod tests {
         let unnamed = run(args(None, &dest, true), &mut Defaults, None).expect_err("no name");
         assert!(unnamed.to_string().starts_with("a name is needed"));
         std::fs::remove_dir_all(dest).expect("cleanup");
+    }
+
+    #[test]
+    fn the_manifest_path_is_recorded_as_given_or_made_absolute() {
+        let working_dir = std::env::current_dir().expect("working directory");
+        for (given, recorded) in [
+            (
+                "/etc/ring/operator.json",
+                PathBuf::from("/etc/ring/operator.json"),
+            ),
+            (
+                "~/ring/operator.json",
+                PathBuf::from("~/ring/operator.json"),
+            ),
+            ("ops/operator.json", working_dir.join("ops/operator.json")),
+            ("./operator.json", working_dir.join("operator.json")),
+        ] {
+            assert_eq!(
+                recorded_path(PathBuf::from(given)).expect("recorded"),
+                recorded
+            );
+        }
     }
 
     #[test]

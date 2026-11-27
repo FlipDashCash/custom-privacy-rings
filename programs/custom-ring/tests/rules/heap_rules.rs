@@ -9,8 +9,8 @@ use std::collections::HashSet;
 
 use custom_ring_interface::{
     key_catalog::{FrameKey, TransferShape, TRANSFER_SHAPES},
-    tag, CustomRingError, RecipientPayload, Replies, RingPolicy, RingRail, RingTransactData,
-    RootRead, SlotBody, EXIT_RECORD_LEN, MAX_CPI_DATA_LEN, MIN_REPLY_LEN, RING_RECORD_LEN,
+    tag, CustomRingError, RecipientPayload, RecordForm, RecordKind, Replies, RingPolicy, RingRail,
+    RingTransactData, RootRead, SlotBody, MAX_CPI_DATA_LEN, MIN_REPLY_LEN, TRANSFER_RECORD_LEN,
 };
 use solana_address::Address;
 use solana_instruction::{error::InstructionError, AccountMeta, Instruction};
@@ -270,18 +270,19 @@ fn instruction(ring: &mut Ring, case: Wide) -> Option<Instruction> {
         .map(|leg| [0x70 + leg as u8; 32])
         .collect();
     // One record and one payload width per slot, the record leads its body.
-    let payload = RecipientPayload {
-        ring_data_hash: Some([0x5a; 32]),
-        data: Vec::new(),
+    let payload = RecipientPayload::default();
+    let form = RecordForm {
+        data: true,
+        ring_data: true,
     };
-    let records: Vec<[u8; EXIT_RECORD_LEN]> = (0..16u8)
-        .map(|slot| [0xc0 + slot; EXIT_RECORD_LEN])
+    let records: Vec<[u8; TRANSFER_RECORD_LEN]> = (0..16u8)
+        .map(|slot| [0xc0 + slot; TRANSFER_RECORD_LEN])
         .collect();
     let bodies: Vec<Vec<u8>> = records
         .iter()
         .map(|record| {
             [
-                &record[..RING_RECORD_LEN],
+                &record[..form.published_len(RecordKind::Ring)],
                 &payload.encode_padded(payload.encoded_len()).unwrap(),
             ]
             .concat()
@@ -294,8 +295,9 @@ fn instruction(ring: &mut Ring, case: Wide) -> Option<Instruction> {
     let message_tag = [0x74; 32];
     if case.payload != Payload::Base {
         data.has_data = true;
+        data.ring_data = true;
         for (slot, output) in data.outputs.iter_mut().enumerate() {
-            output.record = &records[slot][..output.body.record_len()];
+            output.record = &records[slot][..output.body.record_len(form)];
             output.body = match output.body {
                 SlotBody::Recipient(_) => SlotBody::Recipient(&bodies[slot]),
                 exit @ SlotBody::Exit(_) => exit,

@@ -21,6 +21,8 @@ pub enum RingRailError {
     Interface(#[from] CustomRingError),
     #[error("ring output {slot_index} holds data its recipient body cannot carry")]
     OutputDataNotCarried { slot_index: usize },
+    #[error("exit {slot_index} holds a ring data hash, an exit record publishes none")]
+    ExitRingData { slot_index: usize },
     #[error("output {slot_index} does not frame as its ring rail publishes it")]
     RingOutputFraming { slot_index: usize },
     #[error("anonymous ring output {slot_index} is not the planned payment's recipient, or a payment found no ring output")]

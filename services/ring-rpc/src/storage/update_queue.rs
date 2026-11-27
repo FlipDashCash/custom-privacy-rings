@@ -25,7 +25,7 @@ const FAILED: &str = "failed";
 const PENDING_APPROVAL_COLUMNS: &str = "id, signer, member, writes, awaited, valid_until_slot";
 const HEAD_COLUMNS: &str =
     "u.seq, u.id, u.ring, u.registry, u.writes, u.signer, u.role, u.queued_slot, \
-                            u.valid_until_slot";
+                            u.valid_until_slot, u.unregistered";
 /// Keys bound into one delete, under every backend's parameter ceiling.
 const KEYS_PER_DELETE: usize = 256;
 /// One update past a full batch, the planner reads whether more wallet updates wait behind it.
@@ -119,8 +119,8 @@ impl<'a> UpdateQueue<'a> {
         };
         let transaction = self.db.begin().await?;
         let sql = "INSERT INTO records_updates(id,registry,ring,request,writes,signer,role,\
-                   queued_slot,valid_until_slot,status,awaited,member) \
-                   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) \
+                   queued_slot,valid_until_slot,status,awaited,member,unregistered) \
+                   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) \
                    ON CONFLICT(id) DO NOTHING RETURNING seq";
         let registry = bytes(new.request.registry.0.as_array());
         let values = vec![
@@ -138,6 +138,12 @@ impl<'a> UpdateQueue<'a> {
             status.into(),
             integer(awaited)?,
             member,
+            new.request
+                .unregistered_owners
+                .iter()
+                .flat_map(|owner| owner.0.to_bytes())
+                .collect::<Vec<u8>>()
+                .into(),
         ];
         let inserted: Option<i64> = transaction
             .query_one(statement(&transaction, sql, values))
@@ -362,6 +368,7 @@ impl<'a> UpdateQueue<'a> {
                     registry: scope.registry,
                     joined: members,
                     writes,
+                    unregistered: stored_owners(row)?,
                     signer: update_signer(row)?,
                     queued_slot: unsigned(row, "queued_slot")?,
                     valid_until_slot: unsigned(row, "valid_until_slot")?,
@@ -753,6 +760,21 @@ fn column_bytes(row: &QueryResult, column: &str) -> Result<[u8; 32], DbErr> {
         .map_err(|_| corrupt(column))
 }
 
+fn stored_owners(row: &QueryResult) -> Result<Vec<Address>, DbErr> {
+    let stored = row
+        .try_get::<Option<Vec<u8>>>("", "unregistered")?
+        .unwrap_or_default();
+    let (owners, rest) = stored.as_chunks::<32>();
+    match rest.is_empty() {
+        true => Ok(owners
+            .iter()
+            .copied()
+            .map(Address::new_from_array)
+            .collect()),
+        false => Err(corrupt("unregistered")),
+    }
+}
+
 fn stored_writes(row: &QueryResult) -> Result<Vec<RecordWriteData>, DbErr> {
     bytemuck::try_cast_slice::<u8, RecordWriteData>(&row.try_get::<Vec<u8>>("", "writes")?)
         .map(<[RecordWriteData]>::to_vec)
@@ -818,6 +840,7 @@ mod tests {
                     },
                     signer: signer.address().into(),
                     signature: Signature::default().into(),
+                    unregistered_owners: Vec::new(),
                 },
                 update: CheckedUpdate {
                     id: RecordUpdateId(Hash(id)),

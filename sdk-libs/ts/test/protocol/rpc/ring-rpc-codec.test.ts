@@ -586,6 +586,17 @@ describe("co-sign", () => {
     ).toBe(`{"ring":"${ring}","message":"AwQF"}`);
     expect(
       JSON.stringify(
+        encodeCoSignTransactionRequest({
+          ring,
+          message: "AwQF" as indexerTypes.Base64String,
+          approvedTransfer: { data: "NwcI" as indexerTypes.Base64String, accounts: [ring] },
+        }),
+      ),
+    ).toBe(
+      `{"ring":"${ring}","message":"AwQF","approvedTransfer":{"data":"NwcI","accounts":["${ring}"]}}`,
+    );
+    expect(
+      JSON.stringify(
         encodeEditCoSignListRequest({
           ring,
           edit: "set",
@@ -788,6 +799,10 @@ describe("ring rpc refusals", () => {
     ]);
   });
 
+  it("names -32176 as a simulation without exactly one approved transfer call", () => {
+    expect(ringRpcRefusalName(-32176)).toBe("approvedCallNotOnce");
+  });
+
   it("names -32227 and -32228 as delegate notes outside the requested sources", () => {
     expect(ringRpcRefusalName(-32227)).toBe("sourceNote");
     expect(ringRpcRefusalName(-32228)).toBe("unrequestedInput");
@@ -801,9 +816,9 @@ describe("ring rpc refusals", () => {
     expect(ringRpcRefusalName(-32216)).toBe("oversized");
   });
 
-  it("names -32180 to -32186 as the enrollment refusals and frees the relayed enrollment codes", () => {
+  it("names -32180 to -32187 as the enrollment refusals and frees the relayed enrollment codes", () => {
     expect(
-      [-32180, -32181, -32182, -32183, -32184, -32185, -32186].map(ringRpcRefusalName),
+      [-32180, -32181, -32182, -32183, -32184, -32185, -32186, -32187].map(ringRpcRefusalName),
     ).toEqual([
       "enrollmentNotServed",
       "enrollmentRingMissing",
@@ -812,6 +827,7 @@ describe("ring rpc refusals", () => {
       "enrollmentsFull",
       "enrollmentBudget",
       "enrollmentRingsFull",
+      "enrollmentInFlight",
     ]);
     expect(
       [-32202, -32205, -32213, -32214, -32215].map(ringRpcRefusalName).filter(Boolean),

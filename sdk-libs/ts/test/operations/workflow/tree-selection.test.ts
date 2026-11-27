@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import vectors from "../../../../../test-vectors/wallet/tree-selection.json" with { type: "json" };
 import { selectAuthorityNotes } from "../../../src/operations/management/delegate.js";
 import {
+  MAX_RING_TRANSFER_PAYMENTS,
   anonymousInputCap,
   selectAnonymousInputs,
   selectRingInputs,
@@ -49,6 +50,7 @@ function walletOf(notes: readonly Note[], ringProgramId?: Address): Wallet {
       outputContext: {
         hash: noteId(index),
         tree: treeAddress(tree),
+        treeId: tree,
         leafIndex: BigInt(index),
       },
       nullifier: noteId(index),
@@ -316,6 +318,12 @@ describe("selectFunding", () => {
     expect(new Set(selected.map((entry) => entry.outputContext.tree))).toEqual(
       new Set([treeAddress(1), treeAddress(2)]),
     );
+  });
+
+  it("caps the widest anonymous payout at the narrow sixteen output key's inputs", () => {
+    expect(MAX_RING_TRANSFER_PAYMENTS).toBe(15);
+    expect(anonymousInputCap("ring", MAX_RING_TRANSFER_PAYMENTS)).toBe(4);
+    expect(anonymousInputCap("entry", MAX_RING_TRANSFER_PAYMENTS)).toBe(0);
   });
 
   it("names an asset with insufficient balance", () => {

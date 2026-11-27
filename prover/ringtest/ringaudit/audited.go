@@ -33,10 +33,10 @@ func (s Slot) Wires() audit.OutputWires {
 	return w
 }
 
-// Record mirrors audit.RecordOpening.Encode, all zero on a dummy.
-func (s Slot) Record(t testing.TB) []byte {
+// Record mirrors audit.TransferRecord.Encode under the frame's data flag, all zero on a dummy.
+func (s Slot) Record(t testing.TB, data bool) []byte {
 	t.Helper()
-	record := make([]byte, audit.RecordLen)
+	record := make([]byte, audit.TransferRecordLen)
 	if !s.Utxo.isUtxo() {
 		return record
 	}
@@ -50,18 +50,25 @@ func (s Slot) Record(t testing.TB) []byte {
 	binary.BigEndian.PutUint64(record[1:9], s.Utxo.Amount)
 	copy(record[9:41], s.OwnerKey[:])
 	copy(record[41:73], s.Mint[:])
-	blinding, nullifierPk := spptest.MustFieldBytes(t, s.Utxo.Blinding), spptest.MustFieldBytes(t, s.Utxo.NullifierPk)
+	blinding := spptest.MustFieldBytes(t, s.Utxo.Blinding)
 	copy(record[73:audit.RingRecordLen], blinding[:])
-	copy(record[audit.RingRecordLen:], nullifierPk[:])
+	first, second := s.Utxo.RingDataHash, s.Utxo.RingDataHash
+	switch {
+	case s.Utxo.isExit():
+		first, second = s.Utxo.NullifierPk, s.Utxo.DataHash
+	case data:
+		first = s.Utxo.DataHash
+	}
+	for i, field := range []*big.Int{first, second} {
+		bytes := spptest.MustFieldBytes(t, field)
+		copy(record[audit.RingRecordLen+i*audit.KeyLen:], bytes[:])
+	}
 	return record
 }
 
-// PublishedLen is the record bytes the slot carries, the full record on an exit alone.
-func (s Slot) PublishedLen() int {
-	if s.Utxo.isExit() {
-		return audit.RecordLen
-	}
-	return audit.RingRecordLen
+// PublishedLen is the record bytes slot i carries under the frame's flags.
+func (a Audit) PublishedLen(i int) int {
+	return audit.PublishedRecordLen(a.Outputs[i].Utxo.isExit(), a.Data, a.RingData)
 }
 
 // Input is one spent slot with the preimages its entry evidence names, the host twin of audit.EntryWires.
@@ -98,6 +105,8 @@ type Audit struct {
 	InputCount int
 	// Omitted is the slots past m, the frame carries no cell for them.
 	Omitted int
+	// Data and RingData are the frame's flags, every record then publishes that hash.
+	Data, RingData bool
 }
 
 // NewAudit pays every slot to a fixture recipient and spends nothing yet, exits name the slots leaving the ring.
@@ -144,7 +153,8 @@ func (a Audit) OutputCount() int {
 }
 
 func (a Audit) Layout() int64 {
-	return ringtest.Bit(a.Shape.Entry) * audit.LayoutEntry
+	return ringtest.Bit(a.Shape.Entry)*audit.LayoutEntry + ringtest.Bit(a.Vouched())*audit.LayoutVouched +
+		ringtest.Bit(a.Data)*audit.LayoutData + ringtest.Bit(a.RingData)*audit.LayoutRingData
 }
 
 // RealInputs is R, the spent notes among the slots.
@@ -181,8 +191,17 @@ func (a Audit) Stream(t testing.TB) Stream {
 // Head is what the program holds for the statement's head.
 func (a Audit) Head(t testing.TB, stream Stream) AuditHead {
 	t.Helper()
-	head := a.Keys.AuditHead(t, a.FirstNullifier, a.RingProgramID, a.Salt, stream.Envelope(a.InputCount), stream.Keys(a.OutputCount()))
+	return a.headOver(t, stream, a.InputCount, a.OutputCount())
+}
+
+// headOver is the head of a frame publishing n entries and m keys.
+func (a Audit) headOver(t testing.TB, stream Stream, n, m int) AuditHead {
+	t.Helper()
+	head := a.Keys.AuditHead(t, a.FirstNullifier, a.RingProgramID, a.Salt, stream.Envelope(n), stream.Keys(m))
 	head.Layout = a.Layout()
+	if a.Vouched() {
+		head.Voucher = stream.Voucher()
+	}
 	return head
 }
 
@@ -191,7 +210,7 @@ func (a Audit) StatementOutputs(t testing.TB, stream Stream) []StatementOutput {
 	t.Helper()
 	outputs := make([]StatementOutput, len(a.Outputs))
 	for i := range a.Outputs {
-		outputs[i] = StatementOutput{Omitted: i >= a.OutputCount(), Record: stream.Record(i)}
+		outputs[i] = StatementOutput{Omitted: i >= a.OutputCount(), Exit: a.Outputs[i].Utxo.isExit(), Record: stream.Record(i)}
 	}
 	return outputs
 }

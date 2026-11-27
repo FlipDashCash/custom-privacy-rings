@@ -3,6 +3,7 @@
 use zolana_ring_client::rpc::RECORD_UPDATE_SLOTS;
 
 use super::*;
+use crate::operator::Custody;
 
 pub struct Context {
     pub config_path: PathBuf,
@@ -14,7 +15,7 @@ pub struct Context {
     /// The `--catalogue` override, `None` for the bundled file.
     pub catalogue: Option<String>,
     ask: RefCell<Box<dyn Ask>>,
-    authority: OnceCell<Keypair>,
+    pub(crate) custody: Custody,
     fee_payer_keypair: Option<PathBuf>,
     fee_payer: OnceCell<Keypair>,
 }
@@ -35,25 +36,17 @@ pub enum Probe<T> {
     Retry(anyhow::Error),
 }
 
-#[must_use]
-pub struct Landing<'a> {
-    pub operation: RingOperation<'a>,
-    pub payer: &'a (dyn Signer + Sync),
-    pub signers: &'a [&'a (dyn Signer + Sync)],
-}
-
 impl ContextSetup {
     pub fn open(self) -> Result<Context> {
         let ContextSetup {
             config_path,
-            mut config,
+            config,
             ask,
             catalogue,
             prover_tee_policy,
             fee_payer_keypair,
         } = self;
         let root = config_root(&config_path);
-        config.resolve_keypair_paths(|path| resolve(&root, path));
         let urls = config.urls();
         let zolana = ZolanaServices {
             rpc: SolanaRpc::new(urls.rpc.clone()),
@@ -70,43 +63,10 @@ impl ContextSetup {
             zolana,
             catalogue,
             ask: RefCell::new(ask),
-            authority: OnceCell::new(),
+            custody: Custody::default(),
             fee_payer_keypair,
             fee_payer: OnceCell::new(),
         })
-    }
-}
-
-impl Landing<'_> {
-    /// Resent until the cluster settles it, a stale root is proved again.
-    pub fn settle(self, zolana: &Zolana) -> Result<Signature> {
-        let mut submission = RingSubmission::new(self.operation);
-        let charged =
-            zolana.block_on(submission.prove(zolana.ring_client(), self.payer, self.signers))?;
-        // A composed transfer can charge an owner for value another party moves out.
-        for flow in charged.iter().filter(|flow| flow.charge != 0) {
-            crate::line(
-                "charged outflow",
-                format_args!(
-                    "owner {} asset {} {} with {} charged beyond its debit",
-                    hex::encode(flow.owner),
-                    hex::encode(flow.asset),
-                    flow.charged_outflow,
-                    flow.charge
-                ),
-            );
-        }
-        let settled = zolana.block_on(submission.send_until_settled(
-            zolana.ring_client(),
-            self.payer,
-            self.signers,
-        ))?;
-        match settled {
-            SettledSubmission::Confirmed { signature, .. } => Ok(signature),
-            SettledSubmission::Failed { signature, error } => {
-                Err(RingError::Rejected { signature, error }.into())
-            }
-        }
     }
 }
 
@@ -114,6 +74,10 @@ impl Context {
     /// Relative to the ring directory, an absolute or `~` path as given.
     pub fn path(&self, path: &Path) -> PathBuf {
         resolve(&self.root, path)
+    }
+
+    pub fn expanded_path(&self, path: &Path) -> Result<PathBuf> {
+        expanded(&self.root, path)
     }
 
     pub fn rpc(&self) -> &SolanaRpc {
@@ -142,50 +106,20 @@ impl Context {
             .context("the ring has no config, run `zolana-ring init` first")
     }
 
-    /// The policy authority, read once.
-    pub fn authority(&self) -> Result<&Keypair> {
-        if let Some(authority) = self.authority.get() {
-            return Ok(authority);
-        }
-        let authority = self.config.policy_authority()?;
-        Ok(self.authority.get_or_init(|| authority))
-    }
-
     /// An anonymous ring's member operations take `--fee-payer-keypair`, apart from the hidden owner.
     pub(crate) fn member_payer(&self, mode: RingMode, owner: Address) -> Result<&Keypair> {
-        if mode != RingMode::Anonymous {
-            return self.authority();
-        }
-        let payer = match self.fee_payer.get() {
-            Some(payer) => payer,
-            None => {
-                let path = self.fee_payer_keypair.as_deref().context(
-                    "an anonymous ring pays its member operations from --fee-payer-keypair, a key apart from the hidden owner",
-                )?;
-                let payer = file::read_keypair(&self.path(path))?;
-                self.fee_payer.get_or_init(|| payer)
+        let payer = cached(&self.fee_payer, || match &self.fee_payer_keypair {
+            Some(path) => file::read_keypair(&self.expanded_path(path)?),
+            None if mode == RingMode::Anonymous => {
+                bail!("an anonymous ring requires --fee-payer-keypair")
             }
-        };
+            None => self.sender(),
+        })?;
         ensure!(
-            payer.pubkey() != owner,
+            mode != RingMode::Anonymous || payer.pubkey() != owner,
             "the fee payer {owner} is the hidden owner, paying would publish it"
         );
         Ok(payer)
-    }
-
-    pub fn role_keypair_path(&self, role: RingRole) -> Result<PathBuf> {
-        self.config.role_keypair_path(&self.root, role)
-    }
-
-    pub fn role_keypair(&self, role: RingRole) -> Result<Keypair> {
-        file::read_keypair(&self.role_keypair_path(role)?)
-    }
-
-    /// For a step that only pays fees and small rent.
-    pub fn funded_authority(&self) -> Result<&Keypair> {
-        let authority = self.authority()?;
-        self.fund(authority.pubkey(), fund::MIN_AUTHORITY_BALANCE)?;
-        Ok(authority)
     }
 
     /// Localnet airdrops what the step spends, devnet waits at the faucet.
@@ -222,36 +156,14 @@ impl Context {
     /// `signers[0]` pays, each ring instruction brings its own compute budget.
     pub fn send(&self, signers: &[&dyn Signer], instructions: &[Instruction]) -> Result<Signature> {
         let payer = signers.first().context("a transaction needs a payer")?;
-        let units = instructions
-            .iter()
-            .map(|instruction| self.compute_units(instruction))
-            .fold(0u32, u32::saturating_add)
-            .min(MAX_COMPUTE_UNITS);
         self.rpc()
             .create_and_send_transaction(
                 instructions,
                 payer.pubkey(),
                 signers,
-                ComputeBudgetConfig::new(units),
+                self.budget(instructions),
             )
-            .map_err(|error| match hint(&error) {
-                Some(hint) => anyhow::Error::new(error).context(hint),
-                None => error.into(),
-            })
-    }
-
-    pub fn submit<'a>(
-        &self,
-        operation: impl Into<RingOperation<'a>>,
-        payer: &(dyn Signer + Sync),
-        signers: &[&(dyn Signer + Sync)],
-    ) -> Result<Signature> {
-        Landing {
-            operation: operation.into(),
-            payer,
-            signers,
-        }
-        .settle(&self.zolana)
+            .map_err(transaction_failure)
     }
 
     pub fn wait_for_indexed(&self, signature: Signature) -> Result<()> {
@@ -301,13 +213,12 @@ impl Context {
         })
     }
 
-    /// Under the service key the ring rpc reports, refused when ring.toml pins another.
     pub fn ring_rpc_target(&self) -> Result<zolana_ring_client::rpc::ReadTarget> {
         let service = self.ring_rpc().service_pubkey()?;
         if let Trust::Pinned(pinned) = self.trust(Trust::Unpinned)? {
             ensure!(
                 pinned == service,
-                "the ring rpc reports service key {service}, ring.toml pins {pinned}"
+                "the ring RPC reports service key {service}, expected {pinned}"
             );
         }
         Ok(zolana_ring_client::rpc::ReadTarget {
@@ -317,15 +228,25 @@ impl Context {
         })
     }
 
-    /// `unpinned` applies only when ring.toml pins no service key.
     pub fn trust(&self, unpinned: Trust) -> Result<Trust> {
-        match self.config.urls().ring_rpc_pubkey.as_deref() {
-            Some(key) => key
+        if let Some(key) = &self.config.urls().ring_rpc_pubkey {
+            return key
                 .parse()
                 .map(Trust::Pinned)
-                .with_context(|| format!("ring_rpc_pubkey {key} is not a base58 key")),
-            None => Ok(unpinned),
+                .with_context(|| format!("ring_rpc_pubkey {key} is not a base58 key"));
         }
+        Ok(self
+            .local_rpc_roles()?
+            .map_or(unpinned, |roles| Trust::Pinned(roles.service.address)))
+    }
+
+    pub(crate) fn budget(&self, instructions: &[Instruction]) -> ComputeBudgetConfig {
+        let units = instructions
+            .iter()
+            .map(|instruction| self.compute_units(instruction))
+            .fold(0u32, u32::saturating_add)
+            .min(MAX_COMPUTE_UNITS);
+        ComputeBudgetConfig::new(units)
     }
 
     fn compute_units(&self, instruction: &Instruction) -> u32 {
@@ -338,6 +259,13 @@ impl Context {
                 ComputeBudgetConfig::for_instruction_count(1).cu_limit,
                 compute_unit_limit,
             )
+    }
+}
+
+pub(crate) fn transaction_failure(error: ClientError) -> anyhow::Error {
+    match hint(&error) {
+        Some(hint) => anyhow::Error::new(error).context(hint),
+        None => error.into(),
     }
 }
 
@@ -354,5 +282,19 @@ pub(crate) fn resolve(root: &Path, path: &Path) -> PathBuf {
         path.to_path_buf()
     } else {
         root.join(path)
+    }
+}
+
+pub(crate) fn expanded(root: &Path, path: &Path) -> Result<PathBuf> {
+    config::expand_tilde(&resolve(root, path))
+}
+
+pub(crate) fn cached<T>(cell: &OnceCell<T>, load: impl FnOnce() -> Result<T>) -> Result<&T> {
+    match cell.get() {
+        Some(value) => Ok(value),
+        None => {
+            let value = load()?;
+            Ok(cell.get_or_init(|| value))
+        }
     }
 }

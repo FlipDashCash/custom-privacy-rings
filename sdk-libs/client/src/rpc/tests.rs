@@ -1,7 +1,10 @@
+use std::path::PathBuf;
+
 use solana_keypair::Keypair;
 use solana_signature::Signature;
 use spr_keypair::{ShieldedAddress, ShieldedKeypair, SigningKey, ViewingKey};
 use spr_transaction::OutputContext;
+use zeroize::Zeroizing;
 
 use super::*;
 use crate::{
@@ -263,6 +266,7 @@ fn delivered_audited() -> AuditedTransaction {
         real_inputs: 0,
         nullifiers: vec![[12; 32]],
         entries: Vec::new(),
+        voucher: None,
     }
 }
 
@@ -277,6 +281,21 @@ fn a_decrypted_page_keeps_its_wire_json() {
         serde_json::from_str::<GetDecryptedTransactionsResponse>(&json).expect("parses"),
         page
     );
+}
+
+#[test]
+fn a_vouched_transaction_names_its_voucher_on_the_wire() {
+    let voucher = [0xc9; 32];
+    let vouched = AuditedTransaction {
+        voucher: Some(voucher),
+        ..delivered_audited()
+    };
+    let item = |audited| serde_json::to_value(&page(audited, Vec::new()).value.items[0]).unwrap();
+    assert_eq!(
+        item(vouched)["vouchedBy"],
+        Address::new_from_array(voucher).to_string()
+    );
+    assert!(item(delivered_audited()).get("vouchedBy").is_none());
 }
 
 /// The TypeScript decoder reads the same page, a spender sees its own nullifier alone.
@@ -440,6 +459,7 @@ fn anonymous_audited() -> AuditedTransaction {
         real_inputs: 3,
         nullifiers: vec![[12; 32], [11; 32], [10; 32], [9; 32]],
         entries: vec![entry_input(0x60), entry_input(0x70)],
+        voucher: None,
     }
 }
 
@@ -570,33 +590,6 @@ fn a_signed_read_carries_the_reader_and_the_bounds_it_signed() {
 }
 
 #[test]
-fn keygen_writes_a_secret_the_loader_reads_and_a_matching_public_key() {
-    let dir = temp_dir("keygen");
-    let secret = dir.join("auditor.key");
-    let key = write_auditor_key(&secret).expect("keygen");
-    assert_eq!(
-        read_auditor_key(&secret, Access::OwnerOnly)
-            .expect("load")
-            .pubkey(),
-        key.pubkey()
-    );
-    let public_path = public_key_path(&secret).expect("public path");
-    assert_eq!(
-        std::fs::read_to_string(&public_path).expect("pub file"),
-        hex::encode(key.pubkey().as_bytes())
-    );
-    assert_eq!(
-        read_auditor_pubkey(&public_path).expect("pubkey"),
-        key.pubkey()
-    );
-    assert!(matches!(
-        write_auditor_key(&secret),
-        Err(KeyFileError::File(SecretFileError::Write { .. }))
-    ));
-    std::fs::remove_dir_all(dir).expect("cleanup");
-}
-
-#[test]
 fn public_key_files_round_trip_and_reject_other_lengths() {
     let dir = temp_dir("pubkey");
     let path = dir.join("nested").join("auditor.key.pub");
@@ -608,24 +601,6 @@ fn public_key_files_round_trip_and_reject_other_lengths() {
     assert!(matches!(
         read_auditor_pubkey(&short),
         Err(KeyFileError::PubkeyEncoding)
-    ));
-    std::fs::remove_dir_all(dir).expect("cleanup");
-}
-
-#[test]
-fn malformed_and_zero_auditor_secrets_are_refused() {
-    let dir = temp_dir("zero");
-    let zero = dir.join("zero.key");
-    create_new(&zero, "00".repeat(32).as_bytes(), Visibility::Secret).expect("zero");
-    assert!(matches!(
-        read_auditor_key(&zero, Access::OwnerOnly),
-        Err(KeyFileError::ZeroAuditorKey)
-    ));
-    let upper = dir.join("upper.key");
-    create_new(&upper, "AA".repeat(32).as_bytes(), Visibility::Secret).expect("upper");
-    assert!(matches!(
-        read_auditor_key(&upper, Access::OwnerOnly),
-        Err(KeyFileError::File(SecretFileError::Hex))
     ));
     std::fs::remove_dir_all(dir).expect("cleanup");
 }

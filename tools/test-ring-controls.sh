@@ -72,10 +72,12 @@ done
 export ZOLANA_PROVER_KEYS_DIR="$keys_dir"
 
 # Under the scope dir, --stop signals only recorded receipts.
+source tools/localnet-kms-start.sh
 cleanup() {
   local status=$?
+  stop_localnet_kms
   if (( status != 0 )); then
-    find "$ZOLANA_PROCESS_SCOPE_DIR" -type f -name '*.log' -exec tail -n 200 {} + || true
+    find "$ZOLANA_PROCESS_SCOPE_DIR" -type f -name '*.log' ! -name prover-server.log -exec tail -n 200 {} + || true
   fi
   "$ZOLANA_CLI_BIN" dev start --local --stop \
     --rpc-port "$ZOLANA_LOCALNET_RPC_PORT" --photon-port "$ZOLANA_LOCALNET_PHOTON_PORT" \
@@ -89,14 +91,24 @@ cleanup() {
 trap cleanup EXIT
 
 ring_cli_bin="$repo_root/target/debug/zolana-ring"
+export RING_RPC_BIN="$repo_root/target/debug/ring-rpc"
 if [[ -n "${ZOLANA_PREBUILT:-}" ]]; then
-  for binary in "$ZOLANA_PHOTON_BIN" "$RING_INDEXER_BIN" "$ring_cli_bin"; do
+  for binary in "$ZOLANA_PHOTON_BIN" "$RING_INDEXER_BIN" "$ring_cli_bin" "$RING_RPC_BIN"; do
     [[ -x "$binary" ]] || { echo "Missing prebuilt executable $binary, unset ZOLANA_PREBUILT to build it" >&2; exit 1; }
   done
 else
   cargo build --locked --manifest-path zolana/Cargo.toml -p photon-indexer --bin photon \
     --features surfpool-fixture --target-dir target
   cargo build --locked -p ring-indexer --features surfpool-fixture
-  cargo build --locked -p custom-ring-cli
+  cargo build --locked -p custom-ring-cli -p zolana-ring-rpc --features zolana-ring-rpc/surfpool-fixture
 fi
+start_localnet_kms "$ZOLANA_PROCESS_SCOPE_DIR/kms.addr"
+program="$(tools/localnet-custody.sh signer)"
+upgrade="$(tools/localnet-custody.sh signer)"
+writer="$(tools/localnet-custody.sh signer)"
+CUSTOM_RING_PROGRAM_ID="$(jq -er .address <<<"$program")"
+RING_TEST_WRAPPING_KEY="$(tools/localnet-custody.sh wrapping-key)"
+RING_TEST_OPERATOR_MANIFEST="$ZOLANA_PROCESS_SCOPE_DIR/operator.json"
+tools/localnet-custody.sh operator "$program" "$upgrade" "$writer" >"$RING_TEST_OPERATOR_MANIFEST"
+export CUSTOM_RING_PROGRAM_ID RING_TEST_WRAPPING_KEY RING_TEST_OPERATOR_MANIFEST
 zolana/tools/ci/nextest-suite.sh -p custom-ring-test-validator --test "$suite" --no-capture "$@"

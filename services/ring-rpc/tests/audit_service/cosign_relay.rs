@@ -1,17 +1,20 @@
 //! The relay co-signs within its asset's window caps, sends once a second approver signed, and refuses an outflow beyond them, a proof naming a co-signer the run left out, or a ring whose auditor key it does not hold, and keeps a reservation while a stored relay holds it.
 
+use custom_ring_interface::TransferApproval;
 use custom_ring_sdk::CustomRing;
 use jsonrpsee::RpcModule;
 use sea_orm::{ConnectionTrait, Statement};
-use solana_instruction::AccountMeta;
+use solana_instruction::{AccountMeta, Instruction};
+use spr_client::{compile_message, ComputeBudgetConfig};
 use spr_keypair::{ShieldedKeypair, SigningKey};
+use zolana_operator_custody::{CustodyError, OperatorSigner};
 use zolana_ring_client::rpc::{
-    CoSignList, CoSignListEdit, CoSignListEntry, CoSignSubjectKind, CoSignTransactionRequest,
-    CoSignTransactionResponse, EditCoSignList, EditCoSignListRequest, GetCoSignListsRequest,
-    GetCoSignListsResponse, GetRelayQuoteRequest, GetRelayStatusRequest, PrepareRelayRequest,
-    ReadCoSignLists, RelayId, RelayProofInputs, RelayQuote, RelayRail, RelayStatus, RelayStep,
-    SubmitRelayRequest, CO_SIGN_TRANSACTION, EDIT_CO_SIGN_LIST, GET_CO_SIGN_LISTS, GET_RELAY_QUOTE,
-    GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
+    ApprovedTransfer, CoSignList, CoSignListEdit, CoSignListEntry, CoSignSubjectKind,
+    CoSignTransactionRequest, CoSignTransactionResponse, EditCoSignList, EditCoSignListRequest,
+    GetCoSignListsRequest, GetCoSignListsResponse, GetRelayQuoteRequest, GetRelayStatusRequest,
+    PrepareRelayRequest, ReadCoSignLists, RelayId, RelayProofInputs, RelayQuote, RelayRail,
+    RelayStatus, RelayStep, SubmitRelayRequest, CO_SIGN_TRANSACTION, EDIT_CO_SIGN_LIST,
+    GET_CO_SIGN_LISTS, GET_RELAY_QUOTE, GET_RELAY_STATUS, PREPARE_RELAY, SUBMIT_RELAY,
 };
 use zolana_ring_policy::{AssetLimits, MintPolicy};
 use zolana_ring_rpc::{
@@ -141,12 +144,53 @@ impl RelayProver for FramedProver {
     }
 }
 
+struct FaultySigner {
+    keypair: Keypair,
+    unavailable: AtomicBool,
+    calls: AtomicUsize,
+}
+
+impl FaultySigner {
+    fn new(keypair: Keypair) -> Arc<Self> {
+        Arc::new(Self {
+            keypair,
+            unavailable: AtomicBool::new(false),
+            calls: AtomicUsize::new(0),
+        })
+    }
+
+    fn fail(&self, unavailable: bool) {
+        self.unavailable.store(unavailable, Ordering::Relaxed);
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::Relaxed)
+    }
+}
+
+#[async_trait::async_trait]
+impl OperatorSigner for FaultySigner {
+    fn address(&self) -> Address {
+        self.keypair.pubkey()
+    }
+
+    async fn sign(&self, message: &[u8]) -> Result<Signature, CustodyError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        match self.unavailable.load(Ordering::Relaxed) {
+            true => Err(CustodyError::Signature),
+            false => Ok(self.keypair.sign_message(message)),
+        }
+    }
+}
+
 struct CappedRelay {
     hub: Arc<Hub<StaticSource>>,
     module: RpcModule<Arc<Hub<StaticSource>>>,
     store: Store,
     chain: Arc<RecordingChain>,
     co_signer: Address,
+    co_signer_key: Arc<FaultySigner>,
+    fee_payer_key: Arc<FaultySigner>,
     quote: RelayQuote,
     rail: fn() -> RelayRail,
 }
@@ -209,10 +253,12 @@ impl CappedRelay {
         ]);
         let chain = Arc::new(RecordingChain::default());
         let store = Store::open("sqlite::memory:", 1).await.expect("store");
+        let co_signer_key = FaultySigner::new(co_signer_key());
+        let fee_payer_key = FaultySigner::new(Keypair::new_from_array([31; 32]));
         let hub = Hub::builder(source, identity(GENESIS))
             .with_origins(origins())
             .with_store(store.clone())
-            .with_co_signer(co_signer_key())
+            .with_co_signer(co_signer_key.clone())
             .with_co_signer_approval(CoSignerApproval::new([
                 ApproveClass::Transfers,
                 ApproveClass::Withdrawals,
@@ -228,7 +274,7 @@ impl CappedRelay {
                     auditor: fixture.auditor.pubkey(),
                     nullifier,
                 }),
-                fee_payer: Keypair::new_from_array([31; 32]),
+                fee_payer: fee_payer_key.clone(),
                 chain: chain.clone(),
             })
             .local(RING, fixture.auditor.clone())
@@ -258,6 +304,8 @@ impl CappedRelay {
             store,
             chain,
             co_signer,
+            co_signer_key,
+            fee_payer_key,
             quote,
             rail,
         }
@@ -802,6 +850,106 @@ async fn an_unsigned_relay_holds_no_allowance_and_the_signed_one_past_the_cap_is
     assert!(signers_verify(&sent));
 }
 
+impl CappedRelay {
+    async fn submit(
+        &self,
+        signed: &SubmitRelayRequest,
+    ) -> Result<RelayStatus, jsonrpsee::MethodsError> {
+        self.module.call(SUBMIT_RELAY, as_object(signed)).await
+    }
+}
+
+fn depositor(seed: u8) -> Keypair {
+    Keypair::new_from_array([seed; 32])
+}
+
+const INTERNAL_ERROR: i32 = -32603;
+
+#[tokio::test]
+async fn a_failed_co_signature_holds_its_reservation_until_the_relay_expires() {
+    let relay = CappedRelay::naming(anonymous_rail, None, deposit_capped()).await;
+    let unsigned = relay.deposit(&depositor(51), 700).await;
+    let beyond = relay.deposit(&depositor(52), 700).await;
+    relay.co_signer_key.fail(true);
+    assert_eq!(refusal(relay.submit(&unsigned).await), INTERNAL_ERROR);
+    relay.co_signer_key.fail(false);
+    assert_eq!(
+        refusal(relay.submit(&beyond).await),
+        RelayError::CoSignRefused.code()
+    );
+    assert_eq!(relay.co_signer_key.calls(), 1);
+
+    relay
+        .chain
+        .height
+        .store(LAST_VALID_BLOCK_HEIGHT + 1, Ordering::Relaxed);
+    let expired = relay.status(unsigned.relay_id.clone()).await;
+    assert!(matches!(expired, RelayStatus::Failed { .. }), "{expired:?}");
+
+    relay.chain.height.store(400, Ordering::Relaxed);
+    let freed = relay.deposit(&depositor(53), 700).await;
+    let landed = relay
+        .submit(&freed)
+        .await
+        .expect("the expired relay freed the cap");
+    assert!(
+        matches!(landed, RelayStatus::Confirmed { .. }),
+        "{landed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_retry_after_a_failed_co_signature_closes_under_its_first_reservation() {
+    let relay = CappedRelay::naming(anonymous_rail, None, deposit_capped()).await;
+    let retried = relay.deposit(&depositor(51), 700).await;
+    relay.co_signer_key.fail(true);
+    assert_eq!(refusal(relay.submit(&retried).await), INTERNAL_ERROR);
+    assert!(relay.chain.sent().is_empty());
+    relay.co_signer_key.fail(false);
+
+    let landed = relay
+        .submit(&retried)
+        .await
+        .expect("a second reservation would pass the cap");
+    assert!(
+        matches!(landed, RelayStatus::Confirmed { .. }),
+        "{landed:?}"
+    );
+    assert_eq!(relay.co_signer_key.calls(), 2);
+    let [sent] = relay.chain.sent().try_into().expect("one sent transaction");
+    assert!(signers_verify(&sent));
+
+    let rest = relay.deposit(&depositor(52), DEPOSIT_CAP - 700).await;
+    let landed = relay
+        .submit(&rest)
+        .await
+        .expect("one reservation leaves the rest of the cap");
+    assert!(
+        matches!(landed, RelayStatus::Confirmed { .. }),
+        "{landed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_fee_payer_signature_reaches_no_co_signer_and_reserves_nothing() {
+    let relay = CappedRelay::naming(anonymous_rail, None, deposit_capped()).await;
+    let unpaid = relay.deposit(&depositor(51), 700).await;
+    let paid = relay.deposit(&depositor(52), 700).await;
+    relay.fee_payer_key.fail(true);
+    assert_eq!(refusal(relay.submit(&unpaid).await), INTERNAL_ERROR);
+    assert_eq!(relay.co_signer_key.calls(), 0);
+    relay.fee_payer_key.fail(false);
+
+    let landed = relay
+        .submit(&paid)
+        .await
+        .expect("the unpaid relay holds no allowance");
+    assert!(
+        matches!(landed, RelayStatus::Confirmed { .. }),
+        "{landed:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_derived_relay_refuses_a_ring_whose_auditor_key_it_does_not_hold() {
     let fixture = Fixture::new();
@@ -814,7 +962,7 @@ async fn a_derived_relay_refuses_a_ring_whose_auditor_key_it_does_not_hold() {
         .with_relay(RelayParts {
             store,
             prover: prover.clone(),
-            fee_payer: Keypair::new_from_array([31; 32]),
+            fee_payer: Arc::new(Keypair::new_from_array([31; 32])),
             chain: chain.clone(),
         })
         .derived(RootSecret::from_bytes([7; 32]).expect("root"))
@@ -1059,6 +1207,7 @@ async fn a_direct_request_is_simulated_then_signed_under_the_same_rules() {
             as_object(CoSignTransactionRequest {
                 ring: RING.into(),
                 message: sent.message.serialize().into(),
+                approved_transfer: None,
             }),
         )
     };
@@ -1082,6 +1231,196 @@ async fn a_direct_request_is_simulated_then_signed_under_the_same_rules() {
     let freeze = listing(CoSignList::Freeze, CoSignSubjectKind::Owner, sender);
     relay.edit_list(&authority(), freeze).await.expect("frozen");
     assert_eq!(refusal(direct().await), CoSignError::Frozen.code());
+}
+
+/// A sent ring transfer as a program calls it, the co-signer approving from the top level.
+struct ProgramCall {
+    message: solana_message::VersionedMessage,
+    transfer: ApprovedTransfer,
+}
+
+impl ProgramCall {
+    const CALLER: Address = Address::new_from_array([0x71; 32]);
+
+    fn of(sent: &solana_message::VersionedMessage, co_signer: Address) -> Self {
+        let keys = sent.static_account_keys();
+        let ring = sent
+            .instructions()
+            .iter()
+            .find(|instruction| keys[usize::from(instruction.program_id_index)] == RING)
+            .expect("ring transfer");
+        let accounts: Vec<Address> = ring
+            .accounts
+            .iter()
+            .map(|index| match keys[usize::from(*index)] {
+                signer if signer == co_signer => solana_sdk_ids::sysvar::instructions::ID,
+                account => account,
+            })
+            .collect();
+        let digest = TransferApproval::digest(&RING, &ring.data, &accounts).expect("digest");
+        let ring_accounts = CustomRing::new(RING);
+        let approval = Instruction {
+            program_id: RING,
+            accounts: vec![
+                AccountMeta::new_readonly(ring_accounts.policy_pda(), false),
+                AccountMeta::new_readonly(ring_accounts.co_signer_pda(&co_signer), false),
+                AccountMeta::new_readonly(co_signer, true),
+            ],
+            data: TransferApproval {
+                position: 0,
+                digest,
+            }
+            .encode()
+            .to_vec(),
+        };
+        let caller = Instruction {
+            program_id: Self::CALLER,
+            accounts: accounts
+                .iter()
+                .chain([&RING])
+                .map(|account| AccountMeta::new_readonly(*account, false))
+                .collect(),
+            data: Vec::new(),
+        };
+        Self {
+            message: compile_message(
+                &keys[0],
+                &[caller, approval],
+                solana_hash::Hash::default(),
+                ComputeBudgetConfig::new(1),
+            )
+            .expect("message"),
+            transfer: ApprovedTransfer {
+                data: ring.data.clone().into(),
+                accounts: accounts.into_iter().map(Into::into).collect(),
+            },
+        }
+    }
+
+    /// The caller makes the approved call in every later simulation.
+    fn runs_on(&self, relay: &CappedRelay) {
+        *relay.chain.simulated_calls.lock().expect("calls") = vec![zolana_ring_rpc::InnerCall {
+            position: 0,
+            program: RING,
+            accounts: self.transfer.accounts.iter().map(|key| key.0).collect(),
+            data: self.transfer.data.0.clone(),
+        }];
+    }
+
+    async fn co_sign(
+        &self,
+        relay: &CappedRelay,
+        transfer: Option<ApprovedTransfer>,
+    ) -> Result<CoSignTransactionResponse, jsonrpsee::MethodsError> {
+        relay
+            .module
+            .call(
+                CO_SIGN_TRANSACTION,
+                as_object(CoSignTransactionRequest {
+                    ring: RING.into(),
+                    message: self.message.serialize().into(),
+                    approved_transfer: transfer,
+                }),
+            )
+            .await
+    }
+}
+
+impl CappedRelay {
+    /// `(outflow, state)` of each reservation in the order it was made.
+    async fn reservations(&self) -> Vec<(i64, String)> {
+        let connection = self.store.connection();
+        connection
+            .query_all(Statement::from_string(
+                connection.get_database_backend(),
+                "SELECT outflow_lo, state FROM cosign_usage ORDER BY rowid",
+            ))
+            .await
+            .expect("rows")
+            .iter()
+            .map(|row| {
+                (
+                    row.try_get("", "outflow_lo").expect("outflow"),
+                    row.try_get("", "state").expect("state"),
+                )
+            })
+            .collect()
+    }
+
+    /// The transaction of a relayed transfer that spends the whole SENDER_CAP.
+    async fn sends_cap(&self) -> solana_message::VersionedMessage {
+        let step: RelayStep = self
+            .module
+            .call(PREPARE_RELAY, as_object(self.spending_cap(1)))
+            .await
+            .expect("relayed");
+        assert!(matches!(step, RelayStep::Submitted { .. }), "{step:?}");
+        let [sent] = self.chain.sent().try_into().expect("one sent transaction");
+        sent.message
+    }
+}
+
+#[tokio::test]
+async fn a_program_call_is_co_signed_under_its_approval_and_the_same_limits() {
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    let step = relay.pays(1).await.expect("relayed");
+    assert!(matches!(step, RelayStep::Submitted { .. }), "{step:?}");
+    let [sent] = relay.chain.sent().try_into().expect("one sent transaction");
+    let call = ProgramCall::of(&sent.message, relay.co_signer);
+
+    assert_eq!(
+        refusal(call.co_sign(&relay, None).await),
+        CoSignError::MessageScope.code()
+    );
+    let mut other = call.transfer.clone();
+    other.data.0.push(0);
+    assert_eq!(
+        refusal(call.co_sign(&relay, Some(other)).await),
+        CoSignError::MessageScope.code()
+    );
+    call.runs_on(&relay);
+
+    let signed = call
+        .co_sign(&relay, Some(call.transfer.clone()))
+        .await
+        .expect("co-signed");
+    assert_eq!(signed.signer.0, relay.co_signer);
+    assert!(signed
+        .signature
+        .0
+        .verify(relay.co_signer.as_ref(), &call.message.serialize()));
+    // The call reserves the debit its direct form reserved.
+    let [direct, called] = relay.reservations().await.try_into().expect("two rows");
+    assert_eq!(called.0, direct.0);
+
+    let capped = CappedRelay::new(|| RelayRail::Confidential).await;
+    let call = ProgramCall::of(&capped.sends_cap().await, capped.co_signer);
+    call.runs_on(&capped);
+    assert_eq!(
+        refusal(call.co_sign(&capped, Some(call.transfer.clone())).await),
+        CoSignError::OverLimit.code()
+    );
+}
+
+#[tokio::test]
+async fn an_approved_call_holds_the_window_only_when_its_program_makes_it() {
+    let proving = CappedRelay::new(|| RelayRail::Confidential).await;
+    let call = ProgramCall::of(&proving.sends_cap().await, proving.co_signer);
+
+    let relay = CappedRelay::new(|| RelayRail::Confidential).await;
+    assert_eq!(
+        refusal(call.co_sign(&relay, Some(call.transfer.clone())).await),
+        CoSignError::ApprovedCallNotOnce.code()
+    );
+    assert!(relay.reservations().await.is_empty());
+
+    call.runs_on(&relay);
+    call.co_sign(&relay, Some(call.transfer.clone()))
+        .await
+        .expect("co-signed");
+    assert!(relay.chain.sent().is_empty());
+    let cap = i64::try_from(SENDER_CAP).expect("cap");
+    assert_eq!(relay.reservations().await, [(cap, "held".to_owned())]);
 }
 
 #[tokio::test]

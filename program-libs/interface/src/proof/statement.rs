@@ -23,14 +23,16 @@ use spr_interface::N_PUBLIC_SLOTS;
 
 use crate::{
     anonymous_exit::ANONYMOUS_PARTIES,
-    audit_stream::{EXIT_RECORD_LEN, RING_RECORD_LEN},
+    audit_stream::{
+        RecordForm, EXIT_RECORD_LEN, RING_RECORD_LEN, SEALED_KEY_LEN, TRANSFER_RECORD_LEN,
+    },
     cosign::ApprovalMask,
     disclosure::{pack_disclosure, AuditLayout},
     domain,
     error::CustomRingError,
     key_catalog::{ApplyMode, RingCircuit},
     tagged_x25519,
-    transact::{RingOutput, SlotBody},
+    transact::RingOutput,
     REGISTER_KEY_CIPHERTEXT_LEN, TAGGED_X25519_KEY_LEN,
 };
 
@@ -53,6 +55,22 @@ pub struct AuditHead<'a> {
 }
 
 impl AuditHead<'_> {
+    /// `Poseidon(digest(envelope), digest(slot keys), hash_bytes(voucher key))`, zero in the last place off a vouched frame.
+    fn stream_digest(&self) -> Result<[u8; 32], HasherError> {
+        let keys =
+            self.layout
+                .split_keys(self.recipient_keys)
+                .ok_or(HasherError::InvalidInputLength(
+                    SEALED_KEY_LEN,
+                    self.recipient_keys.len(),
+                ))?;
+        Poseidon::hashv(&[
+            &ciphertext_digest(self.envelope)?,
+            &ciphertext_digest(keys.slots)?,
+            &keys.voucher.map_or(Ok(ZERO_FIELD), hash_bytes)?,
+        ])
+    }
+
     /// `statement` is the domain, so a proof of one kind cannot answer another.
     fn elements_under(
         &self,
@@ -68,10 +86,7 @@ impl AuditHead<'_> {
             tx1,
             aud0,
             aud1,
-            Poseidon::hashv(&[
-                &ciphertext_digest(self.envelope)?,
-                &ciphertext_digest(self.recipient_keys)?,
-            ])?,
+            self.stream_digest()?,
             right_align(self.salt),
             right_align(&[self.layout.value()]),
         ])
@@ -137,9 +152,9 @@ impl TransferStatement<'_> {
             right_align(&[self.approval_mask.bits()]),
             *self.approval_totals,
             bit(self.no_spend),
-            // 4. One record ciphertext per published slot, zero filled to `N`, so the count alone carries `m`.
+            // 4. One record ciphertext per published slot under its exit claim, zero filled to `N`, so the count alone carries `m`.
             count(self.outputs.len()),
-            record_chain(self.outputs, capacity)?,
+            record_chain(self.outputs, capacity, self.head.layout.records)?,
             // 5. The circuit holds every note below `n`. PrivateTxHash binds the note, output and address
             // chains SPP proved, and its blinding binds the head's first nullifier.
             count(self.input_count),
@@ -295,24 +310,43 @@ pub fn ciphertext_digest(ciphertext: &[u8]) -> Result<[u8; 32], HasherError> {
     ])
 }
 
-/// `HashChain4(hash_bytes(record_i))` over each published record, untagged since the proof derives each slot's length from its ring id.
-pub fn record_chain(outputs: &[RingOutput<'_>], capacity: usize) -> Result<[u8; 32], HasherError> {
-    let mut hashes = Vec::with_capacity(outputs.len());
+/// `HashChain4(Poseidon(exit_i, hash_bytes(record_i)))` over each published record, the frame's exit claim parts the two kinds at one length.
+pub fn record_chain(
+    outputs: &[RingOutput<'_>],
+    capacity: usize,
+    form: RecordForm,
+) -> Result<[u8; 32], HasherError> {
+    let mut cells = Vec::with_capacity(outputs.len());
     for output in outputs {
-        hashes.push(published_record_hash(output)?);
+        cells.push(record_cell(output, form)?);
     }
-    zero_filled_chain(hashes.iter(), capacity)
+    zero_filled_chain(cells.iter(), capacity)
 }
 
-fn published_record_hash(output: &RingOutput<'_>) -> Result<[u8; 32], HasherError> {
-    let refused = || HasherError::InvalidInputLength(output.body.record_len(), output.record.len());
-    match output.body {
-        SlotBody::Recipient(_) => {
-            hash_bytes(<&[u8; RING_RECORD_LEN]>::try_from(output.record).map_err(|_| refused())?)
+fn record_cell(output: &RingOutput<'_>, form: RecordForm) -> Result<[u8; 32], HasherError> {
+    let expected = output.body.record_len(form);
+    if output.record.len() != expected {
+        return Err(HasherError::InvalidInputLength(
+            expected,
+            output.record.len(),
+        ));
+    }
+    Poseidon::hashv(&[
+        &bit(output.is_exit()),
+        &published_record_hash(output.record)?,
+    ])
+}
+
+/// `hash_bytes` at each length a [`RecordForm`] publishes.
+fn published_record_hash(record: &[u8]) -> Result<[u8; 32], HasherError> {
+    let refused = || HasherError::InvalidInputLength(TRANSFER_RECORD_LEN, record.len());
+    match record.len() {
+        RING_RECORD_LEN => hash_bytes::<RING_RECORD_LEN>(record.try_into().map_err(|_| refused())?),
+        EXIT_RECORD_LEN => hash_bytes::<EXIT_RECORD_LEN>(record.try_into().map_err(|_| refused())?),
+        TRANSFER_RECORD_LEN => {
+            hash_bytes::<TRANSFER_RECORD_LEN>(record.try_into().map_err(|_| refused())?)
         }
-        SlotBody::Exit(_) => {
-            hash_bytes(<&[u8; EXIT_RECORD_LEN]>::try_from(output.record).map_err(|_| refused())?)
-        }
+        _ => Err(refused()),
     }
 }
 

@@ -44,8 +44,12 @@ func (w World) BuildRows(t testing.TB, rows Rows) Witness {
 	}
 	own, curator := registry(t, w.Own, key), registry(t, w.Curator, key)
 	write(t, own, w.Unkeyed, big.NewInt)
-	WriteSalted(t, own, w.Salted)
-	WriteSalted(t, curator, w.CuratorSalted)
+	ownKey := func(t testing.TB, owner *big.Int) *big.Int {
+		return ringregistry.ListKey(t, owner, ListSaltOf(t, owner))
+	}
+	WriteSalted(t, own, w.Salted, ownKey)
+	WriteSalted(t, curator, w.CuratorSalted, ownKey)
+	WriteSalted(t, own, w.RingSalted, func(t testing.TB, owner *big.Int) *big.Int { return ringregistry.RingListKey(t, owner, RingSalt) })
 	mintPolicies := map[string]*big.Int{}
 	assets := map[string]*big.Int{}
 	for i, a := range rows.InlineAssets {
@@ -126,11 +130,12 @@ func (w World) BuildRows(t testing.TB, rows Rows) Witness {
 	c.InputChain = inputChain
 	c.ThresholdsActive, c.Delegate = ringtest.Bit(!w.NoOwnRegistry && !w.Delegate), ringtest.Bit(w.Delegate)
 	c.ApprovalMask, c.ApprovalTotals, c.ApprovalBlinder = w.Approval, 0, 0
+	c.Vouched, c.Voucher = ringtest.Bit(w.Voucher != 0), w.Voucher
 	tracking := ringregistry.NewTracking(t)
 	for _, owner := range w.Enrolled {
 		Enroll(t, tracking, big.NewInt(owner), big.NewInt(owner+1))
 	}
-	FillPools(t, p, c.Outputs, c.Inputs, c.Senders, own, curator, tracking)
+	FillPools(t, p, c.Outputs, c.Inputs, c.Senders, c.Voucher, own, curator, tracking)
 	payments := make([]frontend.Variable, 0, len(p.OwnerEntries))
 	for _, out := range c.Outputs {
 		payments = append(payments, out.OwnerPkHash)
@@ -142,7 +147,7 @@ func (w World) BuildRows(t testing.TB, rows Rows) Witness {
 	for o := range outputs {
 		outputs[o] = 0
 	}
-	FillTracking(t, &c.Tracking, tracking, c.Senders, outputs, p, payments)
+	FillTracking(t, &c.Tracking, tracking, c.Senders, outputs, p, payments, c.Voucher)
 	b.Rehash(t)
 	return b
 }
@@ -184,7 +189,7 @@ func (b Witness) Rebind(t testing.TB) {
 	b.Circuit.PublicInputHash = spptest.MustHashChain4(t, ringtest.ToBigInts(b.Circuit.Statement()))
 }
 
-func WriteSalted(t testing.TB, tree *ringregistry.Registry, records map[int64]uint64) {
+func WriteSalted(t testing.TB, tree *ringregistry.Registry, records map[int64]uint64, key func(testing.TB, *big.Int) *big.Int) {
 	t.Helper()
 	owners := make([]int64, 0, len(records))
 	for owner := range records {
@@ -195,7 +200,7 @@ func WriteSalted(t testing.TB, tree *ringregistry.Registry, records map[int64]ui
 	for _, owner := range owners {
 		identity := big.NewInt(owner)
 		bits := new(big.Int).SetUint64(records[owner])
-		tree.Apply(t, ringregistry.Entry{Member: ringregistry.ListKey(t, identity, ListSaltOf(t, identity)), Mask: bits, Value: bits, MintPolicy: zero, WithdrawalThreshold: zero})
+		tree.Apply(t, ringregistry.Entry{Member: key(t, identity), Mask: bits, Value: bits, MintPolicy: zero, WithdrawalThreshold: zero})
 	}
 }
 
@@ -239,7 +244,7 @@ func (w World) balancedInputs() []Slot {
 
 // owners is every identity the world screens as an owner, its records sit under the public key.
 func (w World) owners() map[int64]bool {
-	owners := map[int64]bool{w.Sender: true}
+	owners := map[int64]bool{w.Sender: true, w.Voucher: true}
 	for _, owner := range w.CoOwners {
 		owners[owner] = true
 	}

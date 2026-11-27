@@ -2,6 +2,7 @@ import { initializePoseidon } from "@heliuslabs/spr";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename } from "node:path";
 
+import { ed25519 } from "@noble/curves/ed25519.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -20,6 +21,7 @@ import {
   type TrackingProofInputs,
   type TrackingWriteProofInput,
   type TransferProofRequest,
+  type VoucherProofInput,
 } from "../../src/rpc/prover/ring.js";
 import { ZERO_32, concatBytes, encodeBase58, isZero } from "@heliuslabs/spr/internal";
 import { UTXO_DOMAIN } from "@heliuslabs/spr/interface";
@@ -57,6 +59,7 @@ import {
   ringProvingKey,
 } from "../../src/protocol/proof/proving-keys.js";
 import { sealSaltedAuditorStream } from "../../src/crypto/audit/audit.js";
+import { vouchDigest } from "../../src/proof/vouch.js";
 import { listTagOf } from "../../src/crypto/keys/list-salt.js";
 import {
   DUMMY_RECORD,
@@ -67,6 +70,7 @@ import {
 } from "../../src/protocol/codec/audit-stream.js";
 import {
   recipientKeyRegion,
+  voucherRegion,
   type AuditLayout,
   type AuditStreamLayout,
 } from "../../src/protocol/codec/ring-disclosure-layout.js";
@@ -91,6 +95,7 @@ import { signingKeySpendSigner } from "../../src/operations/payments/anonymous.j
 import { CustomRingTransfer } from "../../src/operations/payments/transfer-rails.js";
 import { RingAddress } from "../../src/crypto/keys/ring-address.js";
 import { noteInput, ringFixture, walletKeys, type Fixture } from "../helpers/ring-pipeline.js";
+import { vectorLayout } from "../helpers/vector-records.js";
 
 await initializePoseidon();
 
@@ -217,13 +222,17 @@ function entry(value: unknown): PolicySubjectEntry {
 function ownerEntry(value: unknown): PolicyOwnerEntry {
   const item = record(value);
   const [curatorSalted, ...rest] = list(item["curatorSalted"]);
+  const [curatorRing, ...ringRest] = list(item["curatorRing"]);
   if (curatorSalted === undefined || rest.length !== 0) throw new Error("golden salted entry");
+  if (curatorRing === undefined || ringRest.length !== 0) throw new Error("golden ring entry");
   return {
     ...entry(item),
     tracking: count(item["tracking"]),
     listSalt: field(item["listSalt"]),
     ownSalted: count(item["ownSalted"]),
     curatorSalted: count(curatorSalted),
+    ownRing: count(item["ownRing"]),
+    curatorRing: count(curatorRing),
   };
 }
 
@@ -261,11 +270,8 @@ function recordPool(records: unknown, proof: unknown, subjects: unknown): Record
   };
 }
 
-/** `entry << 1`, any other bit is refused. */
 function layout(value: unknown): AuditLayout {
-  const flags = count(value);
-  if ((flags & ~2) !== 0) throw new Error(`layout ${flags}`);
-  return { entry: (flags & 2) !== 0 };
+  return vectorLayout(count(value));
 }
 
 function envelope(item: Json): AuditEnvelopeProofInputs {
@@ -345,6 +351,11 @@ function trackingOpening(value: unknown): TrackingOpening | undefined {
     : { kind: "absent", low: trackingRecord(item["record"]), path: quad };
 }
 
+function voucher(value: unknown): VoucherProofInput {
+  const item = record(value);
+  return { publicKey: bytes(item["publicKey"], 32), signature: bytes(item["signature"], 64) };
+}
+
 function policy(item: Json): PolicyProofInputs {
   const withdrawals = list(item["withdrawals"]).map((value) => {
     const leg = record(value);
@@ -369,6 +380,7 @@ function policy(item: Json): PolicyProofInputs {
     ownPool: recordPool(item["ownRecords"], item["ownProof"], item["ownSubjects"]),
     curatorPool: recordPool(item["curatorRecords"], item["curatorProof"], item["curatorSubjects"]),
     senderEntries: list(item["senderEntries"]).map(ownerEntry),
+    voucherEntry: ownerEntry(item["voucherEntry"]),
     ownerEntries: list(item["ownerEntries"]).map(ownerEntry),
     assetEntries: list(item["assetEntries"]).map(entry),
     publicAssetEntries: list(item["publicAssetEntries"]).map(count),
@@ -465,6 +477,7 @@ function request(item: Json): RingProofRequest {
         : { approvalBlinder: field(item["approvalBlinder"]) }),
       outputCount: count(item["outputCount"]),
       outputs: list(item["outputs"]).map(outputOpening),
+      voucher: voucher(item["voucher"]),
       inputCount: count(item["inputCount"]),
       addressChain: field(item["addressChain"]),
       inputs: list(item["inputs"]).map(opening),
@@ -906,6 +919,8 @@ function checkTransferStatement(typed: TransferProofRequest): void {
     inputs: typed.inputCount,
     outputs: typed.outputCount,
     capacity: typed.outputs.length,
+    vouched: typed.layout.vouched,
+    records: typed.layout.records,
   };
   const evidence = typed.layout.entry
     ? {
@@ -945,7 +960,23 @@ function checkTransferStatement(typed: TransferProofRequest): void {
       counter: recipientKeyRegion(layout, at).startCounter,
       bytes: slot.recipientKey,
     })),
+    ...(typed.layout.vouched
+      ? {
+          voucher: {
+            counter: voucherRegion(layout).startCounter,
+            bytes: typed.voucher.publicKey,
+          },
+        }
+      : {}),
   });
+  // The signer vouches for these notes and withdrawal legs alone, vouched or not.
+  expect(
+    ed25519.verify(
+      typed.voucher.signature,
+      vouchDigest({ privateTxHash: typed.privateTxHash, withdrawalHash: typed.withdrawalHash }),
+      typed.voucher.publicKey,
+    ),
+  ).toBe(true);
   const txKey = ViewingKey.fromBytes(typed.txViewingSk.slice() as Bytes32);
   const records = slots.map((slot, at) => {
     const { output } = slot;
@@ -958,6 +989,8 @@ function checkTransferStatement(typed: TransferProofRequest): void {
           mint: mintOf(slot.mintChunks),
           blinding: output.blinding,
           key: sealedRecordKey(kind, output.nullifierPk),
+          dataHash: output.dataHash,
+          ringDataHash: output.ringDataHash,
         }
       : DUMMY_RECORD;
     const secret = txKeySlotSecret({
@@ -967,7 +1000,10 @@ function checkTransferStatement(typed: TransferProofRequest): void {
       outputIndex: at,
       firstNullifier: typed.firstNullifier,
     });
-    return sealOutputSlot(secret, { record });
+    return {
+      record: sealOutputSlot(secret, { record, form: typed.layout.records }),
+      exit: isUtxo(output) && kind === RecordKind.exit,
+    };
   });
   txKey.destroy();
   const txViewingU = publicKeyOf(typed.txViewingSk).u();
@@ -979,7 +1015,10 @@ function checkTransferStatement(typed: TransferProofRequest): void {
       txViewingU,
       auditorPubkey: tagged(typed.auditorPk),
       envelope: sealed.envelope,
-      recipientKeys: concatBytes(...sealed.recipientKeys),
+      recipientKeys: concatBytes(
+        ...sealed.recipientKeys,
+        ...(sealed.voucher === undefined ? [] : [sealed.voucher]),
+      ),
       salt: typed.salt,
       layout: typed.layout,
     },
@@ -1000,7 +1039,7 @@ function checkTransferStatement(typed: TransferProofRequest): void {
     approvalMask: typed.approvalMask,
     approvalTotals: typed.approvalTotals ?? ZERO_32,
     noSpend: notes.length === 0,
-    outputs: records.map((record) => ({ record })),
+    outputs: records,
     capacity: typed.outputs.length,
     inputCount: typed.inputCount,
     privateTxHash: typed.privateTxHash,

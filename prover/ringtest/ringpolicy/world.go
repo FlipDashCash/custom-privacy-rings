@@ -42,6 +42,8 @@ type World struct {
 	Approval uint64
 	Sender   int64
 	CoOwners []int64
+	// Voucher vouches for the transfer, zero leaves it unvouched.
+	Voucher int64
 	// Nil derives one Sender input per asset the balance needs.
 	Inputs       []Slot
 	Table        Table
@@ -56,6 +58,8 @@ type World struct {
 	Enrolled []int64
 	// List bits at each owner's salted key, enrolled or not.
 	Salted, CuratorSalted map[int64]uint64
+	// List bits at each owner's RingSalt key.
+	RingSalted map[int64]uint64
 	// Unkeyed own records sit under the bare id, an owner record a writer left off its public key.
 	Unkeyed map[int64]Record
 }
@@ -69,9 +73,11 @@ type Table struct {
 	Curator map[uint64]bool
 	// Mask of lists owners read at their salted keys.
 	Salted uint64
-	Rules  []Rule
-	Inline []InlineLimit
-	Limits []OutflowLimit
+	// Nil commits no ring salt.
+	RingListTag *big.Int
+	Rules       []Rule
+	Inline      []InlineLimit
+	Limits      []OutflowLimit
 }
 
 // Rule mirrors one Row of program-libs/policy/src/rule_table/mod.rs.

@@ -674,7 +674,7 @@ fn opened_records(
             }
             .secret()
             .unwrap();
-            zolana_ring_transaction::open_recipient_body(output.record, &secret)
+            zolana_ring_transaction::open_recipient_body(output.record, &secret, data.record_form())
                 .unwrap()
                 .record
         })
@@ -726,15 +726,17 @@ mod delegate_message {
     enum Answer {
         Honest,
         SwappedRecipient,
+        SwappedChangeTag,
         DelegateWritable,
         ExtraSystemTransfer,
         DelegatePaysFee,
     }
 
     impl Answer {
-        const ALL: [Self; 5] = [
+        const ALL: [Self; 6] = [
             Self::Honest,
             Self::SwappedRecipient,
+            Self::SwappedChangeTag,
             Self::DelegateWritable,
             Self::ExtraSystemTransfer,
             Self::DelegatePaysFee,
@@ -745,6 +747,7 @@ mod delegate_message {
             match self {
                 Self::Honest => ("honest", "Accepted"),
                 Self::SwappedRecipient => ("swappedRecipient", "Recipients"),
+                Self::SwappedChangeTag => ("swappedChangeTag", "Recipients"),
                 Self::DelegateWritable => ("delegateWritable", "Accounts"),
                 Self::ExtraSystemTransfer => ("extraSystemTransfer", "Instructions"),
                 Self::DelegatePaysFee => ("delegatePaysFee", "FeePayer"),
@@ -756,7 +759,8 @@ mod delegate_message {
             let send = |instruction: Instruction| relay_message(&FEE_PAYER, &[instruction], UNITS);
             match self {
                 Self::Honest => send(honest.clone()),
-                Self::SwappedRecipient => send(paying(honest, 0, stranger)),
+                Self::SwappedRecipient => send(paying(honest, 1, stranger)),
+                Self::SwappedChangeTag => send(paying(honest, 0, stranger)),
                 Self::DelegateWritable => {
                     let mut widened = honest.clone();
                     widened
@@ -1234,7 +1238,7 @@ mod delegate_message {
         stolen.payments[0].recipient = SerializableShieldedAddress(thief());
         let frame = relay.build(&stolen, &asked.tx_viewing_key).await.unwrap();
         match RingTransactData::parse(&frame.data[1..], RingRail::Delegate) {
-            Ok(_) => paying(&frame, 0, payee().viewing_pubkey.u()),
+            Ok(_) => paying(&frame, 1, payee().viewing_pubkey.u()),
             Err(_) => frame,
         }
     }
@@ -1288,10 +1292,7 @@ mod delegate_message {
             let source = keypair(1).shielded_address().unwrap();
             let owner =
                 |address: ShieldedAddress| address.signing_pubkey.confidential_view_tag().unwrap();
-            let order = match mode {
-                RingMode::Confidential => [owner(payee()), owner(source)],
-                RingMode::Anonymous => [owner(source), owner(payee())],
-            };
+            let order = [owner(source), owner(payee())];
             assert_eq!(
                 slot_owners(&honest, expected.rail, &expected)[..2],
                 order,
@@ -1370,9 +1371,12 @@ mod delegate_message {
 
             let payloads = rewritten(&honest, expected.rail, |data| {
                 data.has_data = true;
+                // A data frame's record ends on its data hash, a recipient body on a payload.
                 for output in &mut data.outputs {
-                    if let custom_ring_interface::SlotBody::Recipient(body) = output.body {
-                        let padded = [body, &[0; 3][..]].concat();
+                    let record: &[u8] = Box::leak([output.record, &[0; 32][..]].concat().into());
+                    output.record = record;
+                    if let custom_ring_interface::SlotBody::Recipient(_) = output.body {
+                        let padded = [record, &[0; 3][..]].concat();
                         output.body =
                             custom_ring_interface::SlotBody::Recipient(Box::leak(padded.into()));
                     }

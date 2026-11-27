@@ -3,7 +3,7 @@
  * canonical plaintexts, Rust `AuditStreamSeal`, `AuditEnvelope` and `OutputRecord`.
  * Read after `protocol/codec/audit-stream.ts`. Read before `operations/payments/output-rail.ts` and the audit readers.
  */
-import { clampViewingSecret, concatBytes } from "@heliuslabs/spr/internal";
+import { checkedBytes, clampViewingSecret, concatBytes } from "@heliuslabs/spr/internal";
 import {
   ViewingKey,
   type Bytes16,
@@ -18,24 +18,25 @@ import {
   decodeOutputRecord,
   decodeRecipientPayload,
   encodeAuditEnvelope,
-  encodeOutputRecord,
   encodeRecipientPayload,
-  publishedRecordLen,
+  publishedOutputRecord,
   RecordKind,
+  RECORD_ZERO_KEY_BIT,
   type AuditEnvelope,
   type OutputRecord,
   type RecipientPayload,
 } from "../../protocol/codec/audit-stream.js";
 import {
   ENVELOPE_KEY_LEN,
-  EXIT_RECORD_LEN,
   RECIPIENT_KEY_LEN,
-  RING_RECORD_LEN,
   STREAM_FIRST_COUNTER,
   checkedStreamLayout,
   envelopeRegion,
+  publishedRecordLen,
   recipientKeyRegion,
+  voucherRegion,
   type AuditStreamLayout,
+  type RecordForm,
 } from "../../protocol/codec/ring-disclosure-layout.js";
 import { RingKeyError } from "../error.js";
 import {
@@ -54,16 +55,21 @@ export interface RingDisclosure {
   readonly envelope: AuditEnvelope;
   /** `V_i` of each published slot, the key its record seals to. */
   readonly recipientKeys: readonly Bytes32[];
+  /** The Ed25519 key whose vouch the proof verified, present exactly on a vouched layout. */
+  readonly voucher?: Bytes32;
 }
 
 /** `layout` is the one the program verified. */
 export interface PublishedAudit {
   readonly layout: AuditStreamLayout;
-  readonly message: Pick<AuditorMessage, "ephemeralPublicKey" | "envelope" | "recipientKeys">;
+  readonly message: Pick<
+    AuditorMessage,
+    "ephemeralPublicKey" | "envelope" | "recipientKeys" | "voucher"
+  >;
   readonly salt: Bytes16;
 }
 
-/** Rust `PayloadRead`, a malformed payload loses its data hashes and keeps the proven record. */
+/** Rust `PayloadRead`, a malformed payload loses the application data and keeps the proven record. */
 export type PayloadRead =
   /** A frame without data. */
   | Readonly<{ kind: "absent" }>
@@ -88,6 +94,7 @@ export function sealRingDisclosure(
   const layout = checkedStreamLayout(input.layout);
   if (
     disclosure.recipientKeys.length !== layout.outputs ||
+    (disclosure.voucher !== undefined) !== layout.vouched ||
     (disclosure.envelope.evidence.kind === "entry") !== layout.key.entry
   )
     throw shapeError("disclosure");
@@ -103,6 +110,14 @@ export function sealRingDisclosure(
         counter: recipientKeyRegion(layout, slot).startCounter,
         bytes: key,
       })),
+      ...(disclosure.voucher === undefined
+        ? {}
+        : {
+            voucher: {
+              counter: voucherRegion(layout).startCounter,
+              bytes: checkedBytes<Bytes32>(disclosure.voucher, RECIPIENT_KEY_LEN, "voucher"),
+            },
+          }),
     });
   } finally {
     envelope.fill(0);
@@ -133,14 +148,18 @@ export function openSealedDisclosure(
   );
 }
 
-/** The published record then the payload as one `CRING/rcp` stream under `CRDS_i`, Rust `RecipientPayload`. */
+/** The record `form` publishes then the payload as one `CRING/rcp` stream under `CRDS_i`, Rust `RecipientBody::seal`. */
 export function sealOutputSlot(
   slotSecret: Bytes32,
-  output: Readonly<{ record: OutputRecord; payload?: RecipientPayload; payloadLength?: number }>,
+  output: Readonly<{
+    record: OutputRecord;
+    form: RecordForm;
+    payload?: RecipientPayload;
+    payloadLength?: number;
+  }>,
 ): Uint8Array {
-  const record = encodeOutputRecord(output.record);
   const plaintext = concatBytes(
-    record.subarray(0, publishedRecordLen(output.record.kind)),
+    publishedOutputRecord(output.record, output.form),
     ...(output.payload === undefined
       ? []
       : [encodeRecipientPayload(output.payload, output.payloadLength)]),
@@ -148,45 +167,57 @@ export function sealOutputSlot(
   try {
     return symmetricAuditApply(slotSecret, recordPosition(), plaintext);
   } finally {
-    record.fill(0);
     plaintext.fill(0);
   }
 }
 
-/** A non-exit body, the bytes past its record are the payload of a data frame, an exit kind is refused. */
-export function openOutputSlot(slotSecret: Bytes32, body: Uint8Array): OpenedOutput {
-  if (body.length < RING_RECORD_LEN) throw shapeError("outputBody");
+/** A non-exit body under the frame's `form`, the bytes past its record are the payload, an exit kind is refused. */
+export function openOutputSlot(
+  slotSecret: Bytes32,
+  body: Uint8Array,
+  form: RecordForm,
+): OpenedOutput {
+  const opened = openSlotBody(slotSecret, body, form);
+  if (opened.record.kind === RecordKind.exit) throw shapeError("outputBody");
+  return opened;
+}
+
+/** An exit's record under the frame's `form`, refused at any other length or kind. */
+export function openExitRecord(
+  slotSecret: Bytes32,
+  recordCiphertext: Uint8Array,
+  form: RecordForm,
+): OutputRecord {
+  const { record, payload } = openSlotBody(slotSecret, recordCiphertext, form);
+  if (record.kind !== RecordKind.exit || payload.kind !== "absent") throw shapeError("exitRecord");
+  return record;
+}
+
+/** The cipher is unauthenticated, only the commitment a reader rebuilds proves ownership, Rust `open_recipient_body`. */
+function openSlotBody(slotSecret: Bytes32, body: Uint8Array, form: RecordForm): OpenedOutput {
+  if (body.length === 0) throw shapeError("outputBody");
   const plaintext = symmetricAuditApply(slotSecret, recordPosition(), body);
   try {
-    const record = decodeOutputRecord(plaintext.subarray(0, RING_RECORD_LEN));
+    const exit = ((plaintext[0] ?? 0) & ~RECORD_ZERO_KEY_BIT) === RecordKind.exit;
+    const recordLength = publishedRecordLen(form, exit ? RecordKind.exit : RecordKind.ring);
+    if (body.length < recordLength) throw shapeError("outputBody");
     return Object.freeze({
-      record,
+      record: decodeOutputRecord(plaintext.subarray(0, recordLength), form),
       payload:
-        body.length > RING_RECORD_LEN
-          ? payloadRead(plaintext.subarray(RING_RECORD_LEN))
-          : ABSENT_PAYLOAD,
+        body.length > recordLength ? payloadRead(plaintext.subarray(recordLength)) : ABSENT_PAYLOAD,
     });
   } finally {
     plaintext.fill(0);
   }
 }
 
-/** An exit's full record, refused at any other length or kind. */
-export function openExitRecord(slotSecret: Bytes32, recordCiphertext: Uint8Array): OutputRecord {
-  if (recordCiphertext.length !== EXIT_RECORD_LEN) throw shapeError("exitRecord");
-  const plaintext = symmetricAuditApply(slotSecret, recordPosition(), recordCiphertext);
-  try {
-    const record = decodeOutputRecord(plaintext);
-    if (record.kind !== RecordKind.exit) throw shapeError("exitRecord");
-    return record;
-  } finally {
-    plaintext.fill(0);
-  }
-}
-
-/** The plaintext concatenation the circuit hashes, `envelope ‖ keys`. */
+/** The plaintext concatenation the circuit hashes, `envelope ‖ keys ‖ voucher`. */
 export function disclosurePlaintext(disclosure: RingDisclosure): Uint8Array {
-  return concatBytes(encodeAuditEnvelope(disclosure.envelope), ...disclosure.recipientKeys);
+  return concatBytes(
+    encodeAuditEnvelope(disclosure.envelope),
+    ...disclosure.recipientKeys,
+    ...(disclosure.voucher === undefined ? [] : [disclosure.voucher]),
+  );
 }
 
 /** Wipes `recovered`, the circuit seals the clamped encoding and an alias is refused. */
@@ -216,6 +247,7 @@ function readDisclosure(schedule: AuditSchedule, published: PublishedAudit): Rin
     const layout = checkedStreamLayout(published.layout);
     if (
       message.recipientKeys.length !== layout.outputs ||
+      (message.voucher?.length ?? 0) !== voucherRegion(layout).length ||
       message.recipientKeys.some((key) => key.length !== RECIPIENT_KEY_LEN)
     )
       throw shapeError("disclosure");
@@ -223,7 +255,15 @@ function readDisclosure(schedule: AuditSchedule, published: PublishedAudit): Rin
     const recipientKeys = message.recipientKeys.map(
       (key, slot) => schedule.apply(recipientKeyRegion(layout, slot).startCounter, key) as Bytes32,
     );
-    return Object.freeze({ envelope, recipientKeys: Object.freeze(recipientKeys) });
+    const voucher =
+      message.voucher === undefined
+        ? undefined
+        : (schedule.apply(voucherRegion(layout).startCounter, message.voucher) as Bytes32);
+    return Object.freeze({
+      envelope,
+      recipientKeys: Object.freeze(recipientKeys),
+      ...(voucher === undefined ? {} : { voucher }),
+    });
   } finally {
     schedule.destroy();
     opened.forEach((bytes) => bytes.fill(0));

@@ -11,10 +11,7 @@ use sea_orm::{
 use sha2::{Digest, Sha256};
 use solana_address::Address;
 use solana_instruction::Instruction;
-use solana_keypair::Keypair;
 use solana_message::VersionedMessage;
-use solana_signature::Signature;
-use solana_signer::Signer;
 use spl_token_2022_interface::{
     extension::{BaseStateWithExtensions, ExtensionType, StateWithExtensions},
     state::{Account, Mint},
@@ -25,6 +22,7 @@ use spr_interface::{SPL_TOKEN_ACCOUNT_LEN, SPL_TOKEN_PROGRAM_ID};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 use zeroize::Zeroizing;
+use zolana_operator_custody::SigningIdentity;
 use zolana_ring_client::rpc::{
     CoSignTransactionRequest, CoSignTransactionResponse, GetRelayQuoteRequest,
     GetRelayStatusRequest, PrepareRelayRequest, ReadTarget, RelayId, RelayIntent, RelayMergeInputs,
@@ -37,7 +35,7 @@ use crate::{
     authority_transfer::AuthorityTransferError,
     cosign::{
         CoSignDecision, CoSignError, CoSignFlows, CoSignPolicy, CoSignRefusal, CoSignRequest,
-        CoSignSettlement, RefusingCoSigner,
+        CoSignSettlement, RefusingCoSigner, Ticket,
     },
     cosigner::DirectCoSign,
     database::Store,
@@ -137,6 +135,11 @@ pub trait ServedRings: Send + Sync {
     async fn check(&self, ring: Address) -> Result<(), RingRpcError>;
 
     async fn delegate(&self, ring: Address) -> Result<Option<Address>, RingRpcError>;
+
+    /// `None` proves no salted read on a ring with a ring salt.
+    async fn ring_salt(&self, _ring: Address) -> Result<Option<[u8; 32]>, RingRpcError> {
+        Ok(None)
+    }
 }
 
 struct NoRings;
@@ -146,7 +149,7 @@ pub struct RelayParts {
     pub store: Store,
     pub prover: Arc<dyn RelayProver>,
     /// The SPP payer every relayed message names.
-    pub fee_payer: Keypair,
+    pub fee_payer: SigningIdentity,
     pub chain: Arc<dyn ChainSubmit>,
 }
 
@@ -155,7 +158,7 @@ pub struct Relay {
     service: ServiceTarget,
     store: Store,
     prover: Arc<dyn RelayProver>,
-    fee_payer: Keypair,
+    fee_payer: SigningIdentity,
     chain: Arc<dyn ChainSubmit>,
     rings: Arc<dyn ServedRings>,
     co_signer: Arc<dyn CoSignPolicy>,
@@ -191,7 +194,7 @@ struct Checked {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReservationAfterWrite {
     Keep,
-    Free(Signature),
+    Free(Ticket),
 }
 
 enum WriteError {
@@ -210,8 +213,8 @@ enum UnstoredWrite<'a> {
 #[must_use]
 struct FailedWrite<'a> {
     write: UnstoredWrite<'a>,
-    co_signature: Option<Signature>,
-    stored: Result<Option<&'a RelayState>, &'a DbErr>,
+    ticket: Option<Ticket>,
+    stored: Result<Option<&'a RelayRecord>, &'a DbErr>,
 }
 
 #[must_use]
@@ -328,7 +331,7 @@ impl Relay {
     }
 
     pub fn fee_payer(&self) -> Address {
-        self.fee_payer.pubkey()
+        self.fee_payer.address()
     }
 
     fn parties(&self, named: &[spr_indexer_api::SerializablePubkey]) -> RelayParties {
@@ -408,6 +411,7 @@ impl Relay {
                         parties: parties.clone(),
                         payload: &payload,
                         owner_signature,
+                        ring_salt: self.rings.ring_salt(ring).await?,
                     })
                     .await?
             };
@@ -562,6 +566,7 @@ impl Relay {
                         parties: parties.clone(),
                         payload: &payload,
                         owner_signature: None,
+                        ring_salt: self.rings.ring_salt(ring).await?,
                     })
                     .await?;
                 (payload, proven)
@@ -645,8 +650,8 @@ impl Relay {
             let read = self.relays().get(&relay_id).await;
             self.free_unless_stored(FailedWrite {
                 write,
-                co_signature: record.state.co_signature(),
-                stored: stored_state(&read),
+                ticket: record.ticket(),
+                stored: stored_record(&read),
             })
             .await?;
             if let AttemptWrite::Refused(refused) = stored? {
@@ -883,7 +888,7 @@ impl Relay {
         // A merge awaits no wallet signer and demands no co-signer.
         let closing = Closing {
             co_signature: None,
-            fee_payer: self.fee_payer_signs(&merge.message),
+            fee_payer: self.fee_payer_signature(&merge.message).await?,
         };
         let unsigned = Awaiting {
             signatures: Vec::new(),
@@ -908,8 +913,8 @@ impl Relay {
                 let stored = self.relays().get(&relay_id).await;
                 self.free_unless_stored(FailedWrite {
                     write: UnstoredWrite::Failed(&error),
-                    co_signature: record.state.co_signature(),
-                    stored: stored_state(&stored),
+                    ticket: record.ticket(),
+                    stored: stored_record(&stored),
                 })
                 .await?;
                 return Err(error.into());
@@ -1090,19 +1095,20 @@ impl Relay {
         Ok(RelayState::open(awaiting, closing)?)
     }
 
-    /// The fee payer signs only after the co-sign decision, every later send repeats both signatures.
+    /// The fee payer signs first, its failure leaves the co-signer allowance unspent, every later send repeats both signatures.
     async fn closing(
         &self,
         message: &VersionedMessage,
         co_sign: Option<&PendingCoSign>,
     ) -> Result<Closing, RingRpcError> {
+        let fee_payer = self.fee_payer_signature(message).await?;
         let co_signature = match co_sign {
             Some(pending) => Some(self.co_sign(message, pending).await?),
             None => None,
         };
         Ok(Closing {
             co_signature,
-            fee_payer: self.fee_payer_signs(message),
+            fee_payer,
         })
     }
 
@@ -1129,6 +1135,7 @@ impl Relay {
             ring: pending.ring,
             message: message.clone(),
             flows: pending.flows.clone(),
+            approved_transfer: None,
         };
         match self.co_signer.decide(&request).await? {
             CoSignDecision::Signed(signature) => Ok(CollectedSignature {
@@ -1147,11 +1154,14 @@ impl Relay {
         }
     }
 
-    fn fee_payer_signs(&self, message: &VersionedMessage) -> CollectedSignature {
-        CollectedSignature {
+    async fn fee_payer_signature(
+        &self,
+        message: &VersionedMessage,
+    ) -> Result<CollectedSignature, RingRpcError> {
+        Ok(CollectedSignature {
             signer: self.fee_payer(),
-            signature: self.fee_payer.sign_message(&message.serialize()),
-        }
+            signature: self.fee_payer.sign(&message.serialize()).await?,
+        })
     }
 
     async fn first_send(
@@ -1204,8 +1214,9 @@ impl Relay {
                 }
             }
             // A failed settlement retries here, freeing twice frees nothing more.
-            RelayState::Failed { co_signature, .. } => {
-                self.settle(*co_signature, CoSignSettlement::Failed).await?;
+            RelayState::Failed { .. } => {
+                self.settle(row.record.ticket(), CoSignSettlement::Failed)
+                    .await?;
                 return Ok(row);
             }
             RelayState::AwaitingSignature(_) | RelayState::Confirmed { .. } => return Ok(row),
@@ -1228,20 +1239,26 @@ impl Relay {
             Transition::Unchanged => return Ok(Applied::Unchanged(row)),
             Transition::Next(next) => next,
         };
-        // 2. A lost closing write frees its co-sign unless the stored relay holds the same co-signature.
-        let reserved = match row.record.state {
-            RelayState::AwaitingSignature(_) => next.co_signature(),
+        // An admitted co-sign whose signature failed holds its reservation up to the expiry.
+        let unsigned = match &row.record.state {
+            RelayState::AwaitingSignature(Awaiting {
+                co_sign: Some(pending),
+                ..
+            }) => Some(Ticket::of(&pending.signer, &row.record.message)),
             _ => None,
         };
-        // 3. Confirmed usage settles before the write, a crash between them settles again from `Sent`.
-        if let RelayState::Confirmed { co_signature, .. } = &next {
-            self.settle(*co_signature, CoSignSettlement::Confirmed)
-                .await?;
-        }
+        let closes = matches!(row.record.state, RelayState::AwaitingSignature(_));
         let record = RelayRecord {
             state: next,
             ..row.record
         };
+        // 2. A lost closing write frees its co-sign unless the stored relay holds the same message.
+        let reserved = closes.then(|| record.ticket()).flatten();
+        // 3. Confirmed usage settles before the write, a crash between them settles again from `Sent`.
+        if let RelayState::Confirmed { .. } = &record.state {
+            self.settle(record.ticket(), CoSignSettlement::Confirmed)
+                .await?;
+        }
         let written = self
             .commit(CommitRelay {
                 relay_id,
@@ -1256,8 +1273,8 @@ impl Relay {
                 let stored = self.relays().get(relay_id).await;
                 self.free_unless_stored(FailedWrite {
                     write: UnstoredWrite::Existing,
-                    co_signature: reserved,
-                    stored: stored_state(&stored),
+                    ticket: reserved,
+                    stored: stored_record(&stored),
                 })
                 .await?;
                 let newer = stored?.ok_or(RelayError::UnknownRelay)?;
@@ -1267,8 +1284,8 @@ impl Relay {
                 let stored = self.relays().get(relay_id).await;
                 self.free_unless_stored(FailedWrite {
                     write: UnstoredWrite::Failed(&error),
-                    co_signature: reserved,
-                    stored: stored_state(&stored),
+                    ticket: reserved,
+                    stored: stored_record(&stored),
                 })
                 .await?;
                 return Err(error.into());
@@ -1281,8 +1298,9 @@ impl Relay {
                     self.release_landed(&held, &record.message).await?;
                 }
             }
-            RelayState::Failed { co_signature, .. } => {
-                self.settle(*co_signature, CoSignSettlement::Failed).await?;
+            RelayState::Failed { .. } => {
+                self.settle(record.ticket().or(unsigned), CoSignSettlement::Failed)
+                    .await?;
             }
             RelayState::AwaitingSignature(_) | RelayState::Sent(_) => {}
         }
@@ -1335,9 +1353,9 @@ impl Relay {
 
     async fn free_unless_stored(&self, failed: FailedWrite<'_>) -> Result<(), RingRpcError> {
         match failed.reservation() {
-            ReservationAfterWrite::Free(co_signature) => {
+            ReservationAfterWrite::Free(ticket) => {
                 self.co_signer
-                    .settle(CoSignSettlement::Failed(co_signature))
+                    .settle(CoSignSettlement::Failed(ticket))
                     .await
             }
             ReservationAfterWrite::Keep => Ok(()),
@@ -1346,11 +1364,11 @@ impl Relay {
 
     async fn settle(
         &self,
-        co_signature: Option<Signature>,
-        settlement: fn(Signature) -> CoSignSettlement,
+        ticket: Option<Ticket>,
+        settlement: fn(Ticket) -> CoSignSettlement,
     ) -> Result<(), RingRpcError> {
-        match co_signature {
-            Some(signature) => self.co_signer.settle(settlement(signature)).await,
+        match ticket {
+            Some(ticket) => self.co_signer.settle(settlement(ticket)).await,
             None => Ok(()),
         }
     }
@@ -1451,7 +1469,7 @@ impl CoSignStep<'_> {
 impl FailedWrite<'_> {
     /// An unknown commit outcome or an unreadable store keeps the reservation, a stored relay can still land.
     fn reservation(self) -> ReservationAfterWrite {
-        let Some(co_signature) = self.co_signature else {
+        let Some(ticket) = self.ticket else {
             return ReservationAfterWrite::Keep;
         };
         if let UnstoredWrite::Failed(WriteError::Committing(error)) = self.write {
@@ -1460,10 +1478,8 @@ impl FailedWrite<'_> {
             }
         }
         match self.stored {
-            Ok(Some(state)) if state.co_signature() == Some(co_signature) => {
-                ReservationAfterWrite::Keep
-            }
-            Ok(_) => ReservationAfterWrite::Free(co_signature),
+            Ok(Some(record)) if record.ticket() == Some(ticket) => ReservationAfterWrite::Keep,
+            Ok(_) => ReservationAfterWrite::Free(ticket),
             Err(_) => ReservationAfterWrite::Keep,
         }
     }
@@ -1759,9 +1775,8 @@ fn landed(outcome: ChainOutcome) -> RelayEvent {
     }
 }
 
-fn stored_state(read: &Result<Option<RelayRow>, DbErr>) -> Result<Option<&RelayState>, &DbErr> {
-    read.as_ref()
-        .map(|row| row.as_ref().map(|row| &row.record.state))
+fn stored_record(read: &Result<Option<RelayRow>, DbErr>) -> Result<Option<&RelayRecord>, &DbErr> {
+    read.as_ref().map(|row| row.as_ref().map(|row| &row.record))
 }
 
 fn step(relay_id: RelayId, record: &RelayRecord) -> RelayStep {
@@ -1819,7 +1834,10 @@ mod tests {
 
         let reservation = FailedWrite {
             write: UnstoredWrite::Failed(&lost),
-            co_signature: Some(Signature::from([1; 64])),
+            ticket: Some(Ticket::of(
+                &Address::default(),
+                &VersionedMessage::default(),
+            )),
             stored: Ok(None),
         }
         .reservation();

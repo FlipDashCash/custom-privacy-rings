@@ -5,18 +5,24 @@
 // counter with no other slot. The frame omits padding and unpublished slots, so the bytes the statement
 // hashes are the regions the published n and m select.
 //
-// The auditor stream holds the envelope, then one recipient key per output slot at full output capacity.
+// The auditor stream holds the envelope, then one recipient key per output slot at full output capacity,
+// then the voucher's key. The voucher region sits last, so no key's counter moves and a frame that is not
+// vouched omits it like an unpublished slot.
 // The envelope seals the viewing key and the note count before any entry evidence. Entry evidence keeps
 // one record per published input in note order. Key counters start after the envelope at full input
 // capacity, rounded up to an AES block. Readers must use that capacity even when the frame carries fewer
 // inputs, or they select another keystream.
 //
 // Each output record is its own stream under its slot secret, so no counter of the auditor stream serves it.
+// Every slot seals TransferRecordLen bytes and publishes a prefix. The frame's data flags and the slot's
+// class fix the prefix, so one length serves every ring slot and dummy of a frame and no length names a data note.
 //
 // The file proves the following.
-//  1. The layout value holds the entry flag alone, a value past it fails its decomposition.
+//  1. The layout value holds the vouched, entry, data and ring data flags, a value past them fails its decomposition.
 //  2. The entry flag equals the key's entry capacity.
 //  3. Range construction rejects an input capacity outside the entry bitmap.
+//  4. A clear data flag holds every slot's data hash to zero, a clear ring data flag every ring data hash,
+//     and an exit carries no ring data hash.
 //
 // Read after shared/envelope.go. Read before audit/audit.go, audit/record.go.
 
@@ -24,35 +30,69 @@ package audit
 
 import (
 	"github.com/consensys/gnark/frontend"
+	"github.com/reilabs/gnark-lean-extractor/v3/abstractor"
 
 	"github.com/helius-labs/zolana-custom-rings/prover/circuits/shared"
+	"github.com/helius-labs/zolana/prover/server/circuits/gadget"
 )
 
-// LayoutEntry is the one flag of the audit statement's layout value, mirrored by AuditLayout::value in program-libs/interface/src/proof/disclosure.rs.
-const LayoutEntry = 1 << 1
+// The flags of the audit statement's layout value, mirrored by AuditLayout::value in program-libs/interface/src/proof/disclosure.rs.
+const (
+	// LayoutVouched is set when the frame publishes the voucher region.
+	LayoutVouched = 1 << 0
+	LayoutEntry   = 1 << 1
+	// LayoutData is set when the frame's records publish a data hash.
+	LayoutData = 1 << 2
+	// LayoutRingData is set when the frame's records publish a ring data hash.
+	LayoutRingData = 1 << 3
+)
 
-const layoutBits = 2
+const layoutBits = 4
+
+// LayoutFlags are the layout bits a frame chooses.
+type LayoutFlags struct {
+	Vouched, Data, RingData frontend.Variable
+}
 
 type StreamShape struct {
 	InputClass, Outputs int
 	Entry               bool
 }
 
-// AssertLayout pins the layout to the key's entry flag, bit 0 stays clear.
-func (s StreamShape) AssertLayout(api frontend.API, layout frontend.Variable) {
-	// The decomposition bounds the layout to its two bits.
+// AssertLayout pins the layout to the key's entry flag and returns the flags a frame chooses.
+func (s StreamShape) AssertLayout(api frontend.API, layout frontend.Variable) LayoutFlags {
+	// The decomposition bounds the layout to its four bits.
 	bits := api.ToBinary(layout, layoutBits)
 	entry := 0
 	if s.Entry {
 		entry = 1
 	}
-	api.AssertIsEqual(bits[0], 0)
 	api.AssertIsEqual(bits[1], entry)
+	return LayoutFlags{Vouched: bits[0], Data: bits[2], RingData: bits[3]}
+}
+
+// assertHashes holds a hash under a clear flag to zero, the reader rebuilds the commitment with zero there.
+func (l LayoutFlags) assertHashes(api frontend.API, slot shared.Output) {
+	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: api.Sub(1, l.Data), V: slot.DataHash})
+	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: api.Sub(1, l.RingData), V: slot.RingDataHash})
+	// An exit publishes its nullifier key where a ring slot publishes ring data.
+	abstractor.CallVoid(api, gadget.AssertZeroWhen{Cond: slot.Exit, V: slot.RingDataHash})
+}
+
+// PublishedRecordLen is the prefix of TransferRecordLen a slot publishes.
+func PublishedRecordLen(exit, data, ringData bool) int {
+	fields := 0
+	for _, published := range []bool{data, exit || ringData} {
+		if published {
+			fields++
+		}
+	}
+	return RingRecordLen + fields*fieldLen
 }
 
 // StreamRanges mirrors AuditStreamLayout in program-libs/interface/src/proof/audit_stream.rs.
 //
-//	envelope, EnvelopeBlocks | recipient keys, Outputs * KeyBlocks
+//	envelope, EnvelopeBlocks | recipient keys, Outputs * KeyBlocks | voucher key, KeyBlocks
 type StreamRanges struct {
 	StreamShape
 }
@@ -67,9 +107,11 @@ const (
 	fieldLen            = 32
 	amountLen           = 8
 	kindLen             = 1
-	// RecordLen is the plaintext every slot seals and an exit publishes, mirrored by EXIT_RECORD_LEN.
+	// TransferRecordLen is the plaintext every transfer slot seals, mirrored by TRANSFER_RECORD_LEN.
+	TransferRecordLen = RecordLen + fieldLen
+	// RecordLen is the head and the nullifier key, the prefix an exit publishes with no data hash and the record a merge seals before its seed.
 	RecordLen = RingRecordLen + fieldLen
-	// RingRecordLen is the prefix a non-exit slot publishes without the nullifier key, mirrored by RING_RECORD_LEN.
+	// RingRecordLen is the head every slot publishes, kind to blinding.
 	RingRecordLen = kindLen + amountLen + 3*fieldLen
 	// KeyLen is one sealed recipient key, its region holds no padding.
 	KeyLen    = fieldLen
@@ -115,9 +157,14 @@ func (r StreamRanges) KeyCounter(i int) int {
 	return StreamFirstCounter + r.EnvelopeBlocks() + i*KeyBlocks
 }
 
-// CapacityBlocks covers the envelope and every slot's key, a frame omits what it does not publish.
+// CapacityBlocks covers the envelope, every slot's key and the voucher's key, a frame omits what it does not publish.
 func (r StreamRanges) CapacityBlocks() int {
-	return r.EnvelopeBlocks() + r.Outputs*KeyBlocks
+	return r.EnvelopeBlocks() + (r.Outputs+1)*KeyBlocks
+}
+
+// VoucherOffset is the block past the last slot's key.
+func (r StreamRanges) VoucherOffset() int {
+	return r.KeyOffset(r.Outputs)
 }
 
 func (r StreamRanges) KeyOffset(i int) int {

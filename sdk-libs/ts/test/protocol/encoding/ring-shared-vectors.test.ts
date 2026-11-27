@@ -46,11 +46,20 @@ import {
   recordChain,
   transferStatementElements,
   transferStatementHash,
+  type StatementOutput,
   type TransferFamily,
   type TransferStatement,
 } from "../../../src/protocol/proof/statement.js";
 import { RingInstructionTag } from "../../../src/operations/management/admin.js";
-import { privateListKey, publicListKey } from "../../../src/protocol/membership/private-list.js";
+import { CLEAR_RECORD_FORM } from "../../../src/protocol/codec/ring-disclosure-layout.js";
+import { vectorLayout } from "../../helpers/vector-records.js";
+import {
+  committedRingListKey,
+  privateListKey,
+  publicListKey,
+  ringListKey,
+} from "../../../src/protocol/membership/private-list.js";
+import { listTagOf } from "../../../src/crypto/keys/list-salt.js";
 import { publicMember, type Member } from "../../../src/protocol/membership/policy.js";
 import { ringRail, ringRailOf } from "../../../src/protocol/transaction/transact.js";
 
@@ -236,6 +245,11 @@ describe("ring-statements.json", () => {
           sender: field(vector.sender ?? "00".repeat(32)),
         };
 
+  const statementOutput = (slot: TransferCase["outputs"][number]): StatementOutput => ({
+    record: bytes(slot.record),
+    exit: slot.exit,
+  });
+
   const statementOf = (vector: TransferCase, outputs: TransferStatement["outputs"]) => ({
     head: {
       firstNullifier: field(vector.first_nullifier),
@@ -245,7 +259,7 @@ describe("ring-statements.json", () => {
       envelope: bytes(vector.envelope),
       recipientKeys: bytes(vector.recipient_keys),
       salt: bytes<Bytes16>(vector.salt, 16),
-      layout: { entry: (vector.layout & 2) !== 0 },
+      layout: vectorLayout(vector.layout),
     },
     family: family(vector),
     approvalMask: vector.approval_mask,
@@ -271,15 +285,22 @@ describe("ring-statements.json", () => {
 
   it("rebuilds every transfer statement, its element count and its public input", () => {
     for (const vector of statements.transfer) {
-      const outputs = vector.outputs.map((slot) => ({ record: bytes(slot.record) }));
+      const outputs = vector.outputs.map(statementOutput);
       const statement0 = statementOf(vector, outputs);
       expect(
-        hex(envelopeDigest(statement0.head.envelope, statement0.head.recipientKeys)),
+        hex(
+          envelopeDigest(
+            statement0.head.envelope,
+            statement0.head.recipientKeys,
+            statement0.head.layout,
+          ),
+        ),
         vector.rail,
       ).toBe(vector.envelope_digest);
-      expect(hex(recordChain(outputs, vector.output_capacity)), vector.rail).toBe(
-        vector.record_chain,
-      );
+      expect(
+        hex(recordChain(outputs, vector.output_capacity, statement0.head.layout.records)),
+        vector.rail,
+      ).toBe(vector.record_chain);
       const statement = statementOf(vector, outputs);
       const elements = transferStatementElements(statement);
       expect(elements, vector.rail).toHaveLength(vector.elements.length);
@@ -291,7 +312,7 @@ describe("ring-statements.json", () => {
   it("refuses a transfer statement past its output capacity", () => {
     const vector = statements.transfer.find((entry) => entry.output_capacity === 2);
     if (vector === undefined) throw new Error("vector has no two slot case");
-    const outputs = vector.outputs.map((slot) => ({ record: bytes(slot.record) }));
+    const outputs = vector.outputs.map(statementOutput);
     expect(() =>
       transferStatementElements({ ...statementOf(vector, outputs), capacity: 1 }),
     ).toThrow(expect.objectContaining({ code: "RING_INVALID_LENGTH" }));
@@ -309,13 +330,16 @@ describe("ring-statements.json", () => {
         envelope: new Uint8Array(33).fill(3),
         recipientKeys: keys,
         salt: new Uint8Array(16).fill(5) as Bytes16,
-        layout: { entry: false },
+        layout: { entry: false, vouched: false, records: CLEAR_RECORD_FORM },
       },
       family: { kind: "confidential", inProof: false, delegate: false, sender: zero() },
       approvalMask: 0,
       approvalTotals: zero(),
       noSpend: false,
-      outputs: [{ record: new Uint8Array(137).fill(1) }, { record: new Uint8Array(137).fill(2) }],
+      outputs: [
+        { record: new Uint8Array(137).fill(1), exit: true },
+        { record: new Uint8Array(137).fill(2), exit: true },
+      ],
       capacity: 2,
       inputCount: 1,
       privateTxHash: zero(),
@@ -329,7 +353,9 @@ describe("ring-statements.json", () => {
     const elements = transferStatementElements(statement);
     expect(elements).toHaveLength(44);
     expect(elements[43]).toEqual(field("2c".padStart(64, "0")));
-    expect(elements[7]).toEqual(envelopeDigest(statement.head.envelope, keys));
+    expect(elements[7]).toEqual(
+      envelopeDigest(statement.head.envelope, keys, statement.head.layout),
+    );
     expect(elements[7]).not.toEqual(ciphertextDigest(statement.head.envelope));
     const changed = keys.slice();
     changed[63] = (changed[63] ?? 0) ^ 1;
@@ -539,6 +565,31 @@ describe("the list lookup key", () => {
     expect(publicMember(seven as Member)).toEqual(publicListKey(seven));
     expect(publicListKey(seven)).not.toEqual(seven);
     expect(privateListKey(seven, field("09".padStart(64, "0")))).not.toEqual(publicListKey(seven));
+  });
+
+  it("keys an entry under the ring salt as Rust `Member::ring_salted` does, off the owner salt keys", () => {
+    const nine = field("09".padStart(64, "0"));
+    expect(hex(ringListKey(seven, nine))).toBe(
+      "15a7b631d43ec4b96f98ec8966e6c29bd975793a919b2d1180dc0b9c500b9ebe",
+    );
+    expect(ringListKey(seven, nine)).not.toEqual(privateListKey(seven, nine));
+  });
+
+  it("plans a ring salted key only under the tag the policy commits", () => {
+    const ringSalt = field("09".padStart(64, "0"));
+    const ringListTag = listTagOf(ringSalt);
+    expect(committedRingListKey({ ownerPkHash: seven, ringSalt, ringListTag })).toEqual(
+      ringListKey(seven, ringSalt),
+    );
+    for (const tag of [ZERO_32 as Bytes32, listTagOf(seven)])
+      expect(() =>
+        committedRingListKey({ ownerPkHash: seven, ringSalt, ringListTag: tag }),
+      ).toThrow(
+        expect.objectContaining({
+          code: "RING_ENTRY_INVALID",
+          details: { reason: "ringSaltUncommitted" },
+        }),
+      );
   });
 
   it("refuses a zero salt for a private key", () => {

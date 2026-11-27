@@ -4,11 +4,13 @@ use std::collections::HashMap;
 
 use custom_ring_interface::{
     funder_account_position, settlement_mints, tag, InstructionTag, ParsedTransact, PublicLeg,
-    PublicSlotError, PublicSlots, RingRail, RingTransactData, RING_TRANSACT_RING_CONFIG_INDEX,
+    PublicSlotError, PublicSlots, RingRail, RingTransactData, TransferApproval,
+    RING_TRANSACT_RING_CONFIG_INDEX,
 };
 use custom_ring_sdk::CustomRing;
 use solana_address::Address;
 use solana_message::VersionedMessage;
+use solana_sdk_ids::sysvar;
 use spr_hasher::primitives::hash_bytes;
 use spr_interface::SOL_ASSET_FIELD;
 use spr_interface::{
@@ -25,7 +27,7 @@ use zolana_ring_policy::{
 use zolana_ring_transaction::RingAssets;
 
 use crate::{
-    cosign::{AssetFlow, CoSignError, OwnerFlow},
+    cosign::{AssetFlow, CoSignError, FrameSource, OwnerFlow},
     cosign_limits::{FrameRead, TransferRead},
     cosigner::{FrameParties, Parties},
     error::RingRpcError,
@@ -42,14 +44,113 @@ const TRANSACT_OUTPUT_TREE_INDEX: usize = 1;
 pub(crate) struct TransferDebits<'a, S> {
     pub shared: &'a std::sync::Arc<Shared<S>>,
     pub ring: Address,
-    pub message: &'a VersionedMessage,
+    pub source: FrameSource<'a>,
 }
 
-/// The ring instruction of a message, the only one the co-signer's signature admits.
+/// The one ring transfer the co-signer's signature admits.
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 struct RingFrame<'m> {
     tag: u8,
     data: &'m [u8],
     accounts: Vec<Address>,
+    /// Empty where the message's own instruction is the transfer.
+    approvers: Vec<Approver>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Approver {
+    record: Address,
+    signer: Address,
+}
+
+/// An instruction able to reach the ring or SPP, a CPI target sits in the invoking accounts.
+struct Reaching<'m> {
+    position: usize,
+    program: Address,
+    accounts: Vec<Address>,
+    data: &'m [u8],
+}
+
+enum Carried<'m> {
+    Instruction(Reaching<'m>),
+    /// The program at the approved position calls it.
+    Approved {
+        approval: TransferApproval,
+        approvers: Vec<Approver>,
+    },
+}
+
+impl<'m> Carried<'m> {
+    /// Refuses a second reaching instruction beside the transfer or the approved caller.
+    fn decode(message: &'m VersionedMessage, ring: Address) -> Result<Self, RingRpcError> {
+        // Version 1 carries no lookup table, one could hide the ring from the check.
+        let VersionedMessage::V1(_) = message else {
+            return Err(scope());
+        };
+        let keys = message.static_account_keys();
+        let key = |index: u8| keys.get(usize::from(index)).copied().ok_or_else(scope);
+        let policy = CustomRing::new(ring).policy_pda();
+        let mut approvals: Vec<(TransferApproval, Approver)> = Vec::new();
+        let mut holding = None;
+        for (position, instruction) in message.instructions().iter().enumerate() {
+            let reaching = Reaching {
+                position,
+                program: key(instruction.program_id_index)?,
+                accounts: instruction
+                    .accounts
+                    .iter()
+                    .map(|index| key(*index))
+                    .collect::<Result<_, _>>()?,
+                data: &instruction.data,
+            };
+            if !reaching.names(ring) && !reaching.names(PROGRAM_ID_PUBKEY) {
+                continue;
+            }
+            let approval = (reaching.program == ring)
+                .then(|| TransferApproval::parse(reaching.data))
+                .flatten();
+            match approval {
+                Some(approval) => {
+                    let [named, record, signer] = reaching.accounts[..] else {
+                        return Err(scope());
+                    };
+                    if named != policy {
+                        return Err(scope());
+                    }
+                    approvals.push((approval, Approver { record, signer }));
+                }
+                None if holding.replace(reaching).is_some() => return Err(scope()),
+                None => {}
+            }
+        }
+        let held = holding.ok_or_else(scope)?;
+        let Some((approval, _)) = approvals.first() else {
+            return Ok(Self::Instruction(held));
+        };
+        let approval = *approval;
+        let calls_ring = held.program != ring
+            && held.program != PROGRAM_ID_PUBKEY
+            && held.accounts.contains(&ring);
+        if !calls_ring
+            || usize::from(approval.position) != held.position
+            || approvals.iter().any(|(other, _)| *other != approval)
+        {
+            return Err(scope());
+        }
+        Ok(Self::Approved {
+            approval,
+            approvers: approvals
+                .into_iter()
+                .map(|(_, approver)| approver)
+                .collect(),
+        })
+    }
+}
+
+impl Reaching<'_> {
+    fn names(&self, address: Address) -> bool {
+        self.program == address || self.accounts.contains(&address)
+    }
 }
 
 /// One asset's public legs, a deposit joins the volume and a withdrawal stays gross.
@@ -72,7 +173,7 @@ const fn scope() -> RingRpcError {
 
 impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
     pub async fn flows(self) -> Result<FrameRead, RingRpcError> {
-        let frame = RingFrame::of(self.message, self.ring)?;
+        let frame = RingFrame::of(self.source, self.ring)?;
         let co_signers = frame.co_signers(self.ring);
         let Some(opened) = self.open(&frame).await? else {
             return Ok(FrameRead::Delegate);
@@ -92,7 +193,7 @@ impl<S: TransactionSource + 'static> TransferDebits<'_, S> {
 
     /// Waits for no input note the signer run already answers for.
     pub async fn parties(self) -> Result<FrameParties, RingRpcError> {
-        let frame = RingFrame::of(self.message, self.ring)?;
+        let frame = RingFrame::of(self.source, self.ring)?;
         let Some(opened) = self.open(&frame).await? else {
             return Ok(FrameParties::Delegate);
         };
@@ -210,52 +311,60 @@ struct OpenedFrame {
 
 impl<'m> RingFrame<'m> {
     /// The signature covers the whole message, debits derive from all of it or it refuses.
-    fn of(message: &'m VersionedMessage, ring: Address) -> Result<Self, RingRpcError> {
-        // Version 1 carries no lookup table, one could hide the ring from the check.
-        let VersionedMessage::V1(_) = message else {
-            return Err(scope());
-        };
-        let keys = message.static_account_keys();
-        let key = |index: u8| keys.get(usize::from(index)).copied().ok_or_else(scope);
-        // A CPI target must sit in the invoking instruction's accounts.
-        let names_ring_or_spp =
-            |index: u8| key(index).map(|address| address == ring || address == PROGRAM_ID_PUBKEY);
-        let mut holding = None;
-        for instruction in message.instructions() {
-            let mut relevant = names_ring_or_spp(instruction.program_id_index)?;
-            for index in &instruction.accounts {
-                relevant |= names_ring_or_spp(*index)?;
+    fn of(source: FrameSource<'m>, ring: Address) -> Result<Self, RingRpcError> {
+        match Carried::decode(source.message, ring)? {
+            Carried::Instruction(transfer) => {
+                let (tag, data) = transfer.data.split_first().ok_or_else(scope)?;
+                if source.approved_transfer.is_some()
+                    || transfer.program != ring
+                    || !matches!(*tag, tag::TRANSFER | tag::AUTHORITY_TRANSFER)
+                {
+                    return Err(scope());
+                }
+                Ok(Self {
+                    tag: *tag,
+                    data,
+                    accounts: transfer.accounts,
+                    approvers: Vec::new(),
+                })
             }
-            if relevant && holding.replace(instruction).is_some() {
-                return Err(scope());
+            Carried::Approved {
+                approval,
+                approvers,
+            } => {
+                let call = source.approved_transfer.ok_or_else(scope)?;
+                // A call verified under another message's approval is not the frame's.
+                if call.approval() != approval {
+                    return Err(scope());
+                }
+                let (tag, data) = call.data().split_first().ok_or_else(scope)?;
+                Ok(Self {
+                    tag: *tag,
+                    data,
+                    accounts: call.accounts().to_vec(),
+                    approvers,
+                })
             }
         }
-        let instruction = holding.ok_or_else(scope)?;
-        let (tag, data) = instruction.data.split_first().ok_or_else(scope)?;
-        if key(instruction.program_id_index)? != ring
-            || !matches!(*tag, tag::TRANSFER | tag::AUTHORITY_TRANSFER)
-        {
-            return Err(scope());
-        }
-        let accounts = instruction
-            .accounts
-            .iter()
-            .map(|index| key(*index))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self {
-            tag: *tag,
-            data,
-            accounts,
-        })
     }
 
-    /// `[record, signer]` pairs in account order.
+    /// In account order, a `[record, signer]` pair or the approver of a `[record, sysvar]` pair.
     fn co_signers(&self, ring: Address) -> Vec<Address> {
         let ring = CustomRing::new(ring);
         self.accounts
             .windows(2)
-            .filter(|pair| pair[0] == ring.co_signer_pda(&pair[1]))
-            .map(|pair| pair[1])
+            .filter_map(|pair| {
+                let signer = match pair[1] == sysvar::instructions::ID {
+                    true => {
+                        self.approvers
+                            .iter()
+                            .find(|approver| approver.record == pair[0])?
+                            .signer
+                    }
+                    false => pair[1],
+                };
+                (pair[0] == ring.co_signer_pda(&signer)).then_some(signer)
+            })
             .collect()
     }
 
@@ -596,8 +705,10 @@ mod frame_flows_tests;
 mod tests {
     use solana_instruction::{AccountMeta, Instruction};
     use spr_client::{compile_message, ComputeBudgetConfig};
+    use zolana_ring_client::rpc::ApprovedTransfer;
 
     use super::*;
+    use crate::cosigner::ApprovedCall;
 
     const RING: Address = Address::new_from_array([0x11; 32]);
     const PAYER: Address = Address::new_from_array([0x22; 32]);
@@ -621,9 +732,16 @@ mod tests {
         .expect("message")
     }
 
+    fn direct(message: &VersionedMessage) -> FrameSource<'_> {
+        FrameSource {
+            message,
+            approved_transfer: None,
+        }
+    }
+
     fn refuses_scope(instructions: &[Instruction]) {
         assert!(matches!(
-            RingFrame::of(&message(instructions), RING).err(),
+            RingFrame::of(direct(&message(instructions)), RING).err(),
             Some(RingRpcError::CoSign(CoSignError::MessageScope))
         ));
     }
@@ -820,10 +938,153 @@ mod tests {
             vec![transfer.clone(), unrelated],
         ] {
             let message = message(&instructions);
-            let frame = RingFrame::of(&message, RING).expect("one transfer");
+            let frame = RingFrame::of(direct(&message), RING).expect("one transfer");
             assert_eq!(frame.tag, tag::TRANSFER);
             assert_eq!(frame.data, [1, 2]);
         }
+    }
+
+    const CO_SIGNER: Address = Address::new_from_array([0x55; 32]);
+
+    fn record() -> AccountMeta {
+        AccountMeta::new_readonly(CustomRing::new(RING).co_signer_pda(&CO_SIGNER), false)
+    }
+
+    /// The transfer with `second` after the co-signer's record.
+    fn co_signed_transfer(second: AccountMeta) -> Instruction {
+        Instruction {
+            accounts: vec![AccountMeta::new(PAYER, true), record(), second],
+            ..ring_instruction(tag::TRANSFER)
+        }
+    }
+
+    fn called_transfer() -> Instruction {
+        co_signed_transfer(AccountMeta::new_readonly(sysvar::instructions::ID, false))
+    }
+
+    fn committing(position: u8, transfer: &Instruction) -> TransferApproval {
+        let digest = TransferApproval::digest(
+            &RING,
+            &transfer.data,
+            transfer.accounts.iter().map(|account| &account.pubkey),
+        )
+        .expect("digest");
+        TransferApproval { position, digest }
+    }
+
+    fn approved(position: u8, transfer: &Instruction) -> ApprovedCall {
+        let named = ApprovedTransfer {
+            data: transfer.data.clone().into(),
+            accounts: transfer
+                .accounts
+                .iter()
+                .map(|account| account.pubkey.into())
+                .collect(),
+        };
+        ApprovedCall::committed(RING, committing(position, transfer), named).expect("committed")
+    }
+
+    fn approval(position: u8, transfer: &Instruction) -> Instruction {
+        Instruction {
+            program_id: RING,
+            accounts: vec![
+                AccountMeta::new_readonly(CustomRing::new(RING).policy_pda(), false),
+                record(),
+                AccountMeta::new_readonly(CO_SIGNER, true),
+            ],
+            data: committing(position, transfer).encode().to_vec(),
+        }
+    }
+
+    /// A program able to call `target`.
+    fn caller(target: Address) -> Instruction {
+        Instruction {
+            program_id: OTHER_PROGRAM,
+            accounts: vec![
+                AccountMeta::new(PAYER, true),
+                AccountMeta::new_readonly(target, false),
+            ],
+            data: vec![9],
+        }
+    }
+
+    fn approved_frame<'m>(
+        message: &'m VersionedMessage,
+        approved_transfer: Option<&'m ApprovedCall>,
+    ) -> Result<RingFrame<'m>, RingRpcError> {
+        let source = FrameSource {
+            message,
+            approved_transfer,
+        };
+        RingFrame::of(source, RING)
+    }
+
+    #[test]
+    fn an_approved_call_reads_as_the_frame_of_its_direct_form() {
+        let signed = co_signed_transfer(AccountMeta::new_readonly(CO_SIGNER, true));
+        let signed_message = message(std::slice::from_ref(&signed));
+        let direct_frame = RingFrame::of(direct(&signed_message), RING).expect("direct");
+
+        let transfer = called_transfer();
+        let call = approved(1, &transfer);
+        let second_approval = approval(1, &transfer);
+        let wrapped = message(&[approval(1, &transfer), caller(RING), second_approval]);
+        let frame = approved_frame(&wrapped, Some(&call)).expect("approved");
+
+        assert_eq!(
+            (frame.tag, frame.data),
+            (direct_frame.tag, direct_frame.data)
+        );
+        assert_eq!(frame.accounts[..2], direct_frame.accounts[..2]);
+        assert_eq!(frame.co_signers(RING), [CO_SIGNER]);
+        assert_eq!(direct_frame.co_signers(RING), [CO_SIGNER]);
+    }
+
+    #[test]
+    fn an_approval_admits_only_the_call_it_commits_to_at_its_position() {
+        let transfer = called_transfer();
+        let call = approved(0, &transfer);
+        let refused = |instructions: &[Instruction], call: Option<&ApprovedCall>| {
+            assert!(matches!(
+                approved_frame(&message(instructions), call).err(),
+                Some(RingRpcError::CoSign(CoSignError::MessageScope))
+            ));
+        };
+        let wrapped = [caller(RING), approval(0, &transfer)];
+        refused(&wrapped, None);
+
+        let other_transfer = Instruction {
+            data: vec![tag::TRANSFER, 3],
+            ..transfer.clone()
+        };
+        let other_digest = approval(0, &other_transfer);
+        // A call verified under another approval is not the message's.
+        refused(&wrapped, Some(&approved(0, &other_transfer)));
+        refused(&wrapped, Some(&approved(1, &transfer)));
+        refused(
+            &[wrapped[0].clone(), wrapped[1].clone(), other_digest],
+            Some(&call),
+        );
+        // Neither a program without the ring nor the ring's own instruction is the caller.
+        refused(
+            &[caller(PROGRAM_ID_PUBKEY), approval(0, &transfer)],
+            Some(&call),
+        );
+        refused(&[transfer.clone(), approval(0, &transfer)], Some(&call));
+        let unrelated = Instruction {
+            accounts: vec![AccountMeta::new(PAYER, true)],
+            ..caller(RING)
+        };
+        refused(
+            &[unrelated, caller(RING), approval(0, &transfer)],
+            Some(&call),
+        );
+        refused(
+            &[caller(RING), caller(RING), approval(0, &transfer)],
+            Some(&call),
+        );
+        // A message holding its own transfer takes no approved call.
+        refused(std::slice::from_ref(&transfer), Some(&call));
     }
 
     #[test]
@@ -898,7 +1159,7 @@ mod tests {
     fn a_message_that_can_hide_an_account_refuses() {
         for hidden_slot in [0, 1] {
             assert!(matches!(
-                RingFrame::of(&v0_with_a_table(hidden_slot), RING).err(),
+                RingFrame::of(direct(&v0_with_a_table(hidden_slot)), RING).err(),
                 Some(RingRpcError::CoSign(CoSignError::MessageScope))
             ));
         }
@@ -907,7 +1168,7 @@ mod tests {
             Some(&PAYER),
         ));
         assert!(matches!(
-            RingFrame::of(&legacy, RING).err(),
+            RingFrame::of(direct(&legacy), RING).err(),
             Some(RingRpcError::CoSign(CoSignError::MessageScope))
         ));
     }
@@ -925,7 +1186,7 @@ mod tests {
         };
         held.instructions[1].accounts.push(200);
         assert!(matches!(
-            RingFrame::of(&wrapper_account, RING).err(),
+            RingFrame::of(direct(&wrapper_account), RING).err(),
             Some(RingRpcError::CoSign(CoSignError::MessageScope))
         ));
         let mut wrapper_program = message(&[ring_instruction(tag::TRANSFER), unrelated]);
@@ -934,7 +1195,7 @@ mod tests {
         };
         held.instructions[1].program_id_index = 200;
         assert!(matches!(
-            RingFrame::of(&wrapper_program, RING).err(),
+            RingFrame::of(direct(&wrapper_program), RING).err(),
             Some(RingRpcError::CoSign(CoSignError::MessageScope))
         ));
     }

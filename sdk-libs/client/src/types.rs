@@ -34,6 +34,8 @@ pub struct AuditedTransaction {
     pub nullifiers: Vec<[u8; 32]>,
     /// The default-ring notes among the `R`, in note order.
     pub entries: Vec<AuditedEntryInput>,
+    /// The Ed25519 key that vouched for the transfer, `None` off a vouched frame.
+    pub voucher: Option<[u8; 32]>,
 }
 
 /// One opened slot, its note rebuilt to the published commitment.
@@ -69,7 +71,7 @@ pub struct AuditedUtxo {
     pub mint: Option<Address>,
     pub amount: u64,
     pub blinding: [u8; 32],
-    /// Absent with `ring_data_hash` while no payload rebuilt the published commitment.
+    /// The record's proven hash, absent with `ring_data_hash` on a record that rebuilt no commitment.
     pub data_hash: Option<[u8; 32]>,
     pub ring_data_hash: Option<[u8; 32]>,
 }
@@ -83,7 +85,7 @@ pub struct KnownUtxo {
     pub mint: Option<Address>,
     pub amount: u64,
     pub blinding: [u8; 32],
-    /// Absent with `ring_data_hash` while no payload rebuilt the published commitment.
+    /// The record's proven hash, absent with `ring_data_hash` on a record that rebuilt no commitment.
     pub data_hash: Option<[u8; 32]>,
     pub ring_data_hash: Option<[u8; 32]>,
     pub tree_id: u16,
@@ -95,16 +97,7 @@ pub enum UtxoOwner {
         nullifier_pk: [u8; 32],
     },
     /// A ring record publishes no nonzero key, the owner's registered key resolves it.
-    Unresolved {
-        claimed: Option<ClaimedData>,
-    },
-}
-
-/// A payload's data hashes, held apart until the commitment rebuilds under them.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ClaimedData {
-    pub data_hash: [u8; 32],
-    pub ring_data_hash: [u8; 32],
+    Unresolved,
 }
 
 /// A note one transaction created, at its slot.
@@ -144,7 +137,7 @@ pub enum OutputPayloadErrorKind {
     Disclosure,
     /// A dummy's derived opening hashes to another commitment.
     Commitment,
-    /// The payload's data hashes rebuild no commitment, the record stands without them.
+    /// The record rebuilds another commitment under its key, it stands without its data hashes.
     Payload,
 }
 
@@ -237,7 +230,7 @@ impl KnownUtxo {
 
 impl KnownUtxo {
     /// Keys a ring note under `nullifier_pk` only when the commitment rebuilds under it and the
-    /// payload's hashes, `None` otherwise.
+    /// record's hashes, `None` otherwise.
     ///
     /// A note under another key never spends, so an unrebuilt key never derives a nullifier.
     pub fn resolve(
@@ -246,22 +239,20 @@ impl KnownUtxo {
         ring: Address,
         commitment: &[u8; 32],
     ) -> Result<Option<Self>, AuditError> {
-        let UtxoOwner::Unresolved { claimed } = self.owner else {
+        if self.owner != UtxoOwner::Unresolved {
             return Ok(Some(self));
-        };
+        }
         let keyed = Self {
             owner: UtxoOwner::Keyed { nullifier_pk },
-            data_hash: claimed.map(|claimed| claimed.data_hash),
-            ring_data_hash: claimed.map(|claimed| claimed.ring_data_hash),
             ..self
         };
         Ok((keyed.commitment(Some(ring))? == Some(*commitment)).then_some(keyed))
     }
 
-    /// The proven record a resolution refused, its claims dropped so no later key rebuilds it.
+    /// The proven record a resolution refused, its hashes dropped so no later key rebuilds it.
     pub fn unrebuilt(self) -> Self {
         Self {
-            owner: UtxoOwner::Unresolved { claimed: None },
+            owner: UtxoOwner::Unresolved,
             data_hash: None,
             ring_data_hash: None,
             ..self
@@ -328,7 +319,7 @@ impl AuditedTransaction {
             };
             *utxo = resolved.audited();
         }
-        // Decryption reports no payload error for an unresolved output, the slot gains its first here.
+        // Decryption reports no error for an unresolved output, the slot gains its first here.
         for slot_index in failed {
             let at = self
                 .payload_errors
@@ -349,7 +340,7 @@ impl UtxoOwner {
     pub fn nullifier_pk(self) -> Option<[u8; 32]> {
         match self {
             Self::Keyed { nullifier_pk } => Some(nullifier_pk),
-            Self::Unresolved { .. } => None,
+            Self::Unresolved => None,
         }
     }
 
@@ -359,7 +350,7 @@ impl UtxoOwner {
                 &solana_owner_identity(owner_key)?,
                 &nullifier_pk,
             ])?),
-            Self::Unresolved { .. } => Err(AuditError::UnresolvedOwner),
+            Self::Unresolved => Err(AuditError::UnresolvedOwner),
         }
     }
 }

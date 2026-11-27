@@ -1,35 +1,40 @@
 //! The confidential rail.
 
 use custom_ring_interface::{RingMode, RingRail};
-use spr_client::{AsyncRpc, OwnerAuthorization, SettlementAccountValidation};
+use spr_client::{
+    AsyncRpc, OwnerAuthorization, ProofAuthority, RingAuthorizer, SettlementAccountValidation,
+};
+
+use super::VouchSigner;
 use spr_interface::shape::Shape;
-use spr_keypair::{NullifierKey, ShieldedAddress, SigningKey};
+use spr_keypair::{viewing_key::Salt, NullifierKey, ShieldedAddress, SigningKey};
 use spr_program::instruction::TransactInterfaceTransferAccounts;
 use spr_transaction::instructions::transact::ConfidentialTransaction;
 pub(super) use zolana_ring_client::rpc::deposit_funder;
 use zolana_ring_client::rpc::TokenAccountSetup;
-use zolana_ring_transaction::RingOutputRail;
 
 use super::{
     anonymous::{CoOwner, HiddenOwner},
-    canonical_shape, pad_under_rail,
+    canonical_shape,
     public_owners::check_zero_key_inputs,
-    sealed, shape_keyed, transaction_key, ApprovalDisclosure, CoOwnerKey, DeliveredRail, Rail,
-    RailKind, RingSender, RingTransfer, Spend, Staged, TransferAuthority,
+    sealed, shape_keyed, ApprovalDisclosure, CoOwnerKey, DeliveredRail, OutputSeal, OwnerKey, Rail,
+    RailKind, RingSender, RingTransfer, SealedOutputs, Spend, Staged, TransferAuthority,
 };
 use crate::{CustomRing, CustomRingConfig, RingError};
 
 /// The sender's spends, it signs the assembled Solana transaction itself or inside the proof.
 pub struct Owner<'a> {
     pub(super) sender: &'a dyn RingSender,
-    pub(super) nullifier_key: Option<&'a NullifierKey>,
+    pub(super) owner_key: Option<OwnerKey<'a>>,
     pub(super) transaction: ConfidentialTransaction,
     pub(super) interface_transfer_accounts: Vec<TransactInterfaceTransferAccounts>,
     pub(super) shape: Option<Shape>,
     pub(super) in_proof_owner: Option<&'a SigningKey>,
+    pub(super) authorizer: Option<&'a RingAuthorizer<'a>>,
     pub(super) token_account_setup: Vec<TokenAccountSetup>,
     /// The other owners of a signer rail spend, each signs the transaction.
     pub(super) co_owners: Vec<CoOwner<'a>>,
+    pub(super) voucher: Option<&'a dyn VouchSigner>,
 }
 
 pub struct CustomRingTransferInput<'a> {
@@ -59,17 +64,21 @@ impl<'a> RingTransfer<Owner<'a>> {
             priority_fee: None,
             rail: Owner {
                 sender: input.sender,
-                nullifier_key: input.nullifier_key,
+                owner_key: input.nullifier_key.map(OwnerKey::Held),
                 transaction: input.transaction,
                 interface_transfer_accounts: Vec::new(),
                 shape: None,
                 in_proof_owner: None,
+                authorizer: None,
                 token_account_setup: Vec::new(),
                 co_owners: Vec::new(),
+                voucher: None,
             },
             list_salts: Vec::new(),
+            ring_salt: None,
             approval: ApprovalDisclosure::None,
             seal_row: None,
+            program: None,
         }
     }
 
@@ -84,6 +93,26 @@ impl<'a> RingTransfer<Owner<'a>> {
     #[must_use = "use the updated transfer"]
     pub fn with_in_proof_owner(mut self, signer: &'a SigningKey) -> Self {
         self.rail.in_proof_owner = Some(signer);
+        self
+    }
+
+    #[must_use = "use the updated transfer"]
+    pub(crate) fn with_authorizer(mut self, authorizer: &'a RingAuthorizer<'a>) -> Self {
+        self.rail.authorizer = Some(authorizer);
+        self
+    }
+
+    /// Completes the real inputs in place of a nullifier key, a relay refuses it.
+    #[must_use = "use the updated transfer"]
+    pub(crate) fn with_proof_authority(mut self, authority: &'a dyn ProofAuthority) -> Self {
+        self.rail.owner_key = Some(OwnerKey::Reserved(authority));
+        self
+    }
+
+    /// A listed wallet signs `VouchMessage::digest` of the transfer, its Allow and PrivateAllow entries admit every sender and payment owner, the auditor reads its key, and a salted list of the table needs its salt through `with_list_salt`.
+    #[must_use = "use the updated transfer"]
+    pub fn with_voucher(mut self, voucher: &'a dyn VouchSigner) -> Self {
+        self.rail.voucher = Some(voucher);
         self
     }
 
@@ -115,7 +144,7 @@ impl<'a> RingTransfer<Owner<'a>> {
     }
 }
 
-impl Owner<'_> {
+impl<'a> Owner<'a> {
     /// The rail pads under its own blinding seed, a caller never pads.
     pub(super) fn shape(&self, sender: &ShieldedAddress) -> Result<Shape, RingError> {
         match self.shape {
@@ -159,15 +188,54 @@ impl Owner<'_> {
         _ring: CustomRing,
         _client: &R,
         config: &CustomRingConfig,
+        program_salt: Option<Salt>,
     ) -> Result<Staged<'_>, RingError> {
+        let sender = self.signer_rail_sender(config)?;
+        self.stage_signers(sender, config, program_salt)
+    }
+
+    pub(super) fn seal(
+        &self,
+        config: &CustomRingConfig,
+        program_salt: Option<Salt>,
+    ) -> Result<SealedOutputs, RingError> {
+        let sender = self.signer_rail_sender(config)?;
+        self.seal_signers(&sender, config, program_salt)
+    }
+
+    fn signer_rail_sender(&self, config: &CustomRingConfig) -> Result<ShieldedAddress, RingError> {
         if config.mode == RingMode::Anonymous {
             return Err(RingError::MissingAnonymousSigner);
         }
-        check_zero_key_inputs(
-            self.transaction.inputs(),
-            &self.sender.address()?.signing_pubkey,
-        )?;
-        self.stage_signers(self.sender.address()?, config)
+        let sender = self.sender.address()?;
+        check_zero_key_inputs(self.transaction.inputs(), &sender.signing_pubkey)?;
+        Ok(sender)
+    }
+
+    pub(super) fn seal_signers(
+        &self,
+        sender: &ShieldedAddress,
+        config: &CustomRingConfig,
+        program_salt: Option<Salt>,
+    ) -> Result<SealedOutputs, RingError> {
+        if program_salt.is_some() && self.in_proof_owner.is_some() {
+            return Err(RingError::ProgramRailUnsupported);
+        }
+        self.check_settlement_accounts()?;
+        let shape = self.shape(sender)?;
+        OutputSeal {
+            keys: self.sender,
+            sender,
+            auditor: config.auditor_pubkey,
+            delivery: DeliveredRail {
+                outputs: shape.n_outputs(),
+                rail: RingRail::Confidential,
+            }
+            .delivery()?,
+            shape,
+            program_salt,
+        }
+        .seal(self.transaction.clone())
     }
 
     /// The signer rail, zero-key notes admitted by the caller.
@@ -175,23 +243,10 @@ impl Owner<'_> {
         &self,
         sender: ShieldedAddress,
         config: &CustomRingConfig,
+        program_salt: Option<Salt>,
     ) -> Result<Staged<'_>, RingError> {
-        self.check_settlement_accounts()?;
-        let shape = self.shape(&sender)?;
-        let transaction = self.transaction.clone();
-        let delivery = DeliveredRail {
-            outputs: shape.n_outputs(),
-            rail: RingRail::Confidential,
-        }
-        .delivery()?;
-        let first_nullifier = *transaction.first_nullifier();
-        let rail = RingOutputRail::new(
-            transaction_key(self.sender, first_nullifier)?,
-            config.auditor_pubkey,
-            delivery,
-        );
-        let transaction = pad_under_rail(transaction, &rail, shape, &sender)?;
-        let proof_inputs = rail.encrypt(transaction, &sender)?;
+        let SealedOutputs { rail, proof_inputs } =
+            self.seal_signers(&sender, config, program_salt)?;
         let (owner_signers, spend) = match self.in_proof_owner {
             Some(signer) => {
                 if signer.pubkey() != sender.signing_pubkey {
@@ -209,7 +264,10 @@ impl Owner<'_> {
                     Spend::InProofOwner(OwnerAuthorization::SigningKey(signer)),
                 )
             }
-            None => (proof_inputs.owner_signer_pubkeys()?, Spend::Owner),
+            None => (
+                proof_inputs.owner_signer_pubkeys()?,
+                Spend::Owner(self.authorizer),
+            ),
         };
         Ok(Staged {
             authority: self.authority()?,
@@ -224,9 +282,9 @@ impl Owner<'_> {
         })
     }
 
-    pub(super) fn authority(&self) -> Result<TransferAuthority, RingError> {
+    pub(super) fn authority(&self) -> Result<TransferAuthority<'a>, RingError> {
         Ok(TransferAuthority {
-            owner: self.nullifier_key.cloned(),
+            owner: self.owner_key,
             co_owners: self
                 .co_owners
                 .iter()

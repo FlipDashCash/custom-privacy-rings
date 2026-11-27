@@ -8,9 +8,16 @@ pub use arguments::*;
 
 #[path = "runtime/context.rs"]
 mod context;
+#[path = "runtime/operator.rs"]
+mod operator;
+#[path = "config/operator_manifest.rs"]
+mod operator_manifest;
+#[path = "runtime/submission.rs"]
+mod submission;
 #[cfg(test)]
 use context::resolve;
 pub use context::*;
+pub use submission::Landing;
 
 #[path = "runtime/chain.rs"]
 mod chain;
@@ -39,8 +46,6 @@ pub mod file;
 pub mod fund;
 #[path = "commands/ring/init.rs"]
 pub mod init;
-#[path = "commands/wallet/identity/keys.rs"]
-pub mod keys;
 #[path = "commands/wallet/notes/list.rs"]
 pub mod list;
 #[path = "commands/membership/list_approval.rs"]
@@ -95,7 +100,7 @@ use std::{
 
 use anyhow::{bail, ensure, Context as _, Result};
 use clap::{Args, FromArgMatches, Parser, Subcommand};
-use custom_ring_interface::{compute_unit_limit, CustomRingError, InstructionTag, RingRole};
+use custom_ring_interface::{compute_unit_limit, CustomRingError, InstructionTag};
 use custom_ring_sdk::{
     CustomRing, CustomRingConfig, RingError, RingMode, RingOperation, RingSubmission,
     SettledSubmission, MERGE_DEFAULT_INPUT_COUNT,
@@ -128,14 +133,8 @@ pub use crate::{
     ui::{line, Ask},
 };
 
-pub const PROGRAM_KEYPAIR_FILE: &str = "keys/program-keypair.json";
-pub const AUDITOR_KEY_FILE: &str = "keys/auditor.key";
 pub const AUDITOR_PUBKEY_FILE: &str = "keys/auditor.key.pub";
 pub const SENDER_KEYPAIR_FILE: &str = "keys/sender-keypair.json";
-pub const ADMIN_KEYPAIR_FILE: &str = "keys/admin.json";
-pub const PAUSER_KEYPAIR_FILE: &str = "keys/pauser.json";
-pub const COSIGN_ADMIN_KEYPAIR_FILE: &str = "keys/cosign-admin.json";
-pub const ENROLLMENT_WRITER_KEYPAIR_FILE: &str = "keys/enrollment-writer.json";
 pub const DEFAULT_TRANSACT_AMOUNT: u64 = 100_000_000;
 /// What localnet tops an account up to.
 const LOCALNET_BALANCE: u64 = 100_000_000_000;
@@ -252,9 +251,12 @@ pub fn run(cli: Cli) -> Result<()> {
 fn dispatch(ctx: &mut Context, command: Command) -> Result<()> {
     match command {
         Command::Status => status::run(ctx),
-        Command::Deploy(args) => {
-            localnet::ensure(ctx)?;
-            deploy::run(ctx, args)
+        Command::Deploy { program, command } => {
+            localnet::ensure_validator(ctx)?;
+            match command {
+                Some(DeployCommand::CloseBuffer(buffer)) => deploy::close_buffer(ctx, buffer),
+                None => deploy::run(ctx, program),
+            }
         }
         Command::Init(args) => init::run(ctx, args),
         Command::Pipeline(args) => pipeline::run(ctx, args),
@@ -271,7 +273,10 @@ fn dispatch(ctx: &mut Context, command: Command) -> Result<()> {
         Command::ListApproval(command) => list_approval::run(ctx, command),
         Command::List(command) => list::run(ctx, command),
         Command::Policy(command) => policy::run(ctx, command),
-        Command::AuditorKey(args) => keys::run(&ctx.path(&args.key_file), args.create),
+        Command::AuditorKey => {
+            println!("{}", hex::encode(ctx.audit_key()?.pubkey().as_bytes()));
+            Ok(())
+        }
         Command::Audit(args) => audit::run(ctx, args),
         Command::Address(args) => address::run(ctx, args),
         Command::Balance(args) => transact::run_balance(ctx, args),
@@ -316,25 +321,6 @@ mod tests {
     }
 
     #[test]
-    fn delegate_set_signs_with_the_delegate_keypair() {
-        let parse = |args: &[&str]| {
-            let argv = ["zolana-ring", "delegate", "set"]
-                .iter()
-                .chain(args)
-                .copied();
-            Cli::try_parse_from(argv).map(|cli| cli.command)
-        };
-        assert!(matches!(
-            parse(&["--delegate-keypair", "keys/delegate.json"]),
-            Ok(Command::Delegate(DelegateCommand::Set { delegate_keypair }))
-                if delegate_keypair == Path::new("keys/delegate.json")
-        ));
-        let address = Address::new_from_array([7; 32]).to_string();
-        assert!(parse(&["--delegate", &address]).is_err());
-        assert!(parse(&[]).is_err());
-    }
-
-    #[test]
     fn dev_uses_the_localnet_command() {
         assert!(matches!(
             Cli::try_parse_from(["zolana-ring", "dev", "--no-start"])
@@ -342,6 +328,36 @@ mod tests {
                 .command,
             Command::Localnet(LocalnetArgs { no_start: true })
         ));
+    }
+
+    #[test]
+    fn deploy_takes_its_binary_on_the_command_or_on_close_buffer_never_both() {
+        let parse = |args: &[&str]| {
+            let argv = ["zolana-ring", "deploy"].iter().chain(args).copied();
+            Cli::try_parse_from(argv).map(|cli| cli.command)
+        };
+        assert!(matches!(
+            parse(&[]),
+            Ok(Command::Deploy {
+                program: DeployArgs { program_so: None },
+                command: None
+            })
+        ));
+        assert!(matches!(
+            parse(&["--program-so", "ring.so"]),
+            Ok(Command::Deploy {
+                program: DeployArgs { program_so: Some(binary) },
+                command: None
+            }) if binary == Path::new("ring.so")
+        ));
+        assert!(matches!(
+            parse(&["close-buffer", "--program-so", "ring.so"]),
+            Ok(Command::Deploy {
+                program: DeployArgs { program_so: None },
+                command: Some(DeployCommand::CloseBuffer(DeployArgs { program_so: Some(binary) }))
+            }) if binary == Path::new("ring.so")
+        ));
+        assert!(parse(&["--program-so", "ring.so", "close-buffer"]).is_err());
     }
 
     #[test]
@@ -492,17 +508,16 @@ mod tests {
         };
         assert_eq!(command.auditor_pubkey_file, pipeline.auditor_pubkey_file);
         assert_eq!(command.trust_ring_rpc, pipeline.trust_ring_rpc);
-        assert_eq!(command.local_auditor, pipeline.local_auditor);
         assert_eq!(
             resolve(Path::new("ring"), &pipeline.auditor_pubkey_file),
             Path::new("ring/keys/auditor.key.pub")
         );
         let transact: TransactArgs = defaults();
         assert_eq!(transact.amount, DEFAULT_TRANSACT_AMOUNT);
-        assert!(transact.cosigner.cosigner_keypair.is_none());
+        assert!(transact.cosigner.cosigner.is_none());
     }
 
-    fn transaction_error(error: TransactionError) -> ClientError {
+    pub(crate) fn transaction_error(error: TransactionError) -> ClientError {
         ClientError::SolanaRpcTransaction {
             operation: "test",
             source: solana_rpc_client_api::client_error::Error {

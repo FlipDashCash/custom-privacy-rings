@@ -67,6 +67,9 @@ type OwnerEntry struct {
 	ListSalt      frontend.Variable
 	OwnSalted     frontend.Variable
 	CuratorSalted [1]frontend.Variable
+	// OwnRing and CuratorRing index the owner's records under the ring salt.
+	OwnRing     frontend.Variable
+	CuratorRing [1]frontend.Variable
 }
 
 type recordQuery struct {

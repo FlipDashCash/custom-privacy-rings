@@ -133,7 +133,7 @@ func (p PolicyParams) validateIndices(pools policy.RecordPoolShape, trackingPool
 	if err := validatePoolIndices(p.CuratorSubjects, p.CuratorProof, pools.Curator); err != nil {
 		return err
 	}
-	for _, entry := range slices.Concat(p.SenderEntries, p.OwnerEntries) {
+	for _, entry := range slices.Concat(p.SenderEntries, p.OwnerEntries, []PooledOwnerEntry{p.VoucherEntry}) {
 		if err := entry.validateOwnerIndices(pools); err != nil {
 			return err
 		}
@@ -206,7 +206,10 @@ func (e PooledOwnerEntry) validateOwnerIndices(pools policy.RecordPoolShape) err
 	if err := poolIndex("own salted subject", e.OwnSalted, pools.OwnSubjects); err != nil {
 		return err
 	}
-	for _, index := range e.CuratorSalted {
+	if err := poolIndex("own ring subject", e.OwnRing, pools.OwnSubjects); err != nil {
+		return err
+	}
+	for _, index := range slices.Concat(e.CuratorSalted, e.CuratorRing) {
 		if err := poolIndex("curator salted subject", index, pools.CuratorSubjects); err != nil {
 			return err
 		}

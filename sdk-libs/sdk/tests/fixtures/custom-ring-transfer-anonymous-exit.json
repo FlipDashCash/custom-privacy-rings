@@ -1,10 +1,10 @@
 {
   "circuitType": "custom-ring-transfer-4-in24-w4-s4",
-  "publicInputHash": "0x22485fa7ae7a32a17f0d5d51654530650d6bcc349a101263bdc9469405cff482",
-  "firstNullifier": "0x0b03793652055602de1cbf1db7a382587c315a5245d837bdf8e6fd98b1b3abf3",
-  "txViewingSk": "0xb0239e2b4d4d1a61a5908920d3af760f683aa179f2f0fd3739e9a5cb0bc6bd55",
+  "publicInputHash": "0x09b4824aeb7365874397c6df97fbccba37de4fe47496316d06cd3d00879a1f19",
+  "firstNullifier": "0x18a96383be2dca384ff4856fe0ddbae75e7b3c0736379852a344aafff4651ddd",
+  "txViewingSk": "0x088dbafe6b10ddde3b763cfd5dcc71b5f6d112c52df6ece0a20530b3205e6461",
   "auditorPk": "0x50a61409b1ddd0325e9b16b700e719e9772c07000b1bd7786e907c653d20495d",
-  "salt": "0x5d0e77c85246e9a7a0132569deaf0d12",
+  "salt": "0x909b450ce391c6e19b0f3528a8bd2bbe",
   "layout": 0,
   "approvalMask": 0,
   "outputCount": 4,
@@ -17,7 +17,7 @@
         "nullifierPk": "0x070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f",
         "asset": "0x2098f5fb9e239eab3ceac3f27b81e481dc3124d55ffed523a839ee8446b64864",
         "amount": "0x0000000000000000000000000000000000000000000000000000000000000003",
-        "blinding": "0x1163ccbd08b2287b2ea1d6c520a199522a5fb073b3e8ac362e8d368a59fb9206",
+        "blinding": "0x25f469067dee13660285676a8e3d176c0d164a7908c2d0379b42fb218e566457",
         "dataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringDataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringProgramId": "0x0bcf0f0d5f8482a0744c386581fb3630b3944910a73fe3b0289b36cbdb4160bf"
@@ -37,7 +37,7 @@
         "nullifierPk": "0x0859c8d76b11ae685d6e344cbad137e531a486d002c631a2aaee3b6d46729e72",
         "asset": "0x2098f5fb9e239eab3ceac3f27b81e481dc3124d55ffed523a839ee8446b64864",
         "amount": "0x0000000000000000000000000000000000000000000000000000000000000003",
-        "blinding": "0x05ad80dc95eca826bf7275fcd4781c334b58ff2c0bef1ed9a3ebf8bee93e71b5",
+        "blinding": "0x04896403d3558bc845608a903fadbfa88f70a55ddb89572275e93379e5c97503",
         "dataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringDataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringProgramId": "0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -57,7 +57,7 @@
         "nullifierPk": "0x0e919de26f24ff72d271becdcc5e824211e89a56d77c2d27cb111e5ca4a5e939",
         "asset": "0x2098f5fb9e239eab3ceac3f27b81e481dc3124d55ffed523a839ee8446b64864",
         "amount": "0x0000000000000000000000000000000000000000000000000000000000000004",
-        "blinding": "0x1266a40191d1a4ce4bc54fed640a28ffb3b3d732165bbe6260888d8a228f026f",
+        "blinding": "0x04fae3ff61cbb16774e444bd1c380ae698c2ca7397daf363819cda1f25977352",
         "dataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringDataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringProgramId": "0x0bcf0f0d5f8482a0744c386581fb3630b3944910a73fe3b0289b36cbdb4160bf"
@@ -77,7 +77,7 @@
         "nullifierPk": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "asset": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "amount": "0x0000000000000000000000000000000000000000000000000000000000000000",
-        "blinding": "0x27dd98d6c2f5705e31dd942158b40c460aeaf01674451ef5b67c60b09148a8a4",
+        "blinding": "0x09d9f23fe17c6b899eb68e44c87fd135e1bd0070434382552eb9b36b45541af7",
         "dataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringDataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "ringProgramId": "0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -87,9 +87,13 @@
         "0x0000000000000000000000000000000000000000000000000000000000000000",
         "0x0000000000000000000000000000000000000000000000000000000000000000"
       ],
-      "recipientKey": "0x6069f73e081f0edaf432fe47a4a16a9c6b9361ccd47fd8d4cc121238da5dc021"
+      "recipientKey": "0xe8da44979575a3963cbf174daf8283a2bc2d53b601f4a5959a73dc813e845525"
     }
   ],
+  "voucher": {
+    "publicKey": "0xcb69a841cc7d5286b5e4facba4be80e27f3a542cdd3d27ae1a2fb689518bcad7",
+    "signature": "0x1e1be2ac0a112bd8f46c630699fa9f2bd3065f896d87cfd3c518b95610fb0d0a965c4b7b60b84cb54ca987fa5b5eedcd8bb4b33e8f2fcd91d7ab110f97b63505"
+  },
   "inputCount": 1,
   "inputs": [
     {
@@ -99,7 +103,7 @@
       "nullifierPk": "0x070e3205f38ff4b34e8d5a6dc6937a1f99ea25f3bc45e403cdc8890bb8d62c9f",
       "asset": "0x2098f5fb9e239eab3ceac3f27b81e481dc3124d55ffed523a839ee8446b64864",
       "amount": "0x000000000000000000000000000000000000000000000000000000000000000a",
-      "blinding": "0x003c9931cfe4721a3f0683884c803f9be5fef82dd4728df521bfa95eb350f22c",
+      "blinding": "0x00c6cb361194172781eab5323504cd24da9b3ea2acb5211b669354c140cd4f89",
       "dataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
       "ringDataHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
       "ringProgramId": "0x0bcf0f0d5f8482a0744c386581fb3630b3944910a73fe3b0289b36cbdb4160bf"
@@ -415,7 +419,7 @@
     "0x0000000000000000000000000000000000000000000000000000000000000000",
     "0x0000000000000000000000000000000000000000000000000000000000000000"
   ],
-  "privateTxHash": "0x0adcd2d4bdd6812dc8155035c4f30e9005c0dcc51e51042409f3e198b9ebe32b",
+  "privateTxHash": "0x1f4655b5f03eb7a512e5d2f7a14c8f8168afd76b64a936af06b292bb5f46dc5e",
   "inProof": false,
   "hidden": true,
   "delegate": false,
@@ -1264,6 +1268,7 @@
     "0x0000000000000000000000000000000000000000000000000000000000000000",
     "0x0000000000000000000000000000000000000000000000000000000000000000"
   ],
+  "ringListTag": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "ownRecords": [
     {
       "member": "0x0000000000000000000000000000000000000000000000000000000000000000",
@@ -7529,6 +7534,10 @@
       "ownSalted": 0,
       "curatorSalted": [
         0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
       ]
     },
     {
@@ -7541,6 +7550,10 @@
       "ownSalted": 0,
       "curatorSalted": [
         0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
       ]
     },
     {
@@ -7553,6 +7566,10 @@
       "ownSalted": 0,
       "curatorSalted": [
         0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
       ]
     },
     {
@@ -7564,10 +7581,31 @@
       "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
       "ownSalted": 0,
       "curatorSalted": [
+        0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
         0
       ]
     }
   ],
+  "voucherEntry": {
+    "own": 0,
+    "curator": [
+      0
+    ],
+    "tracking": 0,
+    "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "ownSalted": 0,
+    "curatorSalted": [
+      0
+    ],
+    "ownRing": 0,
+    "curatorRing": [
+      0
+    ]
+  },
+  "ringSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "ownerEntries": [
     {
       "own": 0,
@@ -7579,29 +7617,9 @@
       "ownSalted": 0,
       "curatorSalted": [
         0
-      ]
-    },
-    {
-      "own": 0,
-      "curator": [
-        0
       ],
-      "tracking": 0,
-      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
-      "ownSalted": 0,
-      "curatorSalted": [
-        0
-      ]
-    },
-    {
-      "own": 0,
-      "curator": [
-        0
-      ],
-      "tracking": 0,
-      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
-      "ownSalted": 0,
-      "curatorSalted": [
+      "ownRing": 0,
+      "curatorRing": [
         0
       ]
     },
@@ -7615,29 +7633,9 @@
       "ownSalted": 0,
       "curatorSalted": [
         0
-      ]
-    },
-    {
-      "own": 0,
-      "curator": [
-        0
       ],
-      "tracking": 0,
-      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
-      "ownSalted": 0,
-      "curatorSalted": [
-        0
-      ]
-    },
-    {
-      "own": 0,
-      "curator": [
-        0
-      ],
-      "tracking": 0,
-      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
-      "ownSalted": 0,
-      "curatorSalted": [
+      "ownRing": 0,
+      "curatorRing": [
         0
       ]
     },
@@ -7651,6 +7649,10 @@
       "ownSalted": 0,
       "curatorSalted": [
         0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
       ]
     },
     {
@@ -7662,6 +7664,74 @@
       "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
       "ownSalted": 0,
       "curatorSalted": [
+        0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
+      ]
+    },
+    {
+      "own": 0,
+      "curator": [
+        0
+      ],
+      "tracking": 0,
+      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "ownSalted": 0,
+      "curatorSalted": [
+        0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
+      ]
+    },
+    {
+      "own": 0,
+      "curator": [
+        0
+      ],
+      "tracking": 0,
+      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "ownSalted": 0,
+      "curatorSalted": [
+        0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
+      ]
+    },
+    {
+      "own": 0,
+      "curator": [
+        0
+      ],
+      "tracking": 0,
+      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "ownSalted": 0,
+      "curatorSalted": [
+        0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
+        0
+      ]
+    },
+    {
+      "own": 0,
+      "curator": [
+        0
+      ],
+      "tracking": 0,
+      "listSalt": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "ownSalted": 0,
+      "curatorSalted": [
+        0
+      ],
+      "ownRing": 0,
+      "curatorRing": [
         0
       ]
     }

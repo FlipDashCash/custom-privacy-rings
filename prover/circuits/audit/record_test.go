@@ -20,6 +20,16 @@ var (
 	entryShape = audit.StreamShape{InputClass: 2, Outputs: 2, Entry: true}
 )
 
+// dataSection sets both data flags, with both hashes on ring slot 0 and a data hash on exit slot 2.
+func dataSection(t *testing.T) ringaudit.Audit {
+	t.Helper()
+	s := ringaudit.NewSection(t, plainShape)
+	s.Data, s.RingData = true, true
+	s.Outputs[0].Utxo.DataHash, s.Outputs[0].Utxo.RingDataHash = big.NewInt(0xda7a), big.NewInt(0x5ca1e)
+	s.Outputs[2].Utxo.DataHash = big.NewInt(0xe817)
+	return s
+}
+
 // The statement over the edited stream names bytes the proof never sealed.
 func refuseSealed(t *testing.T, s ringaudit.Audit, edit func(*ringaudit.Plaintexts)) {
 	t.Helper()
@@ -37,11 +47,13 @@ func TestSectionSolvesEveryKeyShape(t *testing.T) {
 
 // Each published byte range of a record is sealed from its slot, a stream naming another value fails the binding.
 func TestEveryRecordFieldIsSealed(t *testing.T) {
-	s := ringaudit.NewSection(t, plainShape)
+	s := dataSection(t)
+	compileSection(t, plainShape).RequireSolved(t, s.Circuit(t))
 	const ring, exit = 0, 2
 	for name, field := range map[string]struct{ slot, offset int }{
 		"kind": {ring, 0}, "amount": {ring, 8}, "owner key": {ring, 9}, "mint": {ring, 41}, "blinding": {ring, 104},
-		"exit blinding": {exit, 104}, "exit nullifier key": {exit, 136},
+		"data hash": {ring, 136}, "ring data hash": {ring, 168},
+		"exit blinding": {exit, 104}, "exit nullifier key": {exit, 136}, "exit data hash": {exit, 168},
 	} {
 		t.Run(name, func(t *testing.T) {
 			refuseSealed(t, s, func(p *ringaudit.Plaintexts) { p.Records[field.slot][field.offset] ^= 1 })
@@ -76,6 +88,56 @@ func TestZeroKeyBitFollowsTheKey(t *testing.T) {
 			refuseSealed(t, s, func(p *ringaudit.Plaintexts) { p.Records[slot][0] ^= audit.KindZeroKey })
 		})
 	}
+}
+
+// A frame's flags and a slot's class fix its published length, so a ring slot and a dummy never differ and a set bit over zero hashes publishes zeros.
+func TestRecordLengthsFollowTheFrame(t *testing.T) {
+	c := compileSection(t, plainShape)
+	const ring, exit, dummy = 0, 2, 3
+	for _, frame := range []struct {
+		data, ringData bool
+		ringLen, exit  int
+	}{{false, false, 105, 137}, {true, false, 137, 169}, {false, true, 137, 137}, {true, true, 169, 169}} {
+		s := ringaudit.NewSection(t, plainShape)
+		s.Data, s.RingData = frame.data, frame.ringData
+		c.RequireSolved(t, s.Circuit(t))
+		stream := s.Stream(t)
+		if got := [3]int{len(stream.Record(ring)), len(stream.Record(dummy)), len(stream.Record(exit))}; got != [3]int{frame.ringLen, frame.ringLen, frame.exit} {
+			t.Fatalf("data %t, ring data %t: published %v", frame.data, frame.ringData, got)
+		}
+	}
+}
+
+// The cell tag holds the frame's exit claim to the proof's ring id, at one published length the record hash alone would not part them.
+func TestExitClaimBindsThroughTheCellTag(t *testing.T) {
+	c := compileSection(t, plainShape)
+	s := ringaudit.NewSection(t, plainShape)
+	s.RingData = true
+	const ring, exit = 0, 2
+	c.RequireSolved(t, s.Circuit(t))
+	stream := s.Stream(t)
+	if len(stream.Record(ring)) != len(stream.Record(exit)) {
+		t.Fatal("the fixture's exit and ring slots publish two lengths")
+	}
+	for name, slot := range map[string]int{"a ring slot claimed as an exit": ring, "an exit claimed as a ring slot": exit} {
+		t.Run(name, func(t *testing.T) {
+			claim := s.Claim()
+			claim.Exits = slices.Clone(claim.Exits)
+			claim.Exits[slot] = !claim.Exits[slot]
+			c.RefuseStatement(t, s.Circuit(t), s.StatementOf(t, stream, claim))
+		})
+	}
+}
+
+// An exit's record has no ring data field, the proof holds that hash to zero.
+func TestExitCarriesNoRingData(t *testing.T) {
+	c := compileSection(t, plainShape)
+	const exit = 2
+	s := dataSection(t)
+	c.RequireSolved(t, s.Circuit(t))
+	s.Outputs[exit].Utxo.RingDataHash = big.NewInt(0x5ca1e)
+	c.Refuse(t, s.Circuit(t))
+	ringtest.RequireRefused(t, test.IsSolved(ringaudit.NewSectionCircuit(plainShape), s.Circuit(t), ecc.BN254.ScalarField()), "audit.LayoutFlags.assertHashes")
 }
 
 // The record chain hashes each slot's published length, a key tail added, dropped or replaced names bytes the proof never bound.
@@ -169,7 +231,7 @@ func TestRecordsAreSealedToTheSealedRecipientKey(t *testing.T) {
 	t.Run("the recipient opens its record", func(t *testing.T) {
 		stream := s.Stream(t)
 		record := ringprotocol.SealRecord(t, s.Keys.TxViewingSk(), ringaudit.ViewingKey(t, 0), s.Salt, 0, s.FirstNullifier, shared.OutputRecordInfo, stream.Record(0))
-		if string(record) != string(s.Outputs[0].Record(t)[:s.Outputs[0].PublishedLen()]) {
+		if string(record) != string(s.Outputs[0].Record(t, s.Data)[:s.PublishedLen(0)]) {
 			t.Fatal("the record differs from the slot's opening")
 		}
 	})

@@ -235,3 +235,32 @@ fn a_records_rebind_under_a_salted_list_pairs_the_new_records() {
     let account: RingPolicy = ring.read(&policy_pda());
     assert_eq!(account.records, records);
 }
+
+#[test]
+fn the_policy_authority_commits_a_ring_salt_and_an_audit_only_ring_none() {
+    let mut tag = [0u8; 32];
+    tag[31] = 7;
+    let commit = |tag| UpdatePolicyIxData::RingListTag(tag);
+    let mut ring = salted_ring();
+    let before: RingPolicy = ring.read(&policy_pda());
+    write(&mut ring, commit(tag), &[RECORDS]).expect("a ring list tag");
+    let after: RingPolicy = ring.read(&policy_pda());
+    assert_eq!(after.ring_list_tag, tag);
+    assert_ne!(after.policy_hash, before.policy_hash);
+    assert_eq!(after.source_map().unwrap().ring_list_tag(), &tag);
+    refused_unchanged(
+        &mut ring,
+        |ring| write(ring, commit([0xff; 32]), &[RECORDS]),
+        CustomRingError::HashingFailed,
+    );
+    write(&mut ring, commit([0; 32]), &[RECORDS]).expect("no ring salt");
+    let cleared: RingPolicy = ring.read(&policy_pda());
+    assert_eq!(cleared.policy_hash, before.policy_hash);
+
+    let mut audit_only = Ring::new(Setup::AuditOnly);
+    refused_unchanged(
+        &mut audit_only,
+        |ring| write(ring, commit(tag), &[]),
+        CustomRingError::PolicyNotSet,
+    );
+}

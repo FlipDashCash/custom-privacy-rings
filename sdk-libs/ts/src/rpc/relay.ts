@@ -239,6 +239,11 @@ export class PendingRelaySignature {
     Object.freeze(this);
   }
 
+  /** The message Ring RPC returned, a copy, which a sealed frame's funder checks with `FunderApproval`. */
+  message(): Uint8Array {
+    return this.#message.slice();
+  }
+
   /** What the wallet sealed for one public owner, an outside co-signer holds none. */
   transferTerms(signer: Address): RelayTransferTerms | undefined {
     if (this.#expected?.kind === "sealed")

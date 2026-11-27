@@ -14,16 +14,14 @@ use spr_transaction::{
     OutputContext, OutputSlot, ShieldedTransaction,
 };
 
-use zolana_ring_transaction::{
-    open_recipient_body, published_nullifier_pk, OpenedRecipientBody, PayloadRead,
-};
+use zolana_ring_transaction::{open_recipient_body, published_nullifier_pk, OpenedRecipientBody};
 
 use crate::{
     disclosure::{canonical, AuditEnvelope},
     encryption::auditor_view_tag,
     types::{
-        AuditedEntryInput, AuditedOutput, AuditedTransaction, AuditedUtxo, ClaimedData,
-        OutputOpening, OutputPayloadError, OutputPayloadErrorKind, RingOwnerTag, UtxoOwner,
+        AuditedEntryInput, AuditedOutput, AuditedTransaction, AuditedUtxo, OutputOpening,
+        OutputPayloadError, OutputPayloadErrorKind, RingOwnerTag, UtxoOwner,
     },
     AuditError,
 };
@@ -119,6 +117,7 @@ impl<'a> TransactionAudit<'a> {
             return Err(AuditError::TxViewingKeyMismatch);
         }
         let keys = opened.recipient_keys(message.recipient_keys)?;
+        let voucher = opened.voucher(message.recipient_keys)?;
         let transfer = Transfer::new(ring, first_nullifier, tx_key, &salt)?;
         let mut audited = AuditedTransaction {
             tx_signature: tx.tx_signature,
@@ -129,6 +128,7 @@ impl<'a> TransactionAudit<'a> {
             payload_errors: Vec::new(),
             nullifiers: tx.nullifiers.clone(),
             entries: entry_inputs(&opened.evidence)?,
+            voucher,
         };
         let mut exit = 0;
         for ((index, output), recipient) in (0u32..).zip(&tx.output_slots).zip(&keys) {
@@ -151,10 +151,10 @@ impl<'a> TransactionAudit<'a> {
                         .exit_record(exit)
                         .ok_or(AuditError::AuditorMessageLength(data.len()))?;
                     exit += 1;
-                    &record[..]
+                    record
                 }
             };
-            let read = match open_recipient_body(ciphertext, &secret) {
+            let read = match open_recipient_body(ciphertext, &secret, layout.records) {
                 Ok(body) => transfer.slot(slot, body)?,
                 Err(_) => SlotRead::refused(OutputPayloadErrorKind::Disclosure),
             };
@@ -287,10 +287,10 @@ impl Transfer {
         })
     }
 
-    /// The proof binds each record field to the published commitment, payload data hashes join only
-    /// when they rebuild it under the key the record publishes.
+    /// The proof binds each record field, the data hashes among them, to the published commitment,
+    /// the payload enters no rebuild.
     fn slot(&self, slot: Slot<'_>, body: OpenedRecipientBody) -> Result<SlotRead, AuditError> {
-        let OpenedRecipientBody { record, payload } = body;
+        let OpenedRecipientBody { record, .. } = body;
         let ring = match record.kind {
             RecordKind::Dummy => return self.verify_dummy(slot),
             RecordKind::Ring => Some(self.ring),
@@ -301,59 +301,45 @@ impl Transfer {
             mint,
             amount,
             blinding,
+            data_hash,
+            ring_data_hash,
             ..
         } = record;
         let published = published_nullifier_pk(&record);
         // The proof holds every published record field canonical.
-        if published.is_some_and(|key| canonical(key).is_err()) || canonical(blinding).is_err() {
+        if published.is_some_and(|key| canonical(key).is_err())
+            || [blinding, data_hash, ring_data_hash]
+                .into_iter()
+                .any(|field| canonical(field).is_err())
+        {
             return Err(AuditError::DisclosureField);
         }
-        // An exit's data sits in its scheme 3 body, sealed to its owner alone.
-        let claimed = match payload {
-            PayloadRead::Absent => Some(([0; 32], [0; 32])),
-            PayloadRead::Opened(payload) => Some((
-                payload
-                    .data
-                    .first_chunk::<32>()
-                    .copied()
-                    .unwrap_or_default(),
-                payload.ring_data_hash.unwrap_or_default(),
-            )),
-            PayloadRead::Malformed => None,
-        }
-        .filter(|(data_hash, ring_data_hash)| {
-            canonical(*data_hash).is_ok() && canonical(*ring_data_hash).is_ok()
-        });
-        let claimed = claimed.map(|(data_hash, ring_data_hash)| ClaimedData {
-            data_hash,
-            ring_data_hash,
-        });
-        let asset = hash_bytes(&mint)?;
-        let opened = |owner, data: Option<ClaimedData>| AuditedUtxo {
+        let opened = AuditedUtxo {
             owner_key,
-            owner,
-            asset,
+            // The rebuild of a ring output under a nonzero key waits for the owner's registered key.
+            owner: published.map_or(UtxoOwner::Unresolved, |nullifier_pk| UtxoOwner::Keyed {
+                nullifier_pk,
+            }),
+            asset: hash_bytes(&mint)?,
             mint: Some(Address::new_from_array(mint)),
             amount,
             blinding,
-            data_hash: data.map(|data| data.data_hash),
-            ring_data_hash: data.map(|data| data.ring_data_hash),
+            data_hash: Some(data_hash),
+            ring_data_hash: Some(ring_data_hash),
         };
-        let mut error = None;
-        let utxo = match published {
-            // The rebuild waits for the owner's registered key, no payload error before it.
-            None => opened(UtxoOwner::Unresolved { claimed }, None),
-            Some(nullifier_pk) => {
-                let owner = UtxoOwner::Keyed { nullifier_pk };
-                let utxo = opened(owner, claimed);
-                match utxo.commitment(slot.tree_id(), ring)? == Some(slot.commitment()) {
-                    true => utxo,
-                    false => {
-                        error = Some(OutputPayloadErrorKind::Payload);
-                        opened(owner, None)
-                    }
-                }
-            }
+        let rebuilds = published.is_none()
+            || opened.commitment(slot.tree_id(), ring)? == Some(slot.commitment());
+        let (utxo, error) = match rebuilds {
+            true => (opened, None),
+            // The record stands under its key, hashes of no commitment stay out of it.
+            false => (
+                AuditedUtxo {
+                    data_hash: None,
+                    ring_data_hash: None,
+                    ..opened
+                },
+                Some(OutputPayloadErrorKind::Payload),
+            ),
         };
         Ok(SlotRead {
             opening: Some(match ring {

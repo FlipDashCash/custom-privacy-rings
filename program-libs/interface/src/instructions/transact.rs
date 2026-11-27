@@ -20,10 +20,10 @@
 //! 7. [`FrameExtensions`] under `EXTENSIONS`. SPP's `data_hash`, `ring_data_hash`, application messages and cached selector, then `approval_totals`, a statement element SPP never sees.
 //! 8. `interface_transfers`, SPP's public legs as sent, then under `OWN_ROOT` the SPL withdrawal token owners the program checks for the policy's withdrawal hash.
 //! 9. The exit bitmap over `m`.
-//! 10. One [`RingOutput`] per slot, SPP's `utxo_hash`, `owner_tag` and `data`, then the slot's record. A non-exit slot carries a short tag and its record opens the ring's scheme 10 body. An exit carries the full tag, its record goes to the auditor message and SPP's scheme 3 body follows.
+//! 10. One [`RingOutput`] per slot, SPP's `utxo_hash`, `owner_tag` and `data`, then the slot's record at the length its kind takes under the frame's [`RecordForm`]. A non-exit slot carries a short tag and its record opens the ring's scheme 10 body. An exit carries the full tag, its record goes to the auditor message and SPP's scheme 3 body follows.
 //! 11. [`Replies`] under `REPLY_METADATA`, appended to each scheme 10 body inside SPP's `data`.
 //! 12. [`FramedSenderBundle`] on an anonymous frame, SPP's first message under scheme 9.
-//! 13. The envelope and the recipient keys. With the exits' records, the auditor message, SPP's last message, with the auditor's `u` as its view tag.
+//! 13. The envelope and the recipient keys, then the voucher's sealed key under `output_flag::VOUCHED`. With the exits' records, the auditor message, SPP's last message, with the auditor's `u` as its view tag.
 //! 14. `private_tx_hash`. SPP's, the ring proof reopens it over the slots it opened.
 //! 15. [`AnonymousProofData`] or [`InProofOwner`]. The BSB22 commitment and default owner tag of SPP's anonymous selector, and the in proof owner's key for the statement.
 //! 16. `spp_proof`. SPP's, with `b` compressed, and the expansion decompresses it.
@@ -63,10 +63,7 @@ use wincode::{containers, len::FixIntLen, Serialize};
 
 use crate::{
     anonymous_exit::ANONYMOUS_PARTIES,
-    audit_stream::{
-        AuditStreamLayout, RecordKind, EXIT_RECORD_LEN, MIN_REPLY_LEN,
-        RECIPIENT_PAYLOAD_LENGTH_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
-    },
+    audit_stream::{AuditStreamLayout, RecordForm, RecordKind, MIN_REPLY_LEN, SENDER_BUNDLE_LEN},
     bytes::Bytes,
     cosign::ApprovalMask,
     disclosure::AuditLayout,
@@ -308,8 +305,10 @@ pub struct RingTransactData<'a> {
     pub extensions: FrameExtensions<'a>,
     /// SPP's public legs, forwarded as sent.
     pub interface_transfers: Vec<InterfaceTransfer>,
-    /// Every recipient body carries a payload past its record, one width per frame.
+    /// Every record publishes `data_hash` and every recipient body carries a payload past its record, one width per frame.
     pub has_data: bool,
+    /// Every non-exit record publishes `ring_data_hash`.
+    pub ring_data: bool,
     /// The key with entry capacity, the one that also spends a default-ring note.
     pub entry: bool,
     /// The key with its full owner rows, a hidden owner count needs the frame to name the key.
@@ -322,8 +321,10 @@ pub struct RingTransactData<'a> {
     pub sender: Option<FramedSenderBundle<'a>>,
     /// `envelope_ct`, the transmitted length is the stream layout's.
     pub envelope: &'a [u8],
-    /// One sealed key per published slot, in slot order.
+    /// One sealed key per published slot, in slot order, then the voucher's key under `vouched`.
     pub recipient_keys: &'a [u8],
+    /// A signer vouches for the transfer, `policy/voucher.go`.
+    pub vouched: bool,
     /// SPP's, the proof reopens it over the slots it opened and ties both proofs to one transaction.
     pub private_tx_hash: &'a [u8; 32],
     /// Present exactly on the anonymous rail with a hidden sender.
@@ -431,10 +432,10 @@ pub enum SlotBody<'a> {
 }
 
 impl SlotBody<'_> {
-    pub const fn record_len(&self) -> usize {
+    pub const fn record_len(&self, form: RecordForm) -> usize {
         match self {
-            Self::Recipient(_) => RecordKind::Ring.published_len(),
-            Self::Exit(_) => RecordKind::Exit.published_len(),
+            Self::Recipient(_) => form.published_len(RecordKind::Ring),
+            Self::Exit(_) => form.published_len(RecordKind::Exit),
         }
     }
 }
@@ -463,7 +464,7 @@ impl<'a> RingOutput<'a> {
     /// The bytes past the record, a payload or an exit's scheme 3 body.
     const fn extra_len(&self) -> usize {
         match self.body {
-            SlotBody::Recipient(body) => body.len().saturating_sub(RING_RECORD_LEN),
+            SlotBody::Recipient(body) => body.len().saturating_sub(self.record.len()),
             SlotBody::Exit(body) => body.len(),
         }
     }
@@ -471,14 +472,14 @@ impl<'a> RingOutput<'a> {
     /// A frame with no data carries each body at its plain length.
     const fn has_plain_body(&self) -> bool {
         match self.body {
-            SlotBody::Recipient(body) => body.len() == RING_RECORD_LEN,
+            SlotBody::Recipient(body) => body.len() == self.record.len(),
             SlotBody::Exit(payload) => payload.len() == CONFIDENTIAL_DATA_FREE_BODY_LEN,
         }
     }
 
-    /// The record chain hashes the record at its slot's length, a key tail added or dropped names no proven bytes.
-    fn record_leads_body(&self) -> bool {
-        self.record.len() == self.body.record_len()
+    /// The record chain hashes the record at its slot's length, a tail added or dropped names no proven bytes.
+    fn record_leads_body(&self, form: RecordForm) -> bool {
+        self.record.len() == self.body.record_len(form)
             && match self.body {
                 SlotBody::Recipient(body) => body.starts_with(self.record),
                 SlotBody::Exit(_) => true,
@@ -726,10 +727,13 @@ impl<'a> RingTransactData<'a> {
             inputs: usize::from(input_count),
             outputs: output_count,
             capacity: usize::from(shape.outputs),
+            vouched: header.flags.vouched,
+            records: header.flags.records(),
         };
-        // 5. Each slot's fields for SPP, then its record. A non-exit tag travels short and regains its
-        // leading zeros. The bytes past the record carry a length under `has_data` and their plain
-        // length otherwise.
+        // 5. Each slot's fields for SPP, then its record at the one length its kind takes under the
+        // frame's form. A non-exit tag travels short and regains its leading zeros. The bytes past the
+        // record carry a length under `has_data` and their plain length otherwise.
+        let form = stream.records;
         let mut outputs = Vec::with_capacity(output_count);
         for slot in 0..output_count {
             let exit = (exits >> slot) & 1 == 1;
@@ -747,15 +751,16 @@ impl<'a> RingTransactData<'a> {
                 true => RingOutput {
                     hash,
                     owner_tag,
-                    record: bytes.take(EXIT_RECORD_LEN)?,
+                    record: bytes.take(form.published_len(RecordKind::Exit))?,
                     body: SlotBody::Exit(bytes.take(extra)?),
                 },
                 false => {
-                    let body = bytes.take(RING_RECORD_LEN + extra)?;
+                    let record_len = form.published_len(RecordKind::Ring);
+                    let body = bytes.take(record_len + extra)?;
                     RingOutput {
                         hash,
                         owner_tag,
-                        record: &body[..RING_RECORD_LEN],
+                        record: &body[..record_len],
                         body: SlotBody::Recipient(body),
                     }
                 }
@@ -841,6 +846,7 @@ impl<'a> RingTransactData<'a> {
             extensions,
             interface_transfers,
             has_data: header.flags.has_data,
+            ring_data: header.flags.ring_data,
             entry: header.flags.entry,
             wide_owners: header.flags.wide_owners,
             outputs,
@@ -848,6 +854,7 @@ impl<'a> RingTransactData<'a> {
             sender,
             envelope,
             recipient_keys,
+            vouched: header.flags.vouched,
             private_tx_hash,
             anonymous,
             in_proof_owner,
@@ -970,7 +977,8 @@ impl<'a> RingTransactData<'a> {
         // 2. Published counts fit the stream, each required section has the length selected by its flags.
         // Replies contain one complete chunk per recipient body, nonexit tags retain their canonical leading zeros.
         stream.checked()?;
-        self.check_payload_width()?;
+        let form = self.record_form();
+        self.check_payload_width(form)?;
         let anonymous_frame = self.rail.anonymous_frame();
         let owners_expected = match flags.reads_own_root() {
             true => crate::spl_withdrawal_count(&self.interface_transfers),
@@ -985,7 +993,7 @@ impl<'a> RingTransactData<'a> {
             || self.envelope.len() != stream.envelope().len
             || self.recipient_keys.len() != stream.keys_len()
             || !self.outputs.iter().all(|output| {
-                output.record_leads_body()
+                output.record_leads_body(form)
                     && (self.has_data || output.has_plain_body())
                     && (output.is_exit() || slot_tag(output.owner_tag) == output.owner_tag)
             })
@@ -1031,7 +1039,7 @@ impl<'a> RingTransactData<'a> {
     }
 
     /// Under `has_data` every recipient payload has one width, a payload of its own width would mark its slot.
-    fn check_payload_width(&self) -> Result<(), CustomRingError> {
+    fn check_payload_width(&self, form: RecordForm) -> Result<(), CustomRingError> {
         if !self.has_data {
             return Ok(());
         }
@@ -1040,9 +1048,7 @@ impl<'a> RingTransactData<'a> {
             SlotBody::Exit(_) => None,
         });
         if let Some(width) = widths.next() {
-            if width < RING_RECORD_LEN + RECIPIENT_PAYLOAD_LENGTH_LEN
-                || widths.any(|next| next != width)
-            {
+            if !form.fits_recipient_body(width) || widths.any(|next| next != width) {
                 return Err(CustomRingError::OutputBodyLength);
             }
         }
@@ -1076,6 +1082,7 @@ impl<'a> RingTransactData<'a> {
             true => 0,
             false => self.extensions.frame_len(),
         };
+        let form = self.record_form();
         let slots = self
             .outputs
             .iter()
@@ -1089,7 +1096,7 @@ impl<'a> RingTransactData<'a> {
                 } else {
                     SLOT_TAG_LEN
                 };
-                len_prefix + FIELD + tag + output.body.record_len() + output.extra_len()
+                len_prefix + FIELD + tag + output.body.record_len(form) + output.extra_len()
             })
             .sum::<usize>();
         Ok(1 + 3
@@ -1245,8 +1252,19 @@ impl<'a> RingTransactData<'a> {
             .transpose()
     }
 
-    pub fn audit_layout(&self) -> AuditLayout {
-        AuditLayout { entry: self.entry }
+    pub const fn record_form(&self) -> RecordForm {
+        RecordForm {
+            data: self.has_data,
+            ring_data: self.ring_data,
+        }
+    }
+
+    pub const fn audit_layout(&self) -> AuditLayout {
+        AuditLayout {
+            entry: self.entry,
+            vouched: self.vouched,
+            records: self.record_form(),
+        }
     }
 
     /// Every ciphertext length of the transfer, refusing a frame no key serves.
@@ -1261,6 +1279,8 @@ impl<'a> RingTransactData<'a> {
             inputs: self.nullifiers.len(),
             outputs: self.outputs.len(),
             capacity: usize::from(shape.outputs),
+            vouched: self.vouched,
+            records: self.record_form(),
         }
     }
 
@@ -1478,14 +1498,21 @@ pub mod shape_flag {
 /// Byte 2, the published input count below these flags.
 pub mod input_flag {
     pub const BYTE: usize = 2;
-    /// One length per slot for the bytes past its record.
+    /// Every record publishes `data_hash`, one length per slot for the bytes past its record.
     pub const HAS_DATA: u8 = 1 << 6;
     pub const ENTRY: u8 = 1 << 7;
 }
 
 pub const OUTPUT_COUNT_BYTE: usize = 3;
-/// Byte 3, the proof's key opens its full owner rows.
+/// Byte 3, the published slot count below these flags.
 pub mod output_flag {
+    /// Every non-exit record publishes `ring_data_hash`.
+    pub const RING_DATA: u8 = 1 << 5;
+    /// The slot count, the widest key capacity stays below the lowest flag.
+    pub const COUNT: u8 = RING_DATA - 1;
+    /// The voucher's sealed key follows the recipient keys.
+    pub const VOUCHED: u8 = 1 << 6;
+    /// The proof's key opens its full owner rows.
     pub const WIDE_OWNERS: u8 = 1 << 7;
 }
 pub const APPROVAL_BYTE: usize = 4;
@@ -1583,14 +1610,16 @@ impl FrameHeader {
             public_owners: shape & shape_flag::PUBLIC_OWNERS != 0,
             has_data: inputs & input_flag::HAS_DATA != 0,
             entry: inputs & input_flag::ENTRY != 0,
+            ring_data: output_count & output_flag::RING_DATA != 0,
             wide_owners: output_count & output_flag::WIDE_OWNERS != 0,
+            vouched: output_count & output_flag::VOUCHED != 0,
         };
         flags.check(rail)?;
         let header = Self {
             n_in: count_byte(spp_shape.n_inputs())?,
             n_out: count_byte(spp_shape.n_outputs())?,
             input_count: inputs & Self::LOW,
-            output_count: output_count & !output_flag::WIDE_OWNERS,
+            output_count: output_count & output_flag::COUNT,
             flags,
         };
         header.check_output_count()?;
@@ -1624,7 +1653,7 @@ impl FrameHeader {
             .iter()
             .position(|supported| *supported == shape)
             .ok_or(CustomRingError::RingShapeUnkeyed)?;
-        if self.input_count > Self::LOW {
+        if self.input_count > Self::LOW || self.output_count > output_flag::COUNT {
             return Err(CustomRingError::RingTransactLength);
         }
         let flag = |set: bool, bit: u8| if set { bit } else { 0 };
@@ -1636,10 +1665,23 @@ impl FrameHeader {
             self.input_count
                 | flag(flags.has_data, input_flag::HAS_DATA)
                 | flag(flags.entry, input_flag::ENTRY),
-            self.output_count | flag(flags.wide_owners, output_flag::WIDE_OWNERS),
+            self.output_count
+                | flag(flags.ring_data, output_flag::RING_DATA)
+                | flag(flags.wide_owners, output_flag::WIDE_OWNERS)
+                | flag(flags.vouched, output_flag::VOUCHED),
         ])
     }
 }
+
+const _: () = {
+    let mut index = 0;
+    while index < crate::disclosure::TRANSFER_OUTPUT_CAPACITIES.len() {
+        assert!(
+            crate::disclosure::TRANSFER_OUTPUT_CAPACITIES[index] <= output_flag::COUNT as usize
+        );
+        index += 1;
+    }
+};
 
 const _: () = assert!(
     SPP_SUPPORTED_SHAPES.len() <= FrameHeader::LOW as usize + 1
@@ -1656,8 +1698,12 @@ struct FrameFlags {
     has_data: bool,
     /// Input byte bit 7.
     entry: bool,
+    /// Output count byte bit 5.
+    ring_data: bool,
     /// Output count byte bit 7.
     wide_owners: bool,
+    /// Output count byte bit 6.
+    vouched: bool,
 }
 
 impl FrameFlags {
@@ -1669,7 +1715,16 @@ impl FrameFlags {
             public_owners: data.public_owners,
             has_data: data.has_data,
             entry: data.entry,
+            ring_data: data.ring_data,
             wide_owners: data.wide_owners,
+            vouched: data.vouched,
+        }
+    }
+
+    const fn records(self) -> RecordForm {
+        RecordForm {
+            data: self.has_data,
+            ring_data: self.ring_data,
         }
     }
 

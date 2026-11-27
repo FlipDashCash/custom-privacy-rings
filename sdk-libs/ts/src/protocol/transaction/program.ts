@@ -345,6 +345,28 @@ export function closeBufferInstruction(
   };
 }
 
+/** Closes the program and its program data, the loader refuses any later deploy at the address. */
+export async function closeRingProgramInstruction(
+  input: Readonly<{
+    ringProgramId: Address;
+    /** Receives the program data's lamports. */
+    recipient: Address;
+    /** The upgrade authority. */
+    authority: SignerAccount;
+  }>,
+): Promise<Instruction> {
+  return {
+    programAddress: BPF_LOADER_UPGRADEABLE_ID,
+    accounts: [
+      meta(await ringProgramDataAddress(input.ringProgramId), false, true),
+      meta(input.recipient, false, true),
+      meta(input.authority, true, false),
+      meta(input.ringProgramId, false, true),
+    ],
+    data: new Writer().u32(LoaderTag.close, "tag").finish(),
+  };
+}
+
 export type RingProgramDeployClient = BlockhashProvider &
   KitRpcAccess &
   Pick<TransactionConfirmer, "confirmTransaction"> &

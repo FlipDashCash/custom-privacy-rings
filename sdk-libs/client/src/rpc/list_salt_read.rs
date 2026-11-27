@@ -1,4 +1,4 @@
-//! `getListSalt`, an owner's salt for the writers of the ring's salted lists, never its nullifier secret.
+//! `getListSalt`, an owner's salt or the ring salt for the writers of the ring's salted lists, never a nullifier secret.
 
 use serde::{Deserialize, Serialize};
 use solana_address::Address;
@@ -27,6 +27,9 @@ pub struct GetListSaltResponse {
     /// Absent while the owner has no tracking row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list_salt: Option<Hash>,
+    /// Set while the owner has no tracking row, refused on a ring committing no tag of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ring_salt: Option<Hash>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

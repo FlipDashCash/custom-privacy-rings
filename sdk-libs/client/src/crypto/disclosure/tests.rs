@@ -23,6 +23,8 @@ fn plain_layout() -> AuditStreamLayout {
         inputs: 1,
         outputs: 2,
         capacity: 2,
+        vouched: false,
+        records: Default::default(),
     }
 }
 
@@ -35,6 +37,8 @@ fn entry_layout() -> AuditStreamLayout {
         inputs: 2,
         outputs: 2,
         capacity: 2,
+        vouched: false,
+        records: Default::default(),
     }
 }
 
@@ -102,6 +106,7 @@ fn the_envelope_opens_to_the_sealed_key_and_a_resend_seals_another_stream() {
             real_inputs: 1,
             evidence: AuditEvidence::None,
             recipient_keys: keys.clone(),
+            voucher: None,
         }
         .seal(&auditor.pubkey())
         .unwrap()
@@ -149,6 +154,7 @@ fn a_recipient_key_opens_only_at_the_counter_of_its_slot() {
         real_inputs: 1,
         evidence: AuditEvidence::None,
         recipient_keys: keys.clone(),
+        voucher: None,
     }
     .seal(&auditor.pubkey())
     .unwrap();
@@ -179,6 +185,7 @@ fn the_entry_evidence_and_the_keys_round_their_own_regions() {
         real_inputs: 1,
         evidence: entry_evidence(),
         recipient_keys: keys.clone(),
+        voucher: None,
     }
     .seal(&auditor.pubkey())
     .unwrap();
@@ -196,6 +203,57 @@ fn the_entry_evidence_and_the_keys_round_their_own_regions() {
 }
 
 #[test]
+fn the_voucher_key_opens_past_the_last_slot_and_only_on_a_vouched_layout() {
+    let auditor = X25519Keypair::new();
+    let tx_viewing_key = ViewingKey::new();
+    let keys = recipient_keys();
+    let vouched = AuditStreamLayout {
+        vouched: true,
+        ..plain_layout()
+    };
+    let voucher = [0xc9; 32];
+    let seal = |layout, voucher| {
+        AuditStreamSeal {
+            layout,
+            tx_viewing_key: &tx_viewing_key,
+            salt: &SALT,
+            real_inputs: 1,
+            evidence: AuditEvidence::None,
+            recipient_keys: keys.clone(),
+            voucher,
+        }
+        .seal(&auditor.pubkey())
+    };
+    let sealed = seal(vouched, Some(voucher)).unwrap();
+    let plain = seal(plain_layout(), None).unwrap();
+    assert_eq!(sealed.keys[..64], plain.keys);
+    assert_eq!(sealed.keys.len(), plain.keys.len() + 32);
+    let opened = opened_envelope(&sealed, &auditor, vouched).unwrap();
+    assert_eq!(opened.voucher(&sealed.keys).unwrap(), Some(voucher));
+    assert_eq!(
+        opened
+            .recipient_keys(&sealed.keys)
+            .unwrap()
+            .iter()
+            .map(X25519Pubkey::u)
+            .collect::<Vec<_>>(),
+        keys
+    );
+    let unvouched = opened_envelope(&plain, &auditor, plain_layout()).unwrap();
+    assert_eq!(unvouched.voucher(&plain.keys).unwrap(), None);
+    assert!(matches!(
+        unvouched.voucher(&sealed.keys),
+        Err(AuditError::DisclosureLayout)
+    ));
+    for (layout, voucher) in [(vouched, None), (plain_layout(), Some(voucher))] {
+        assert!(matches!(
+            seal(layout, voucher),
+            Err(AuditError::DisclosureLayout)
+        ));
+    }
+}
+
+#[test]
 fn a_seal_off_its_layout_is_refused() {
     let auditor = X25519Keypair::new().pubkey();
     let tx_viewing_key = ViewingKey::new();
@@ -207,6 +265,7 @@ fn a_seal_off_its_layout_is_refused() {
             real_inputs: 1,
             evidence,
             recipient_keys,
+            voucher: None,
         }
         .seal(&auditor)
     };

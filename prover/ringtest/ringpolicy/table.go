@@ -17,6 +17,7 @@ type Rows struct {
 	Sources []policy.SourceWires
 	// Bit i puts list i+1 at owners' salted keys.
 	Salted                            uint64
+	RingListTag                       frontend.Variable
 	Rules, InlineAssets, InlineLimits []frontend.Variable
 	Limits                            []MintLimit
 }
@@ -48,6 +49,10 @@ func (r Rows) Wires() policy.Table {
 	for i := range table.Rules {
 		table.Rules[i] = pad(r.Rules, i, 0)
 	}
+	table.RingListTag = 0
+	if r.RingListTag != nil {
+		table.RingListTag = r.RingListTag
+	}
 	return table
 }
 
@@ -68,6 +73,9 @@ func (table Table) rows() Rows {
 		sources[slot] = policy.SourceWires{ListID: slot + 1, Registry: registry}
 	}
 	r := Rows{Sources: sources, Salted: table.Salted}
+	if table.RingListTag != nil {
+		r.RingListTag = table.RingListTag
+	}
 	for _, rule := range table.Rules {
 		r.Rules = append(r.Rules, rule.Packed())
 	}

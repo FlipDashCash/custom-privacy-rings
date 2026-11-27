@@ -311,6 +311,7 @@ fn anonymous_transfer_with(
         }),
         envelope: &[],
         recipient_keys: &keys,
+        vouched: false,
         private_tx_hash: &field,
         anonymous: Some(AnonymousProofData {
             commitment: &field,
@@ -324,6 +325,7 @@ fn anonymous_transfer_with(
             utxo_tree_root_index: 1,
             nullifier_tree_root_index: 2,
         }),
+        ring_data: false,
     };
     data.envelope = &envelope_room[..data.audit_stream().unwrap().envelope().len];
     Instruction {

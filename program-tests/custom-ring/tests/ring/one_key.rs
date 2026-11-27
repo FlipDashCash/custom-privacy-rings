@@ -1041,8 +1041,8 @@ fn one_key_settles_a_real_transfer_and_refuses_three_forgeries() -> Result<()> {
     assert_eq!(
         opened(&audited),
         vec![
-            note(recipient, RING_TRANSFER_AMOUNT, RECIPIENT_SLOT)?,
             note(sender, RING_CHANGE, CHANGE_SLOT)?,
+            note(recipient, RING_TRANSFER_AMOUNT, RECIPIENT_SLOT)?,
         ]
     );
     println!("auditor: reconstructed both outputs");

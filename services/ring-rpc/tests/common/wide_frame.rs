@@ -60,6 +60,7 @@ pub fn wide_frame(tag: u8) -> Vec<u8> {
         sender: None,
         envelope: &[],
         recipient_keys: &keys,
+        vouched: false,
         private_tx_hash: &field,
         anonymous: None,
         in_proof_owner: None,
@@ -69,6 +70,7 @@ pub fn wide_frame(tag: u8) -> Vec<u8> {
             utxo_tree_root_index: 1,
             nullifier_tree_root_index: 2,
         }),
+        ring_data: false,
     };
     let envelope = vec![8; data.audit_stream().expect("stream").envelope().len];
     data.envelope = &envelope;

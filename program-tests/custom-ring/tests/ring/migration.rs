@@ -86,7 +86,7 @@ fn an_old_tree_note_migrates_into_the_active_tree() -> Result<()> {
     .run(&env)?;
     assert_eq!(
         ring_amounts(&audited)?,
-        vec![SECOND_HOP_AMOUNT, ENTRY_AMOUNT - SECOND_HOP_AMOUNT],
+        vec![ENTRY_AMOUNT - SECOND_HOP_AMOUNT, SECOND_HOP_AMOUNT],
         "the active-tree note spends in turn"
     );
     Ok(())

@@ -30,7 +30,7 @@ func (b Witness) OwnRecord(entry policy.PoolEntry) *circuitregistry.Record {
 }
 
 // FillPools opens each live subject and record once and fills the pools cyclically to capacity.
-func FillPools(t testing.TB, policyWitness *policy.Policy, outputs, inputs []shared.UtxoWires, senders []frontend.Variable, ownTree, curatorTree *ringregistry.Registry, tracking *ringregistry.Tracking) {
+func FillPools(t testing.TB, policyWitness *policy.Policy, outputs, inputs []shared.UtxoWires, senders []frontend.Variable, voucher frontend.Variable, ownTree, curatorTree *ringregistry.Registry, tracking *ringregistry.Tracking) {
 	t.Helper()
 	own, curator := newCollector(ownTree), newCollector(curatorTree)
 	foreign, saltedOwn, saltedCurated := false, false, false
@@ -42,25 +42,38 @@ func FillPools(t testing.TB, policyWitness *policy.Policy, outputs, inputs []sha
 			saltedOwn, saltedCurated = saltedOwn || !curated, saltedCurated || curated
 		}
 	}
+	ringSalted := ringtest.AsBigInt(policyWitness.RingListTag).Sign() != 0
+	policyWitness.RingSalt = 0
+	if ringSalted {
+		policyWitness.RingSalt = RingSalt
+	}
 	entry := func(member frontend.Variable, active bool) policy.PoolEntry {
 		return policy.PoolEntry{Own: own.add(member, active), Curator: [1]frontend.Variable{curator.add(member, active && foreign)}}
 	}
 	owner := func(member frontend.Variable, active bool) policy.OwnerEntry {
 		identity := ringtest.AsBigInt(member)
-		ownerEntry := policy.OwnerEntry{PoolEntry: entry(ringregistry.PublicKey(t, identity), active), Tracking: 0, ListSalt: 0, OwnSalted: 0, CuratorSalted: [1]frontend.Variable{0}}
-		if !active || !(saltedOwn || saltedCurated) || !tracking.Opening(identity).Present {
+		ownerEntry := policy.OwnerEntry{PoolEntry: entry(ringregistry.PublicKey(t, identity), active), Tracking: 0, ListSalt: 0, OwnSalted: 0, CuratorSalted: [1]frontend.Variable{0}, OwnRing: 0, CuratorRing: [1]frontend.Variable{0}}
+		if !active || !(saltedOwn || saltedCurated) {
 			return ownerEntry
 		}
-		salt := ListSaltOf(t, identity)
-		key := ringregistry.ListKey(t, identity, salt)
-		ownerEntry.ListSalt = salt
-		ownerEntry.OwnSalted = own.add(key, saltedOwn)
-		ownerEntry.CuratorSalted[0] = curator.add(key, saltedCurated)
+		if tracking.Opening(identity).Present {
+			salt := ListSaltOf(t, identity)
+			key := ringregistry.ListKey(t, identity, salt)
+			ownerEntry.ListSalt = salt
+			ownerEntry.OwnSalted = own.add(key, saltedOwn)
+			ownerEntry.CuratorSalted[0] = curator.add(key, saltedCurated)
+		}
+		if ringSalted {
+			key := ringregistry.RingListKey(t, identity, RingSalt)
+			ownerEntry.OwnRing = own.add(key, saltedOwn)
+			ownerEntry.CuratorRing[0] = curator.add(key, saltedCurated)
+		}
 		return ownerEntry
 	}
 	for j, sender := range senders {
 		policyWitness.SenderEntries[j] = owner(sender, ringtest.AsBigInt(sender).Sign() != 0)
 	}
+	policyWitness.VoucherEntry = owner(voucher, ringtest.AsBigInt(voucher).Sign() != 0)
 	for i, out := range outputs {
 		active := ringtest.AsBigInt(out.Domain).Int64() == transaction.UtxoDomain
 		policyWitness.OwnerEntries[i], policyWitness.AssetEntries[i] = owner(out.OwnerPkHash, active), entry(out.Asset, active)

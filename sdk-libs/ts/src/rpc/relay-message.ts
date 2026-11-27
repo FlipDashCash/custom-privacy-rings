@@ -853,7 +853,7 @@ function checkMoved(
 ): void {
   // Owner tags alone, the message holds no blinding, a hidden frame's tags bind nothing.
   checkTransactionKey(expected.txViewingKey, frame);
-  if (frame.hasData) throw mismatch("Data");
+  if (frame.hasData || frame.ringData) throw mismatch("Data");
   checkWithdrawals(expected, frame, accounts);
   const { envelope, recipientKeys } = openStream(expected.txViewingKey, expected.auditor, frame);
   const records = frameRecords(expected.txViewingKey, frame, recipientKeys);
@@ -892,24 +892,24 @@ function checkMoved(
         owns(payment.owner, record) &&
         sealedTo(payment.owner),
     );
-    if (paid < 0) {
-      if (
-        record.kind !== RecordKind.ring ||
-        !expected.sources.some((source) => owns(source, record) && sealedTo(source))
-      )
-        throw mismatch("Recipients");
-      return;
+    const source =
+      paid < 0 && record.kind === RecordKind.ring
+        ? expected.sources.find((source) => owns(source, record) && sealedTo(source))
+        : undefined;
+    const owner = unpaid[paid]?.owner ?? source;
+    if (owner === undefined) throw mismatch("Recipients");
+    if (paid >= 0) {
+      // Rust `swap_remove`, the order decides the equal payment a later record takes.
+      unpaid[paid] = unpaid[unpaid.length - 1] as ExpectedPayment;
+      unpaid.pop();
     }
-    const payment = unpaid[paid];
-    // Rust `swap_remove`, the order decides the equal payment a later record takes.
-    unpaid[paid] = unpaid[unpaid.length - 1] as ExpectedPayment;
-    unpaid.pop();
     const tag = frame.outputs[slot]?.ownerTag;
+    // A confidential reader finds its note by the tag, a change under another tag is lost to its source.
     const expectedTag =
-      payment?.kind === RecordKind.exit
-        ? payment.owner.ownerKey
-        : payment !== undefined && !isAnonymousFrame(frame.rail)
-          ? confidentialSlotTag(payment.owner.viewingU)
+      record.kind === RecordKind.exit
+        ? owner.ownerKey
+        : !isAnonymousFrame(frame.rail)
+          ? confidentialSlotTag(owner.viewingU)
           : undefined;
     if (expectedTag !== undefined && (tag === undefined || !equalBytes(tag, expectedTag)))
       throw mismatch("Recipients");
@@ -1044,9 +1044,10 @@ function frameRecords(
           firstNullifier: RingTransactData.firstNullifier(frame),
         });
         try {
+          const form = RingTransactData.recordForm(frame);
           return output.body.kind === "exit"
-            ? openExitRecord(secret, output.record)
-            : openOutputSlot(secret, output.record).record;
+            ? openExitRecord(secret, output.record, form)
+            : openOutputSlot(secret, output.record, form).record;
         } finally {
           secret.fill(0);
         }

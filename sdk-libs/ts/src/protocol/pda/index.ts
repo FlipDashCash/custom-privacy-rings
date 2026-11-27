@@ -21,6 +21,7 @@ export { ringAuthAddress };
 const encoder = new TextEncoder();
 
 export const STORAGE_PROGRAM_ID = address("rnGSTosTQ9gToNQP44THEZph8xtBtuGa5FEwzhKrWjL");
+export const INSTRUCTIONS_SYSVAR = address("Sysvar1nstructions1111111111111111111111111");
 
 function ringPda(
   ringProgramId: Address,
@@ -54,6 +55,15 @@ export async function ringCoSignerMetas(
 ): Promise<readonly [AccountMeta, AccountMeta]> {
   const record = await ringCoSignerAddress(ringProgramId, signerAddress(signer));
   return [meta(record, false, false), meta(signer, true, false)];
+}
+
+/** The pair of a transfer a program calls, the signer signs its `ApproveTransfer` alone. */
+export async function ringApprovedCoSignerMetas(
+  ringProgramId: Address,
+  signer: SignerAccount,
+): Promise<readonly [AccountMeta, AccountMeta]> {
+  const record = await ringCoSignerAddress(ringProgramId, signerAddress(signer));
+  return [meta(record, false, false), meta(INSTRUCTIONS_SYSVAR, false, false)];
 }
 
 export function ringPolicyPda(ringProgramId: Address): Promise<ProgramDerivedAddress> {

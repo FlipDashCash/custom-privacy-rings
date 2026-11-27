@@ -7,12 +7,14 @@ The auditor holds one viewing key for the ring's life. Every operation proves a 
 - The sender draws a transaction viewing key. The transfer proof seals its secret to the auditor in one AES-256-CTR stream.
 - The key schedule binds the auditor key, the transaction key and a salt. A resend repeats the key, and a fresh salt gives a different keystream.
 - The stream contains an envelope and one recipient key per published slot.
+- On a vouched transfer the stream also contains the Ed25519 key that vouched. The proof seals the key whose signature it verified, so the auditor reads who answers for every sender and owner of that transfer.
 - Each slot has one record, sealed from the transaction viewing secret to that slot's recipient key. A non-exit slot's body carries it, and an exit's travels in the auditor message. The recipient and the auditor read the same record.
-- A record contains the kind, amount, owner key, mint, nullifier key and blinding. A dummy's record is all zero, and the auditor rebuilds the dummy hash from its blinding.
+- A record names the note's kind, amount, owner key, mint and blinding, an exit's nullifier key and the data hashes its frame's layout names. [Records](../spec/crypto/disclosure.md#records) fixes the bytes. A dummy's record is all zero, and the auditor rebuilds the dummy hash from its blinding.
 - The proof holds every published blinding to a derivation from the sealed key, the salt, the first nullifier and the slot index.
-- The auditor rebuilds each commitment from its record, the payload's data hashes and the tree id. It needs no other slot, no history and no mint registry.
+- The auditor rebuilds each commitment from its record and the tree id, with zero for a hash the layout leaves out. It needs no other slot, no history and no mint registry.
 - A record of another slot rebuilds no published hash, so the reader refuses it.
-- No record holds a data hash. A malformed payload loses a data-bearing note's hashes, and neither the recipient nor the auditor rebuilds that commitment. The auditor still traces its spend from the published hash, the record's blinding and the owner's secret.
+- The record proves `data_hash` and `ring_data_hash`. A clear frame bit proves that hash zero on every slot. A lost payload loses the application data and not the commitment.
+- The record chain tags each cell with the slot's exit claim, so a frame cannot present a ring record as an exit's.
 - The program builds the ring statement from the frame it forwards to SPP, so the proof binds the transfer that settles.
 
 ## Spent notes
@@ -44,10 +46,10 @@ The auditor holds one viewing key for the ring's life. Every operation proves a 
 - The proof makes each record's encryption to its supplied recipient key correct. It does not tie that key to the intended recipient, and choosing it is the sender's responsibility.
 - Discovery tags, payloads, replies and the sender bundle stay outside the circuit. SPP's external data hash binds the bytes a frame submits. A replaced byte fails SPP's verification, and a correct proof says nothing about what those bytes contain.
 - A transaction with a correct proof can therefore carry a wrong key, a payload or a tag its recipient cannot use. Nothing promises delivery.
-- A full scan repairs a bad discovery tag. It never repairs a record sealed to another key or a malformed payload, since no held key rebuilds that note's commitment.
+- A full scan repairs a bad discovery tag. It never repairs a record sealed to another key, since no held key rebuilds that note's commitment. A malformed payload loses the application data alone.
 - Auditor recovery is a separate authorized fallback. It depends on Ring RPC, and an owner with no Ring RPC cannot open a note sealed to another key.
 
-A body is the record, then under `HAS_DATA` a payload with the ring data hash, the data hash and the application data. The cipher has no authentication, so the commitment a reader rebuilds under its own keys is the only proof of ownership.
+A body is the record, then under `HAS_DATA` a payload with the application data alone, see [slot body](../spec/crypto/disclosure.md#slot-body). The cipher has no authentication, so the commitment a reader rebuilds under its own keys is the only proof of ownership.
 
 The sender's SDK pays a nonzero key to any owner, enrolled or not, since only the owner's enrolled key spends the note. It refuses the literal zero key, and the zero key for an owner with a tracking row under the root it verified. For an enrolled owner it reads the viewing key from the owner's authorization account and refuses an address that names another. That check protects an honest sender and binds nobody else.
 
@@ -64,7 +66,7 @@ The sender's SDK pays a nonzero key to any owner, enrolled or not, since only th
 - A deposit is found through its tag stream. A merge is found from its nullifiers, and the ring proof binds the ciphertext the wallet opens.
 - Full recovery reads a ring from its first row and tries every output and message without a tag. Rust uses `AnonymousSync::new(keys, assets).with_full_scan(ring).fetch_wallet(indexer, wallet)`. TypeScript uses `fullScanWallet(client, wallet, ring)`.
 - A body a full scan leaves unopened stays in `auditor_recovery.unopened`, foreign notes and dummies among them.
-- A wallet takes the nullifier key its record names. A note under a key other than the owner's enrolled key opens, and it spends only once that key is enrolled.
+- A wallet rebuilds a ring note under its own nullifier key, or under the zero key the record's bit names, and reads no registry. A note under the wallet's key opens before that key is enrolled, and it spends only once the key is enrolled.
 - A zero-key note enters the wallet as exposed if spent. No automatic path selects it.
 - Only a final page's `context.slot` becomes a stored position. A failed page moves nothing, and a key added later is its own query.
 - `AnonymousWallet` contains notes, pending notes, spends, reply claims and positions in one document. `absorb` takes a scan's results together, so a position is never saved without what it covers.

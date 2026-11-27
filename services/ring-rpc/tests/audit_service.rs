@@ -148,7 +148,7 @@ fn grant_rows_key() -> GrantRowsSecret {
 fn identity(genesis_hash: [u8; 32]) -> ServiceIdentity {
     ServiceIdentity {
         genesis_hash,
-        service: service_key(),
+        service: Arc::new(service_key()),
     }
 }
 
@@ -1087,6 +1087,7 @@ impl Fixture {
                     },
                     mode: RingMode::Confidential,
                     delegate: None,
+                    ring_list_tag: [0; 32],
                 },
             )]),
             chain: HashMap::new(),

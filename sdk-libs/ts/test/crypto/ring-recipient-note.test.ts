@@ -1,19 +1,27 @@
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { initializePoseidon, SOL_MINT } from "@heliuslabs/spr";
-import { ZERO_NULLIFIER_PK } from "@heliuslabs/spr/internal";
+import { ZERO_32, ZERO_NULLIFIER_PK } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
 import { ShieldedPublicKey } from "@heliuslabs/spr/keypair";
 import { AssetRegistry, Data, Utxo } from "@heliuslabs/spr/transaction";
 import { address, type Address } from "@solana/kit";
 
-import { openRecipientNote, type RingOutputReader } from "../../src/crypto/derivation/blinding.js";
-import type { OpenedOutput } from "../../src/crypto/audit/ring-disclosure.js";
+import {
+  openRecipientBody,
+  openRecipientNote,
+  type RingOutputReader,
+} from "../../src/crypto/derivation/blinding.js";
+import { sealOutputSlot, type OpenedOutput } from "../../src/crypto/audit/ring-disclosure.js";
 import {
   RecordKind,
   UNPUBLISHED_RECORD_KEY,
   ZERO_RECORD_KEY,
 } from "../../src/protocol/codec/audit-stream.js";
+import {
+  recipientBodyForms,
+  type RecordForm,
+} from "../../src/protocol/codec/ring-disclosure-layout.js";
 
 const RING = address("11111111111111111111111111111112");
 const UNREGISTERED: Address = address("So11111111111111111111111111111111111111112");
@@ -21,11 +29,12 @@ const ENROLLED_KEY = new Uint8Array(32).fill(7) as Bytes32;
 const OTHER_KEY = new Uint8Array(32).fill(8) as Bytes32;
 const TREE = 3;
 
-/** The slot plaintext a recipient opens, its record and the payload past it. */
+/** The slot plaintext a recipient opens, its record and the application data past it. */
 interface Body {
   readonly blinding: Bytes32;
   readonly amount: bigint;
   readonly mint: Address;
+  readonly dataHash?: Bytes32;
   readonly ringDataHash?: Bytes32;
   readonly data?: Uint8Array;
 }
@@ -65,15 +74,11 @@ describe("openRecipientNote", () => {
       ownerKey: owner.confidentialViewTag() as Bytes32,
       mint: body.mint,
       blinding: body.blinding,
+      dataHash: body.dataHash ?? ZERO_32,
+      ringDataHash: body.ringDataHash ?? ZERO_32,
       ...record,
     },
-    payload: {
-      kind: "opened",
-      payload: {
-        ...(body.ringDataHash === undefined ? {} : { ringDataHash: body.ringDataHash }),
-        data: body.data ?? new Uint8Array(),
-      },
-    },
+    payload: { kind: "opened", payload: { data: body.data ?? new Uint8Array() } },
   });
 
   function commitment(
@@ -165,15 +170,11 @@ describe("openRecipientNote", () => {
     expect(note?.registered).toBe(false);
   });
 
-  it("rebuilds with the ring data hash and the data hash the payload carries", () => {
+  it("rebuilds from the hashes the record carries and keeps the payload's application data", () => {
     const ringDataHash = field(21);
     const dataHash = field(22);
     const appData = Uint8Array.of(1, 2, 3);
-    const body: Body = {
-      ...plain(),
-      ringDataHash,
-      data: Uint8Array.of(...dataHash, ...appData),
-    };
+    const body: Body = { ...plain(), dataHash, ringDataHash, data: appData };
     const published = commitment(body, ENROLLED_KEY, { dataHash, ringDataHash, appData });
     const note = openRecipientNote(reader(published), opened(body));
     expect(note?.dataHash).toEqual(dataHash);
@@ -184,29 +185,107 @@ describe("openRecipientNote", () => {
     ).toBeUndefined();
   });
 
-  it("refuses application bytes under a zero hash, the commitment reads no data", () => {
-    const published = commitment(plain(), ENROLLED_KEY);
-    expect(openRecipientNote(reader(published), opened(plain()))).toBeDefined();
-    const unbound = new Uint8Array(32 + 7).fill(9);
-    unbound.fill(0, 0, 32);
-    expect(
-      openRecipientNote(reader(published), opened({ ...plain(), data: unbound })),
-    ).toBeUndefined();
-    expect(
-      openRecipientNote(reader(published), opened({ ...plain(), data: new Uint8Array(32) })),
-    ).toBeUndefined();
+  it("rebuilds a data note from its record when the payload is dropped or malformed", () => {
+    const dataHash = field(22);
+    const body: Body = { ...plain(), dataHash, data: Uint8Array.of(1, 2, 3) };
+    const published = commitment(body, ENROLLED_KEY, { dataHash });
+    for (const payload of [{ kind: "absent" }, { kind: "malformed" }] as const) {
+      const note = openRecipientNote(reader(published), { ...opened(body), payload });
+      expect(note?.utxoHash).toEqual(published);
+      expect(note?.dataHash).toEqual(dataHash);
+      expect(note?.utxo.data.utxoData()).toBeUndefined();
+    }
   });
 
-  it("refuses data shorter than its leading hash and a blinding off the field", () => {
+  it("keeps no application bytes under a zero hash, the commitment reads no data", () => {
     const published = commitment(plain(), ENROLLED_KEY);
-    expect(
-      openRecipientNote(reader(published), opened({ ...plain(), data: new Uint8Array(31) })),
-    ).toBeUndefined();
+    const note = openRecipientNote(
+      reader(published),
+      opened({ ...plain(), data: new Uint8Array(7).fill(9) }),
+    );
+    expect(note?.utxoHash).toEqual(published);
+    expect(note).not.toHaveProperty("dataHash");
+    expect(note?.utxo.data.utxoData()).toBeUndefined();
+  });
+
+  it("refuses a blinding off the field", () => {
+    const published = commitment(plain(), ENROLLED_KEY);
     expect(
       openRecipientNote(
         reader(published),
         opened({ ...plain(), blinding: new Uint8Array(32).fill(0xff) as Bytes32 }),
       ),
     ).toBeUndefined();
+  });
+
+  describe("a body with no frame at hand", () => {
+    const SECRET = new Uint8Array(32).fill(0x11) as Bytes32;
+    const dataHash = field(22);
+    const ringDataHash = field(21);
+    const appData = Uint8Array.of(1, 2, 3);
+    const FORMS: readonly RecordForm[] = [false, true].flatMap((data) =>
+      [false, true].map((ringData) => ({ data, ringData })),
+    );
+
+    /** A note under the hashes `form` publishes, sealed at `payloadLength` on a data frame. */
+    const sealed = (form: RecordForm, payloadLength = 9) => {
+      const body: Body = {
+        ...plain(),
+        ...(form.data ? { dataHash, data: appData } : {}),
+        ...(form.ringData ? { ringDataHash } : {}),
+      };
+      return {
+        published: commitment(body, ENROLLED_KEY, {
+          ...(form.data ? { dataHash, appData } : {}),
+          ...(form.ringData ? { ringDataHash } : {}),
+        }),
+        ciphertext: sealOutputSlot(SECRET, {
+          record: opened(body).record,
+          form,
+          ...(form.data ? { payload: { data: appData }, payloadLength } : {}),
+        }),
+      };
+    };
+
+    it("opens each form to the hashes its record publishes", () => {
+      for (const form of FORMS) {
+        const { published, ciphertext } = sealed(form);
+        const note = openRecipientBody(reader(published), SECRET, ciphertext);
+        expect(note?.utxoHash).toEqual(published);
+        expect(note?.dataHash).toEqual(form.data ? dataHash : undefined);
+        expect(note?.ringDataHash).toEqual(form.ringData ? ringDataHash : undefined);
+        expect(note?.utxo.data.utxoData()).toEqual(form.data ? appData : undefined);
+      }
+    });
+
+    it("takes the form whose record rebuilds the commitment at a length two forms admit", () => {
+      const data = { data: true, ringData: false };
+      const both = { data: true, ringData: true };
+      // One body length, the payload of one form 32 bytes wider than the other's.
+      const narrow = sealed(both, 9);
+      const wide = sealed(data, 41);
+      expect(wide.ciphertext).toHaveLength(narrow.ciphertext.length);
+      expect(recipientBodyForms(wide.ciphertext.length)).toEqual([data, both]);
+      const underData = openRecipientBody(reader(wide.published), SECRET, wide.ciphertext);
+      expect(underData?.dataHash).toEqual(dataHash);
+      expect(underData).not.toHaveProperty("ringDataHash");
+      expect(underData?.utxo.data.utxoData()).toEqual(appData);
+      const underBoth = openRecipientBody(reader(narrow.published), SECRET, narrow.ciphertext);
+      expect(underBoth?.ringDataHash).toEqual(ringDataHash);
+      expect(underBoth?.utxo.data.utxoData()).toEqual(appData);
+      // A commitment under other hashes rebuilds under no form.
+      expect(openRecipientBody(reader(narrow.published), SECRET, wide.ciphertext)).toBeUndefined();
+    });
+
+    it("yields the note without its data when the payload is malformed", () => {
+      const form = { data: true, ringData: false };
+      const { published, ciphertext } = sealed(form);
+      const malformed = ciphertext.slice();
+      malformed[malformed.length - 1] = (malformed.at(-1) ?? 0) ^ 1;
+      const note = openRecipientBody(reader(published), SECRET, malformed);
+      expect(note?.dataHash).toEqual(dataHash);
+      expect(note?.utxo.data.utxoData()).toBeUndefined();
+      expect(openRecipientBody(reader(published), SECRET, ciphertext.subarray(1))).toBeUndefined();
+    });
   });
 });

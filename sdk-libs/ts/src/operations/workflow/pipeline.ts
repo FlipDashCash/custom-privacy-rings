@@ -1,9 +1,14 @@
-import type { PlannedSplExit } from "../payments/planned-spl-exit.js";
 /**
  * One transfer pipeline for every rail, Rust `pipeline`. The rail seals the outputs, the ring proof
  * opens them to the auditor and screens the ring's table, the SPP proof spends.
  */
-import type { AccountMeta, Instruction } from "@solana/kit";
+import {
+  downgradeRoleToNonSigner,
+  getBase64Decoder,
+  isOffCurveAddress,
+  type AccountMeta,
+  type Instruction,
+} from "@solana/kit";
 
 import {
   addressBytes,
@@ -43,7 +48,17 @@ import {
 import { SppProofInputs, createExternalData } from "@heliuslabs/spr/transaction";
 import type { ProofInputUtxo, ProofOutputUtxo } from "@heliuslabs/spr/transaction";
 import { CUSTOM_RING_PROOF_LENGTH } from "../../protocol/proof/custom-ring-proof.js";
-import { ringAuthAddress, ringCoSignerMetas, ringPolicyAddress } from "../../protocol/pda/index.js";
+import {
+  ringApprovedCoSignerMetas,
+  ringAuthAddress,
+  ringCoSignerMetas,
+  ringPolicyAddress,
+} from "../../protocol/pda/index.js";
+import {
+  approvedTransferCall,
+  transferApprovals,
+} from "../../protocol/transaction/transfer-approval.js";
+import type { ApprovedTransfer } from "../../protocol/ring-rpc/ring-rpc-types.js";
 import { ringIdField } from "../../crypto/derivation/ring-stream.js";
 
 import { RingInstructionTag, ringComputeUnitLimit } from "../management/admin.js";
@@ -86,8 +101,9 @@ import {
 import type { ApprovalOpening } from "../../protocol/membership/approval-totals.js";
 import type { OwnerDebit } from "../../protocol/membership/owner-debits.js";
 import { policyWithdrawalHash } from "../../proof/withdrawals.js";
+import { signVouch, type VouchSigner } from "../../proof/vouch.js";
 import {
-  framesData,
+  bodyForm,
   publishedOutputs,
   type PublishedSlot,
   type RingOutputRail,
@@ -140,7 +156,6 @@ export type RingProvingClient = TreeContext &
 /** What an anonymous frame adds to a staged transfer, Rust `AnonymousSpend`. */
 export interface AnonymousSpendValues {
   readonly tokenOwner?: Address;
-  readonly plannedSplExit?: PlannedSplExit;
   /** Binds the signing co-signers, each of `ANONYMOUS_PARTIES` zero when absent. */
   partyIdentities(coSigners: readonly Address[]): readonly Bytes32[];
 }
@@ -172,15 +187,20 @@ export interface StagedTransfer {
   readonly ownerSigners: readonly Address[];
   /** One per deposit leg in leg order, each funder signs. */
   readonly deposits?: readonly TransactDeposit[];
-  readonly withdrawal?: TransactWithdrawal | readonly TransactWithdrawal[];
+  readonly withdrawal?: TransactWithdrawal;
   /** The owner of the withdrawal's token account, named while the transaction creates it. */
   readonly withdrawalOwner?: Address;
   /** Empty unless the caller sets them. */
   readonly extensions?: FrameExtensions;
   /** The frame discloses its totals under it, the digest waits for the selected key's `N`. */
   readonly approvalBlinder?: Bytes32;
+  /** `approval` on a transfer committed to a program. */
+  readonly coSignerForm?: CoSignerForm;
   readonly spend: RailSpend;
 }
+
+/** What follows the record in each co-signer pair, the signer or the instructions sysvar, Rust `CoSignerForm`. */
+export type CoSignerForm = "signature" | "approval";
 
 /** Rust `TransactInterfaceTransferAccounts` of one deposit leg. */
 export type TransactDeposit =
@@ -203,10 +223,12 @@ export interface RingTransactAccounts {
   readonly outputTree: Address;
   readonly ownerSigners: readonly Address[];
   readonly deposits?: readonly TransactDeposit[];
-  readonly withdrawal?: TransactWithdrawal | readonly TransactWithdrawal[];
+  readonly withdrawal?: TransactWithdrawal;
   /** Read only, right after the ring account, tracking last. */
   readonly registries: readonly Address[];
   readonly coSigners: readonly Address[];
+  /** `signature` when absent, a top-level `ApproveTransfer` stands for the signature under `approval`. */
+  readonly coSignerForm?: CoSignerForm;
   readonly delegate?: Address;
   /** A cached input reads through it, last in SPP's list. */
   readonly cache?: TransactCacheAccounts;
@@ -239,7 +261,9 @@ export class ProvenRingTransfer {
   readonly chargedOutflows: readonly OwnerDebit[];
 
   /** @internal */
-  constructor(fields: Omit<ProvenRingTransfer, "instruction">) {
+  constructor(
+    fields: Omit<ProvenRingTransfer, "instruction" | "approveTransfer" | "approvedTransfer">,
+  ) {
     this.ringProgramId = fields.ringProgramId;
     this.data = fields.data;
     this.accounts = fields.accounts;
@@ -255,6 +279,30 @@ export class ProvenRingTransfer {
 
   instruction(): Promise<Instruction> {
     return ringTransactInstruction(this.ringProgramId, this.accounts, this.data);
+  }
+
+  /** One top-level approval per co-signer of the call `instruction` returns, `position` the calling program's instruction. */
+  async approveTransfer(position: number): Promise<readonly Instruction[]> {
+    return transferApprovals({
+      transfer: await this.#programCall(),
+      coSigners: this.accounts.coSigners,
+      position,
+    });
+  }
+
+  /** The `approvedTransfer` of the co-sign request for the call `instruction` returns. */
+  async approvedTransfer(): Promise<ApprovedTransfer> {
+    const call = approvedTransferCall(await this.#programCall());
+    return Object.freeze({
+      data: base64.decode(call.data) as ApprovedTransfer["data"],
+      accounts: call.accounts,
+    });
+  }
+
+  #programCall(): Promise<Instruction> {
+    if (this.accounts.coSignerForm !== "approval")
+      throw new RingError("RING_APPROVAL_OUTSIDE_PROGRAM");
+    return this.instruction();
   }
 }
 
@@ -310,8 +358,12 @@ export type StagedTransferInput = Readonly<{
   coSigners?: readonly Address[];
   /** An enrolled subject on a ring reading a salted list needs its salt here. */
   listSalts?: readonly RingListSalt[];
+  /** A listed wallet vouching for every sender and payment owner, its salt in `listSalts` once enrolled. */
+  voucher?: VouchSigner;
+  /** Every owner reads the private lists under it on a ring that commits its tag. */
+  ringSalt?: Bytes32;
   transaction?: RingTransactionFrame;
-  approve?: (coSigners: readonly Address[]) => Promise<void>;
+  approve?: (coSigners: readonly Address[], proofInputs: SppProofInputs) => Promise<void>;
 }>;
 
 /** Rust `Pipeline::assemble` and `Assembled::prove`, neither proof is an input to the other. */
@@ -320,7 +372,7 @@ export function proveStagedTransfer(
   context?: RequestContext,
 ): Promise<ProvenRingTransfer> {
   return assembleStagedTransfer(input, context, async (assembled) => {
-    await input.approve?.(assembled.coSigners);
+    await input.approve?.(assembled.coSigners, assembled.proofInputs);
     return proveAssembled(input, assembled, context);
   });
 }
@@ -419,9 +471,10 @@ async function selectStagedKey(input: StagedTransferInput, context: RequestConte
     proofInputs: staged.proofInputs,
     publicSlots: publicSlots(transfers),
     listSalts: input.listSalts ?? [],
-    ...(spend.anonymous?.plannedSplExit === undefined
+    ...(input.voucher === undefined
       ? {}
-      : { plannedSplExit: spend.anonymous.plannedSplExit }),
+      : { voucher: input.voucher.publicKey().ownerProofInputHash() }),
+    ...(input.ringSalt === undefined ? {} : { ringSalt: input.ringSalt }),
     ...tokenOwnerHint(spend.anonymous?.tokenOwner ?? staged.withdrawalOwner),
   };
   const demand = await policyDemand({ ...demandInput, rows: liveRows }, context);
@@ -441,6 +494,7 @@ function stagedPlanFrame(
     config: RingPolicy;
     staged: Pick<StagedTransfer, "proofInputs"> &
       Readonly<{ spend: Pick<RailSpend, "rail" | "publicOwners"> }>;
+    voucher?: VouchSigner;
   }>,
 ): PlanFrame {
   const { config, staged } = input;
@@ -449,6 +503,7 @@ function stagedPlanFrame(
   const shape = proofInputs.checkShape();
   const published = publishedOutputs(proofInputs.outputs);
   const entry = spendsDefaultRing(proofInputs);
+  const { records } = bodyForm(published);
   return Object.freeze({
     subjects: Object.freeze({
       rail: spend.rail,
@@ -472,6 +527,8 @@ function stagedPlanFrame(
         entry,
         publicOwners: spend.publicOwners === true,
         wideOwners,
+        vouched: input.voucher !== undefined,
+        records,
       }),
   });
 }
@@ -506,6 +563,7 @@ function sealStagedTransfer(
     plan: PlannedTransfer;
     staged: Omit<StagedTransfer, "spend"> &
       Readonly<{ spend: Pick<RailSpend, "rail" | "inProofOwner" | "publicOwners"> }>;
+    voucher?: VouchSigner;
   }>,
 ): SealedTransfer {
   const { ringProgramId, config, staged, plan } = input;
@@ -519,7 +577,14 @@ function sealStagedTransfer(
   const senderBundle = rail.publishedSender(staged.proofInputs, sender.viewingPublicKey);
   const auditor = config.auditorPublicKey;
   // The auditor message precedes every hash over the external data.
-  const sealed = sealAudit({ rail, layout: plan.layout, published, inputs, auditor });
+  const sealed = sealAudit({
+    rail,
+    layout: plan.layout,
+    published,
+    inputs,
+    auditor,
+    ...(input.voucher === undefined ? {} : { voucher: input.voucher.publicKey().ed25519() }),
+  });
   try {
     return Object.freeze({
       sealed,
@@ -621,6 +686,7 @@ async function assembleStagedTransfer<T>(
       ...(staged.withdrawal === undefined ? {} : { withdrawal: staged.withdrawal }),
       registries: ringRegistrySlots(config, transferRootRead(config, delegate)),
       coSigners,
+      ...(staged.coSignerForm === undefined ? {} : { coSignerForm: staged.coSignerForm }),
       ...(spend.delegate === undefined ? {} : { delegate: spend.delegate }),
       ...(proofInputs.cacheAccounts.read === undefined
         ? {}
@@ -733,6 +799,11 @@ async function proveAssembled(
     inputs,
     proofInputs,
     recipientKeys: assembled.published.map((slot) => slot.recipientKey),
+    voucher: await signVouch(
+      input.voucher,
+      { privateTxHash, withdrawalHash: policyWithdrawalHash(policy.withdrawals) },
+      context,
+    ),
     auditor: config.auditorPublicKey,
     policy,
     proving: { ringId, publicSlots: assembled.slots },
@@ -817,6 +888,13 @@ export async function ringTransactInstruction(
       ...sppAccounts.slice(head.length),
     ];
   }
+  if (accounts.coSignerForm === "approval")
+    // An owner off the curve signs inside its program's call alone, every other owner signs the transaction.
+    sppAccounts = sppAccounts.map((account) =>
+      accounts.ownerSigners.includes(account.address) && isOffCurveAddress(account.address)
+        ? { address: account.address, role: downgradeRoleToNonSigner(account.role) }
+        : account,
+    );
   if (sppAccounts.length > MAX_SPP_CPI_ACCOUNTS)
     throw new RingError("RING_TOO_MANY_SETTLEMENT_ACCOUNTS", {
       details: { accounts: sppAccounts.length, limit: MAX_SPP_CPI_ACCOUNTS },
@@ -825,8 +903,10 @@ export async function ringTransactInstruction(
     meta(ring, false, false),
     ...accounts.registries.map((registry) => meta(registry, false, false)),
   ];
+  const coSignerMetas =
+    accounts.coSignerForm === "approval" ? ringApprovedCoSignerMetas : ringCoSignerMetas;
   for (const coSigner of accounts.coSigners)
-    prefix.push(...(await ringCoSignerMetas(ringProgramId, coSigner)));
+    prefix.push(...(await coSignerMetas(ringProgramId, coSigner)));
   if (accounts.delegate !== undefined) prefix.push(meta(accounts.delegate, true, false));
   const encoded = RingTransactData.encode(data);
   const bytes = new Uint8Array(1 + encoded.length);
@@ -932,9 +1012,11 @@ function previewData(
     salt: external.salt,
     extensions: input.extensions,
     interfaceTransfers: external.interfaceTransfers.map(interfaceTransferOf),
-    hasData: framesData(published.map((slot) => slot.output)),
+    hasData: sealed.layout.records.data,
+    ringData: sealed.layout.records.ringData,
     entry,
     wideOwners: input.wideOwners,
+    vouched: sealed.audit.vouched,
     outputs: Object.freeze(published.map((slot) => slot.wire)),
     ...(replies[0] === undefined
       ? {}
@@ -946,7 +1028,10 @@ function previewData(
         }),
     ...(input.sender === undefined ? {} : { sender: input.sender }),
     envelope: sealed.envelope,
-    recipientKeys: concatBytes(...sealed.recipientKeys),
+    recipientKeys: concatBytes(
+      ...sealed.recipientKeys,
+      ...(sealed.voucher === undefined ? [] : [sealed.voucher]),
+    ),
     privateTxHash: input.privateTxHash,
     ...(input.rail === "anonymous" && !input.publicOwners
       ? {
@@ -1128,4 +1213,5 @@ function zeroField(): Bytes32 {
 }
 
 const U32_MAX = 0xffff_ffffn;
+const base64 = getBase64Decoder();
 const NO_EXTENSIONS: FrameExtensions = Object.freeze({});

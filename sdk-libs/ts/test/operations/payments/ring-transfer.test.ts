@@ -10,6 +10,8 @@ import {
   type Address,
 } from "@solana/kit";
 import { describe, expect, it, vi } from "vitest";
+import { ed25519 } from "@noble/curves/ed25519.js";
+import { vouchDigest } from "../../../src/proof/vouch.js";
 
 import {
   addressBytes,
@@ -76,7 +78,9 @@ import { buildRingDelegateTransferTransaction } from "../../../src/operations/ma
 import { buildRingTransferTransaction } from "../../../src/operations/payments/transfer.js";
 import { RingProgramError, createRingTransferSubmission } from "../../../src/index.js";
 import { signingKeySpendSigner } from "../../../src/operations/payments/anonymous.js";
-import { RingOutputRail } from "../../../src/operations/payments/output-rail.js";
+import { RingOutputRail, bodyForm } from "../../../src/operations/payments/output-rail.js";
+import { CLEAR_RECORD_FORM } from "../../../src/protocol/codec/ring-disclosure-layout.js";
+import { withOutputFields } from "../../../src/protocol/proof/proof-output.js";
 import {
   CustomRingTransfer,
   DelegateTransfer,
@@ -533,6 +537,48 @@ describe("confidential rail", () => {
     }
   });
 
+  it("fixes one record form per frame and refuses an exit under a ring data hash", () => {
+    const owner = ShieldedKeypair.generate().shieldedAddress();
+    const ring = randomAddress();
+    const note = (ringProgramId?: Address) =>
+      createProofOutput({
+        ownerAddress: owner,
+        asset: SOL_MINT,
+        amount: 1n,
+        ...(ringProgramId === undefined ? {} : { ringProgramId }),
+      });
+    const hash = small(0x33);
+    expect(bodyForm([note(ring), note()])).toEqual({
+      records: CLEAR_RECORD_FORM,
+      payloadLength: undefined,
+    });
+    expect(bodyForm([withOutputFields(note(ring), { ringDataHash: hash }), note()])).toEqual({
+      records: { data: false, ringData: true },
+      payloadLength: undefined,
+    });
+    // One data note widens every recipient payload to its own, a bare hash sends the prefix alone.
+    expect(bodyForm([withOutputFields(note(ring), { dataHash: hash }), note(ring)])).toEqual({
+      records: { data: true, ringData: false },
+      payloadLength: 2,
+    });
+    const application = Uint8Array.of(1, 2, 3);
+    expect(bodyForm([note(ring).withUtxoData(application, hash), note(ring)])).toEqual({
+      records: { data: true, ringData: false },
+      payloadLength: 2 + application.length,
+    });
+    // An exit's data hash sets the form, its bytes travel in its own scheme 3 body.
+    expect(bodyForm([note(ring), note().withUtxoData(application, hash)])).toEqual({
+      records: { data: true, ringData: false },
+      payloadLength: 2,
+    });
+    expect(() => bodyForm([note(ring), withOutputFields(note(), { ringDataHash: hash })])).toThrow(
+      ringError("RING_EXIT_RING_DATA", { slotIndex: 1 }),
+    );
+    expect(
+      bodyForm([note(ring), withOutputFields(note(), { ringDataHash: small(0) })]).records,
+    ).toEqual(CLEAR_RECORD_FORM);
+  });
+
   it("refuses an anonymous ring, a paused ring and a ring SPP never activated", async () => {
     const sender = ShieldedKeypair.generate();
     for (const [options, code] of [
@@ -699,6 +745,102 @@ describe("policy ring", () => {
     );
     expect(fixture.ringRequests).toHaveLength(0);
     expect(fixture.sppCalls).toHaveLength(0);
+  });
+
+  it("admits an unlisted recipient beside a listed voucher, proves its vouch and seals its key", async () => {
+    const sender = ShieldedKeypair.generate();
+    const recipient = ShieldedKeypair.generate();
+    const vouching = SigningKey.generate();
+    const voucher = ShieldedKeypair.fromKeypair(vouching);
+    const fixture = await curatedRing([sender, voucher]);
+    const rail = (signer: SigningKey) =>
+      CustomRingTransfer.new({
+        ringProgramId: fixture.ringProgramId,
+        keys: walletKeys(sender),
+        transfer: transferTo(fixture, sender, [recipient], { each: 100n }),
+        assets,
+      }).withVoucher(signingKeySpendSigner(signer));
+    const proven = await rail(vouching).prove(fixture.client);
+    const { data, call } = await expanded(fixture, proven, "confidential");
+
+    expect(data.vouched).toBe(true);
+    const request = checkTransferProof(fixture, data);
+    expect(request.layout).toEqual({ entry: false, vouched: true, records: CLEAR_RECORD_FORM });
+    const key = vouching.publicKey().ed25519();
+    expect(request.voucher.publicKey).toEqual(key);
+    const digest = vouchDigest({
+      privateTxHash: request.privateTxHash,
+      withdrawalHash: request.withdrawalHash,
+    });
+    expect(vouching.verify(digest, request.voucher.signature)).toBe(true);
+    expect(vouching.verify(call.proofInputs.messageHash(), request.voucher.signature)).toBe(false);
+    expect(itemAt(request.curatorPool.subjects, request.voucherEntry.curator).member).toEqual(
+      publicMember(
+        memberOfIdentity(voucher.shieldedAddress().signingPublicKey.ownerProofInputHash()),
+      ),
+    );
+    expect(checkDisclosure(fixture, call, data).voucher).toEqual(key);
+
+    // An unlisted voucher covers nobody, and Ring RPC proves no vouch.
+    await expect(rail(SigningKey.generate()).prove(fixture.client)).rejects.toThrow(
+      ringError("RING_POLICY_RULE_UNSATISFIED", { reason: "voucherUnlisted", subject: "voucher" }),
+    );
+    await expect(
+      rail(vouching)
+        .withInProofOwner(signingKeySpendSigner(SigningKey.generate()))
+        .prepareRelay(fixture.client, {
+          quote: { feePayer: fixture.authority, validUntilSlot: 100n },
+          nullifierKey: sender.nullifierKey(),
+          notes: [],
+        }),
+    ).rejects.toThrow(ringError("RING_RELAY_VOUCHER_UNSUPPORTED"));
+  });
+
+  it("refuses a voucher on a ring with no rule table before any read", async () => {
+    const fixture = await ringFixture();
+    const sender = ShieldedKeypair.generate();
+    const rail = CustomRingTransfer.new({
+      ringProgramId: fixture.ringProgramId,
+      keys: walletKeys(sender),
+      transfer: transferTo(fixture, sender, [ShieldedKeypair.generate()], { each: 100n }),
+      assets,
+    }).withVoucher(signingKeySpendSigner(SigningKey.generate()));
+    await expect(rail.prove(fixture.client)).rejects.toThrow(ringError("RING_VOUCHER_UNSCREENED"));
+    expect(fixture.ringRequests).toHaveLength(0);
+  });
+
+  it("signs an unvouched transfer under a throwaway key and reads no voucher record", async () => {
+    const sender = ShieldedKeypair.generate();
+    const recipient = ShieldedKeypair.generate();
+    const fixture = await curatedRing([sender, recipient]);
+    const proven = await prove(
+      fixture,
+      sender,
+      transferTo(fixture, sender, [recipient], { each: 100n }),
+    );
+    const { data, call } = await expanded(fixture, proven, "confidential");
+    expect(data.vouched).toBe(false);
+    const request = checkTransferProof(fixture, data);
+    expect(request.layout).toEqual({ entry: false, vouched: false, records: CLEAR_RECORD_FORM });
+    expect(request.voucherEntry).toEqual({
+      own: 0,
+      curator: 0,
+      tracking: 0,
+      listSalt: new Uint8Array(32),
+      ownSalted: 0,
+      curatorSalted: 0,
+      ownRing: 0,
+      curatorRing: 0,
+    });
+    const digest = vouchDigest({
+      privateTxHash: request.privateTxHash,
+      withdrawalHash: request.withdrawalHash,
+    });
+    expect(ed25519.verify(request.voucher.signature, digest, request.voucher.publicKey)).toBe(true);
+    expect(request.voucher.publicKey).not.toEqual(
+      sender.shieldedAddress().signingPublicKey.ed25519(),
+    );
+    expect(checkDisclosure(fixture, call, data).voucher).toBeUndefined();
   });
 
   it("refuses an outflow past the co-sign bound on a ring without a co-signer", async () => {
@@ -992,6 +1134,7 @@ describe("signer set and owner debits", () => {
         outputContext: {
           hash: utxo.proofInput(key, client.treeId).hash(),
           tree: client.tree,
+          treeId: client.treeId,
           leafIndex: 0n,
         },
         nullifier,
@@ -1364,6 +1507,7 @@ describe("delegate move builder", () => {
         outputContext: {
           hash: small(index + 1),
           tree: fixture.client.tree,
+          treeId: fixture.client.treeId,
           leafIndex: BigInt(index),
         },
         nullifier: small(index + 100),
@@ -1484,6 +1628,7 @@ describe("ring transfer builder", () => {
         outputContext: {
           hash: small(index + 1),
           tree: fixture.client.tree,
+          treeId: fixture.client.treeId,
           leafIndex: BigInt(index),
         },
         nullifier: small(index + 100),
@@ -1582,6 +1727,7 @@ describe("direct confidential spend", () => {
           outputContext: {
             hash: small(1),
             tree: fixture.client.tree,
+            treeId: fixture.client.treeId,
             leafIndex: 0n,
           },
           nullifier: small(100),

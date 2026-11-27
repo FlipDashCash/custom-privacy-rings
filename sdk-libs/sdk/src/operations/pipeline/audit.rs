@@ -5,7 +5,7 @@
 
 use custom_ring_interface::{
     disclosure::AuditLayout, AuditEvidence, AuditStreamLayout, AuditorMessage, EntryRecord,
-    RecordKind, EXIT_RECORD_LEN,
+    RecordKind,
 };
 use spr_event::MessageData;
 use spr_hasher::primitives::pack_be;
@@ -15,10 +15,10 @@ use spr_transaction::{
 };
 use zolana_ring_client::AuditStreamSeal;
 use zolana_ring_transaction::{
-    address_chain, note_count, published_outputs, ClassifiedInput, RingOutputRail,
+    address_chain, note_count, published_outputs, ClassifiedInput, ExitSlot, RingOutputRail,
 };
 
-use super::SealRow;
+use super::{voucher::VoucherKey, SealRow};
 use crate::{
     request::{owner_key, AuditParams, EntryOpening, Opening, OutputOpening},
     RingError,
@@ -28,10 +28,10 @@ pub(crate) struct SealedAudit {
     pub flags: AuditLayout,
     pub eph_u: [u8; 32],
     pub envelope: Vec<u8>,
-    /// One sealed recipient key per published slot.
+    /// One sealed recipient key per published slot, then the voucher's on a vouched frame.
     pub keys: Vec<u8>,
     /// One record per exit in slot order.
-    pub exit_records: Vec<[u8; EXIT_RECORD_LEN]>,
+    pub exit_records: Vec<Vec<u8>>,
 }
 
 pub(crate) struct PresealedAudit {
@@ -46,6 +46,7 @@ pub(super) struct AuditSeal<'a> {
     pub flags: AuditLayout,
     pub inputs: &'a SppProofInputs,
     pub auditor: &'a X25519Pubkey,
+    pub voucher: Option<VoucherKey>,
 }
 
 impl AuditSeal<'_> {
@@ -64,6 +65,7 @@ impl AuditSeal<'_> {
             real_inputs: note_count(&self.inputs.input_utxos)?,
             evidence: self.evidence()?,
             recipient_keys,
+            voucher: self.voucher.map(|voucher| voucher.0),
         }
         .seal(self.auditor)?;
         let first_nullifier = self.inputs.first_nullifier()?;
@@ -73,7 +75,13 @@ impl AuditSeal<'_> {
             .filter(|(_, output)| {
                 output.owner_address.is_some() && output.ring_program_id.is_none()
             })
-            .map(|(slot, output)| self.rail.exit_record(output, &first_nullifier, slot))
+            .map(|(index, output)| {
+                let slot = ExitSlot {
+                    index,
+                    form: self.layout.records,
+                };
+                self.rail.exit_record(output, &first_nullifier, slot)
+            })
             .collect::<Result<_, _>>()?;
         Ok(SealedAudit {
             flags: self.flags,
@@ -140,7 +148,7 @@ impl PresealedAudit {
             .try_into()
             .map_err(|_| RingError::RelayAuditorMessage)?;
         let exit_records = (0..exits)
-            .map(|exit| message.exit_record(exit).copied())
+            .map(|exit| message.exit_record(exit).map(<[u8]>::to_vec))
             .collect::<Option<_>>()
             .ok_or(RingError::RelayAuditorMessage)?;
         Ok(SealedAudit {
@@ -162,11 +170,7 @@ impl SealedAudit {
                 &self.eph_u,
                 [self.envelope.as_slice(), self.keys.as_slice()]
                     .into_iter()
-                    .chain(
-                        self.exit_records
-                            .iter()
-                            .map(<[u8; EXIT_RECORD_LEN]>::as_slice),
-                    ),
+                    .chain(self.exit_records.iter().map(Vec::as_slice)),
             ),
         }
     }

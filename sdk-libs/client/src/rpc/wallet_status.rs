@@ -77,7 +77,7 @@ pub struct WalletNote {
     pub mint: Option<SerializablePubkey>,
     pub amount: u64,
     pub blinding: Hash,
-    /// Absent with `ring_data_hash` while no payload rebuilt the published commitment.
+    /// The record's proven hash, absent with `ring_data_hash` on a record that rebuilt no commitment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_hash: Option<Hash>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

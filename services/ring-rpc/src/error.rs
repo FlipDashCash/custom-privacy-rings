@@ -19,6 +19,8 @@ use crate::{
 
 #[derive(Debug, Error)]
 pub enum RingRpcError {
+    #[error("operator signing failed")]
+    Custody(#[from] zolana_operator_custody::CustodyError),
     #[error("ring_program_id is required when keys are derived per ring")]
     RingRequired,
     #[error("ring is not served by the local auditor key")]
@@ -226,6 +228,10 @@ impl From<RingRpcError> for ErrorObjectOwned {
                 error!("indexer returned data outside the audit bounds");
                 (ErrorCode::InternalError, "indexer response is invalid")
             }
+            Custody(inner) => {
+                error!("operator signing failed {}", redacted(inner));
+                (ErrorCode::InternalError, "operator signing failed")
+            }
             Derivation(_) | AuditorKey(_) => {
                 error!("auditor key derivation failed");
                 (ErrorCode::InternalError, "auditor key is unavailable")
@@ -281,7 +287,29 @@ impl From<RingRpcError> for ErrorObjectOwned {
 
 #[cfg(test)]
 mod tests {
+    use solana_address::Address;
+    use zolana_operator_custody::CustodyError;
+
     use super::*;
+
+    #[test]
+    fn a_custody_failure_reaches_the_client_as_a_generic_internal_error() {
+        const DETAIL: &str =
+            "AccessDeniedException for arn:aws:kms:us-east-1:123456789012:key/1a2b3c4d";
+        let failures = [
+            CustodyError::Service(std::io::Error::other(DETAIL).into()),
+            CustodyError::AddressMismatch,
+            CustodyError::UnrequiredSigner(Address::new_from_array([7; 32])),
+        ];
+        for failure in failures {
+            let detail = failure.to_string();
+            let object = ErrorObjectOwned::from(RingRpcError::Custody(failure));
+            assert_eq!(object.code(), ErrorCode::InternalError.code());
+            assert_eq!(object.message(), "operator signing failed");
+            assert!(object.data().is_none());
+            assert!(!object.message().contains(&detail), "{detail}");
+        }
+    }
 
     #[test]
     fn a_logged_upstream_error_drops_the_api_key() {
@@ -335,6 +363,8 @@ mod tests {
             AuthorityLapsed,
             InvalidLimits,
             LimitsWithoutRecord,
+            RingSaltNotCommitted,
+            UnregisteredOwnerUnmatched,
         ] {
             let code = match refusal {
                 Disabled => -32140,
@@ -359,6 +389,8 @@ mod tests {
                 AuthorityLapsed => -32275,
                 InvalidLimits => -32276,
                 LimitsWithoutRecord => -32277,
+                RingSaltNotCommitted => -32279,
+                UnregisteredOwnerUnmatched => -32280,
             };
             assert_eq!(refusal.code(), code);
         }
@@ -375,6 +407,7 @@ mod tests {
             Full,
             Budget,
             RingsFull,
+            InFlight,
         ] {
             let code = match refusal {
                 NotServed => -32180,
@@ -384,6 +417,7 @@ mod tests {
                 Full => -32184,
                 Budget => -32185,
                 RingsFull => -32186,
+                InFlight => -32187,
             };
             assert_eq!(
                 ErrorObjectOwned::from(RingRpcError::Enrollment(refusal)).code(),

@@ -20,6 +20,9 @@ pub const WALLET_GRANT_DOMAIN: u32 = 0x4352_5747;
 /// `"CRPL"`, keys an owner's records, mirror `shared.ListKeyDomain`.
 pub const LIST_KEY_DOMAIN: u32 = 0x4352_504c;
 
+/// `"CRPR"`, keys an owner's record under the ring salt, mirror `shared.RingListKeyDomain`.
+pub const RING_LIST_KEY_DOMAIN: u32 = 0x4352_5052;
+
 /// A list subject, the field element the transfer openings carry for it, never zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Member([u8; 32]);
@@ -71,6 +74,11 @@ impl Member {
         Self::lookup(owner, list_salt)
     }
 
+    /// Its domain keeps it off every key of `salted` and `public`.
+    pub fn ring_salted(owner: &Self, ring_salt: &[u8; 32]) -> Result<Self, MemberError> {
+        Self::keyed(RING_LIST_KEY_DOMAIN, owner, ring_salt)
+    }
+
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
@@ -85,12 +93,12 @@ impl Member {
     }
 
     fn lookup(owner: &Self, list_salt: &[u8; 32]) -> Result<Self, MemberError> {
-        let key = Poseidon::hashv(&[
-            &right_align(&LIST_KEY_DOMAIN.to_be_bytes()),
-            &owner.0,
-            list_salt,
-        ])
-        .map_err(|_| MemberError::Hashing)?;
+        Self::keyed(LIST_KEY_DOMAIN, owner, list_salt)
+    }
+
+    fn keyed(domain: u32, owner: &Self, salt: &[u8; 32]) -> Result<Self, MemberError> {
+        let key = Poseidon::hashv(&[&right_align(&domain.to_be_bytes()), &owner.0, salt])
+            .map_err(|_| MemberError::Hashing)?;
         Self::from_bytes(key)
     }
 
@@ -114,6 +122,21 @@ mod tests {
         assert_eq!(
             hex::encode(key.as_bytes()),
             "0cd39067a2c6eff923c63afab8a8d09543bdcc320bcb82dfd063b7da2826d248"
+        );
+    }
+
+    #[test]
+    fn a_ring_salted_key_matches_the_circuit_derivation_off_the_owner_salt_domain() {
+        let owner = Member::from_bytes(right_align(&[7])).unwrap();
+        let key = Member::ring_salted(&owner, &right_align(&[9])).unwrap();
+        assert_eq!(
+            hex::encode(key.as_bytes()),
+            "15a7b631d43ec4b96f98ec8966e6c29bd975793a919b2d1180dc0b9c500b9ebe"
+        );
+        assert_ne!(key, Member::salted(&owner, &right_align(&[9])).unwrap());
+        assert_ne!(
+            Member::ring_salted(&owner, &[0; 32]).unwrap(),
+            Member::public(&owner).unwrap()
         );
     }
 

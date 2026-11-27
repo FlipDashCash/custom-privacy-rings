@@ -18,6 +18,14 @@ A pull request that changes a lockfile saves its own entry, the jobs of that pul
 
 The localnet matrix runs each shape and full capacity sweep of `program-tests/custom-ring/tests/ring_shapes.rs` as its own job.
 Those sweeps prove every catalog key.
+The lifecycle slices run `program_owner` with `enrollment_vault.so` from the `ring_program` artifact.
+The `program update` job runs `just test-custom-ring-program-update`, the two `program_update` tests of a Xark program on a ring, with real proofs.
+`build / programs` ships `zk_ring_program.so` in `ring_program`, and `build / zolana cli` compiles the two circuits with their insecure test keys into `zk_ring_circuits` and fails when the verifier module it writes differs from the committed one.
+`build / ring tools` builds a second nextest archive of the `ring` binary with the `proofs` feature under `target/nextest-archives/proofs`, and only the `program update` job reads it.
+The other localnet jobs run the archive without `proofs`, so `one_key` runs only from `just one-key-validation`.
+The localnet and TypeScript live jobs start `tools/localnet-kms.mjs`, a local KMS emulator, on the pinned Node.
+A failed localnet job prints the end of the Photon and ring indexer logs, and a failed TypeScript live job prints the end of each service log under `target/ts-sdk-e2e`.
+CI omits prover logs from failure reports because proof errors can contain private witness values.
 
 Dispatch the final pushed branch after the Zolana pin passes its release source check and the pinned proving keys are public.
 The `prover` and `ring-indexer` workflows have separate manual dispatches.

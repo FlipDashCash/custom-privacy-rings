@@ -2,17 +2,16 @@
 
 use custom_ring_interface::tracking::ZERO_NULLIFIER_PUBKEY;
 use custom_ring_interface::{
-    ciphertext_digest, decode_recipient_keys, encode_recipient_keys, key_catalog::TRANSFER_SHAPES,
-    AuditEnvelope, AuditEvidence, AuditKey, AuditStreamLayout, AuditorMessage, CustomRingError,
-    EntryRecord, OutputRecord, RecipientPayload, RecordKey, RecordKind, SenderBundle,
+    ciphertext_digest, decode_recipient_keys, disclosure::SealedKeys, encode_recipient_keys,
+    key_catalog::TRANSFER_SHAPES, record_chain, AuditEnvelope, AuditEvidence, AuditKey,
+    AuditStreamLayout, AuditorMessage, CustomRingError, EntryRecord, OutputRecord,
+    RecipientPayload, RecordForm, RecordKey, RecordKind, RingOutput, SenderBundle, SlotBody,
     ENTRY_RECORD_LEN, EXIT_RECORD_LEN, RECORD_ZERO_KEY_BIT, RING_RECORD_LEN, SEALED_KEY_LEN,
-    SENDER_BUNDLE_LEN, STREAM_BLOCK_LEN,
+    SENDER_BUNDLE_LEN, STREAM_BLOCK_LEN, TRANSFER_RECORD_LEN,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
-use spr_hasher::{
-    hash_chain::create_hash_chain_4_from_slice, primitives::hash_bytes, Hasher, Poseidon,
-};
+use spr_hasher::{primitives::hash_bytes, Hasher, Poseidon};
 
 const VECTORS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -25,6 +24,15 @@ fn layout(key: AuditKey, inputs: usize, outputs: usize, capacity: usize) -> Audi
         inputs,
         outputs,
         capacity,
+        vouched: false,
+        records: RecordForm::default(),
+    }
+}
+
+fn vouched(layout: AuditStreamLayout) -> AuditStreamLayout {
+    AuditStreamLayout {
+        vouched: true,
+        ..layout
     }
 }
 
@@ -113,6 +121,10 @@ fn no_counter_serves_two_regions_and_every_region_holds_its_bytes() {
             assert!(region.len <= region.max_blocks * STREAM_BLOCK_LEN);
             next += region.max_blocks as u32;
         }
+        let voucher = vouched(full).voucher();
+        assert_eq!(voucher.start_counter, next, "{shape:?}");
+        assert_eq!(voucher.len, voucher.max_blocks * STREAM_BLOCK_LEN);
+        next += voucher.max_blocks as u32;
         assert_eq!(
             next as usize - envelope.start_counter as usize,
             full.capacity_blocks()
@@ -152,6 +164,47 @@ fn a_compact_frame_keeps_every_key_counter() {
     assert_eq!(compact.sealed_len(), 33 + 2 * SEALED_KEY_LEN);
 }
 
+#[test]
+fn a_vouched_frame_adds_one_key_and_moves_no_counter() {
+    let key = AuditKey {
+        class: 24,
+        entry: false,
+    };
+    let (plain, compact) = (layout(key, 2, 4, 4), layout(key, 2, 2, 4));
+    assert_eq!(plain.voucher().len, 0);
+    assert_eq!(plain.keys_len(), 4 * SEALED_KEY_LEN);
+    for unvouched in [plain, compact] {
+        let frame = vouched(unvouched);
+        assert_eq!(frame.keys_len(), unvouched.keys_len() + SEALED_KEY_LEN);
+        assert_eq!(frame.envelope(), unvouched.envelope());
+        assert_eq!(frame.capacity_blocks(), unvouched.capacity_blocks());
+        for slot in 0..4 {
+            assert_eq!(frame.recipient_key(slot), unvouched.recipient_key(slot));
+        }
+        assert_eq!(
+            frame.voucher().start_counter,
+            plain.recipient_key(3).start_counter + 2
+        );
+    }
+}
+
+const PLAIN: RecordForm = RecordForm {
+    data: false,
+    ring_data: false,
+};
+const DATA: RecordForm = RecordForm {
+    data: true,
+    ring_data: false,
+};
+const RING_DATA: RecordForm = RecordForm {
+    data: false,
+    ring_data: true,
+};
+const BOTH: RecordForm = RecordForm {
+    data: true,
+    ring_data: true,
+};
+
 fn record() -> OutputRecord {
     OutputRecord {
         kind: RecordKind::Ring,
@@ -160,6 +213,8 @@ fn record() -> OutputRecord {
         mint: [0xa2; 32],
         blinding: [0xa4; 32],
         key: RecordKey::Unpublished,
+        data_hash: [0; 32],
+        ring_data_hash: [0; 32],
     }
 }
 
@@ -171,32 +226,73 @@ fn exit_record(key: RecordKey) -> OutputRecord {
     }
 }
 
-fn published(record: &OutputRecord) -> Vec<u8> {
-    record.encode()[..record.published_len()].to_vec()
+/// A record whose hashes `form` publishes, zero where it publishes none.
+fn hashed(record: OutputRecord, form: RecordForm) -> OutputRecord {
+    let ring_data = form.ring_data && record.kind != RecordKind::Exit;
+    OutputRecord {
+        data_hash: [0xd1; 32].map(|byte| byte * u8::from(form.data)),
+        ring_data_hash: [0xd2; 32].map(|byte| byte * u8::from(ring_data)),
+        ..record
+    }
 }
 
 #[test]
 fn the_record_lays_out_its_contract_bytes() {
-    let encoded = exit_record(RecordKey::Carried([0xa3; 32])).encode();
-    assert_eq!(encoded.len(), EXIT_RECORD_LEN);
-    assert_eq!(encoded[0], 2);
-    assert_eq!(encoded[1..9], 0x0102_0304_0506_0708u64.to_be_bytes());
-    assert_eq!(encoded[9..41], [0xa1; 32]);
-    assert_eq!(encoded[41..73], [0xa2; 32]);
-    assert_eq!(encoded[73..RING_RECORD_LEN], [0xa4; 32]);
-    assert_eq!(encoded[RING_RECORD_LEN..], [0xa3; 32]);
-    assert_eq!(record().published_len(), RING_RECORD_LEN);
-    for read in [
-        record(),
-        exit_record(RecordKey::Carried([0xa3; 32])),
-        exit_record(RecordKey::Zero),
-        OutputRecord {
-            key: RecordKey::Zero,
-            ..record()
-        },
-        OutputRecord::default(),
+    let exit = hashed(exit_record(RecordKey::Carried([0xa3; 32])), DATA).encode(DATA);
+    assert_eq!(exit.len(), TRANSFER_RECORD_LEN);
+    assert_eq!(exit[0], 2);
+    assert_eq!(exit[1..9], 0x0102_0304_0506_0708u64.to_be_bytes());
+    assert_eq!(exit[9..41], [0xa1; 32]);
+    assert_eq!(exit[41..73], [0xa2; 32]);
+    assert_eq!(exit[73..RING_RECORD_LEN], [0xa4; 32]);
+    assert_eq!(exit[RING_RECORD_LEN..EXIT_RECORD_LEN], [0xa3; 32]);
+    assert_eq!(exit[EXIT_RECORD_LEN..], [0xd1; 32]);
+    // A ring slot leads with the data hash only under the data bit.
+    let ring = hashed(record(), BOTH).encode(BOTH);
+    assert_eq!(ring[RING_RECORD_LEN..EXIT_RECORD_LEN], [0xd1; 32]);
+    assert_eq!(ring[EXIT_RECORD_LEN..], [0xd2; 32]);
+    let ring = hashed(record(), RING_DATA).encode(RING_DATA);
+    assert_eq!(ring[RING_RECORD_LEN..EXIT_RECORD_LEN], [0xd2; 32]);
+}
+
+/// One length per kind under each form, a record of any other length is refused.
+#[test]
+fn every_form_reads_back_at_its_one_length() {
+    for (form, ring_len, exit_len) in [
+        (PLAIN, 105, 137),
+        (DATA, 137, 169),
+        (RING_DATA, 137, 137),
+        (BOTH, 169, 169),
     ] {
-        assert_eq!(OutputRecord::decode(&published(&read)).unwrap(), read);
+        for (read, len) in [
+            (hashed(record(), form), ring_len),
+            (
+                hashed(
+                    OutputRecord {
+                        key: RecordKey::Zero,
+                        ..record()
+                    },
+                    form,
+                ),
+                ring_len,
+            ),
+            (
+                hashed(exit_record(RecordKey::Carried([0xa3; 32])), form),
+                exit_len,
+            ),
+            (hashed(exit_record(RecordKey::Zero), form), exit_len),
+            (OutputRecord::default(), ring_len),
+        ] {
+            let published = read.published(form);
+            assert_eq!(published.len(), len, "{form:?} {:?}", read.kind);
+            assert_eq!(OutputRecord::decode(&published, form).unwrap(), read);
+            for other in [&published[..len - 1], &[&published[..], &[0]].concat()] {
+                assert_eq!(
+                    OutputRecord::decode(other, form),
+                    Err(CustomRingError::RingTransactLength)
+                );
+            }
+        }
     }
 }
 
@@ -207,48 +303,53 @@ fn the_zero_key_bit_names_the_zero_key() {
         key: RecordKey::Zero,
         ..record()
     };
-    let encoded = zero.encode();
-    assert_eq!(encoded[0], RecordKind::Ring as u8 | RECORD_ZERO_KEY_BIT);
-    assert_eq!(encoded[RING_RECORD_LEN..], ZERO_NULLIFIER_PUBKEY);
     assert_eq!(
-        exit_record(RecordKey::Carried(ZERO_NULLIFIER_PUBKEY)).encode(),
-        exit_record(RecordKey::Zero).encode()
+        zero.encode(PLAIN)[0],
+        RecordKind::Ring as u8 | RECORD_ZERO_KEY_BIT
     );
-    assert_eq!(record().encode()[0], RecordKind::Ring as u8);
+    assert_eq!(
+        exit_record(RecordKey::Carried(ZERO_NULLIFIER_PUBKEY)).encode(PLAIN),
+        exit_record(RecordKey::Zero).encode(PLAIN)
+    );
+    assert_eq!(record().encode(PLAIN)[0], RecordKind::Ring as u8);
 }
 
 #[test]
 fn a_record_off_its_form_is_refused() {
-    let mut unknown = published(&record());
+    let mut unknown = record().published(PLAIN);
     unknown[0] = 3;
     let mut dummy = [0; RING_RECORD_LEN];
     assert_eq!(
-        OutputRecord::decode(&dummy).unwrap(),
+        OutputRecord::decode(&dummy, PLAIN).unwrap(),
         OutputRecord::default()
     );
     dummy[73] = 1;
     let mut zero_dummy = [0; RING_RECORD_LEN];
     zero_dummy[0] = RECORD_ZERO_KEY_BIT;
-    let exit = exit_record(RecordKey::Carried([0xa3; 32])).encode();
-    let mut forged_bit = exit;
+    let exit = exit_record(RecordKey::Carried([0xa3; 32])).published(PLAIN);
+    let mut forged_bit = exit.clone();
     forged_bit[0] |= RECORD_ZERO_KEY_BIT;
-    let mut dropped_bit = exit_record(RecordKey::Zero).encode();
+    let mut dropped_bit = exit_record(RecordKey::Zero).published(PLAIN);
     dropped_bit[0] &= !RECORD_ZERO_KEY_BIT;
     for (name, refused) in [
         ("an unknown kind", &unknown[..]),
         ("a dummy carrying a byte", &dummy[..]),
         ("a dummy naming the zero key", &zero_dummy[..]),
-        ("a 105 byte exit record", &exit[..RING_RECORD_LEN]),
-        ("a 137 byte non-exit record", &record().encode()[..]),
         ("a zero key bit on a carried key", &forged_bit[..]),
         ("a carried zero key without its bit", &dropped_bit[..]),
     ] {
         assert_eq!(
-            OutputRecord::decode(refused),
+            OutputRecord::decode(refused, PLAIN),
             Err(CustomRingError::RingTransactLength),
             "{name}"
         );
     }
+    let mut hashed_dummy = [0; TRANSFER_RECORD_LEN];
+    hashed_dummy[TRANSFER_RECORD_LEN - 1] = 1;
+    assert_eq!(
+        OutputRecord::decode(&hashed_dummy, BOTH),
+        Err(CustomRingError::RingTransactLength)
+    );
 }
 
 fn entry_key() -> AuditKey {
@@ -379,19 +480,55 @@ fn the_auditor_message_cuts_by_the_layout_and_the_exits() {
     let message = AuditorMessage::parse(&data, stream, 1).unwrap();
     assert_eq!(message.envelope, &[0x11; 33]);
     assert_eq!(message.recipient_keys, &[0x22; 64]);
-    assert_eq!(message.exit_record(0), Some(&[0x33; EXIT_RECORD_LEN]));
+    assert_eq!(message.exit_record(0), Some(&[0x33; EXIT_RECORD_LEN][..]));
     assert_eq!(message.exit_record(1), None);
     assert!(AuditorMessage::parse(&data, stream, 0).is_none());
     assert!(AuditorMessage::parse(&data, stream, 2).is_none());
+    // A data frame's exit record carries its data hash.
+    let data_stream = AuditStreamLayout {
+        records: DATA,
+        ..stream
+    };
+    assert!(AuditorMessage::parse(&data, data_stream, 1).is_none());
+    data.extend([0x33; 32]);
+    let message = AuditorMessage::parse(&data, data_stream, 1).unwrap();
+    assert_eq!(
+        message.exit_record(0),
+        Some(&[0x33; TRANSFER_RECORD_LEN][..])
+    );
     data[0] = 2;
     assert!(AuditorMessage::parse(&data, stream, 1).is_none());
 }
 
-/// The payload carries both data hashes outside every proof, its padding stays zero.
+#[test]
+fn the_auditor_message_holds_the_voucher_key_only_on_a_vouched_layout() {
+    let key = AuditKey {
+        class: 24,
+        entry: false,
+    };
+    let stream = layout(key, 2, 2, 2);
+    let mut data = vec![4; 33];
+    data.extend([0x11; 33]);
+    data.extend([0x22; 2 * SEALED_KEY_LEN]);
+    let split = |data: &[u8], stream: AuditStreamLayout| {
+        let message = AuditorMessage::parse(data, stream, 0)?;
+        let keys = stream.split_keys(message.recipient_keys)?;
+        Some((keys.slots.to_vec(), keys.voucher.copied()))
+    };
+    assert_eq!(split(&data, stream), Some((vec![0x22; 64], None)));
+    assert_eq!(split(&data, vouched(stream)), None);
+    data.extend([0x44; SEALED_KEY_LEN]);
+    assert_eq!(split(&data, stream), None);
+    assert_eq!(
+        split(&data, vouched(stream)),
+        Some((vec![0x22; 64], Some([0x44; SEALED_KEY_LEN])))
+    );
+}
+
+/// The payload carries the application data outside every proof, its padding stays zero.
 #[test]
 fn the_recipient_payload_reads_back_at_one_width() {
     let payload = RecipientPayload {
-        ring_data_hash: Some([9; 32]),
         data: vec![1, 2, 3],
     };
     let padded = payload.encode_padded(64).unwrap();
@@ -406,11 +543,11 @@ fn the_recipient_payload_reads_back_at_one_width() {
     );
     let empty = RecipientPayload::default();
     assert_eq!(
-        empty.encode_padded(2),
+        empty.encode_padded(1),
         Err(CustomRingError::OutputBodyLength)
     );
     assert_eq!(
-        RecipientPayload::decode(&empty.encode_padded(3).unwrap()).unwrap(),
+        RecipientPayload::decode(&empty.encode_padded(2).unwrap()).unwrap(),
         empty
     );
 }
@@ -475,18 +612,26 @@ fn the_solved_go_stream_reads_back_under_the_rust_layout() {
             "entry",
             "no_spend",
             "entry_default_first",
+            "vouched",
         ]
     );
     for case in &vector.cases {
-        let layout = layout(
-            AuditKey {
-                class: case.input_class,
-                entry: case.layout & 2 != 0,
+        let layout = AuditStreamLayout {
+            vouched: case.layout & 1 != 0,
+            records: RecordForm {
+                data: case.layout & 4 != 0,
+                ring_data: case.layout & 8 != 0,
             },
-            case.input_count,
-            case.output_count,
-            case.outputs,
-        )
+            ..layout(
+                AuditKey {
+                    class: case.input_class,
+                    entry: case.layout & 2 != 0,
+                },
+                case.input_count,
+                case.output_count,
+                case.outputs,
+            )
+        }
         .checked()
         .unwrap();
         let plaintext = unhex(&case.envelope_plaintext);
@@ -513,28 +658,40 @@ fn the_solved_go_stream_reads_back_under_the_rust_layout() {
             case.name
         );
         assert_eq!(sealed_keys.len(), layout.keys_len(), "{}", case.name);
+        let SealedKeys {
+            slots: slot_keys,
+            voucher,
+        } = layout.split_keys(&sealed_keys).unwrap();
+        assert_eq!(voucher.is_some(), case.name == "vouched");
         let digest = Poseidon::hashv(&[
             &ciphertext_digest(&sealed_envelope).unwrap(),
-            &ciphertext_digest(&sealed_keys).unwrap(),
+            &ciphertext_digest(slot_keys).unwrap(),
+            &voucher.map_or([0; 32], |voucher| hash_bytes(voucher).unwrap()),
         ])
         .unwrap();
         assert_eq!(hex::encode(digest), case.envelope_digest, "{}", case.name);
-        for record in &case.records {
+        let ciphertexts: Vec<Vec<u8>> = case
+            .record_ciphertexts
+            .iter()
+            .map(|ciphertext| unhex(ciphertext))
+            .collect();
+        let mut outputs = Vec::new();
+        for (record, ciphertext) in case.records.iter().zip(&ciphertexts) {
             let bytes = unhex(record);
-            let decoded = OutputRecord::decode(&bytes).unwrap();
-            assert_eq!(decoded.encode()[..decoded.kind.published_len()], bytes);
-        }
-        let mut hashes = vec![[0; 32]; case.outputs];
-        for (hash, ciphertext) in hashes.iter_mut().zip(&case.record_ciphertexts) {
-            let bytes = unhex(ciphertext);
-            *hash = match bytes.len() {
-                EXIT_RECORD_LEN => hash_bytes(&<[u8; EXIT_RECORD_LEN]>::try_from(bytes).unwrap()),
-                _ => hash_bytes(&<[u8; RING_RECORD_LEN]>::try_from(bytes).unwrap()),
-            }
-            .unwrap();
+            let decoded = OutputRecord::decode(&bytes, layout.records).unwrap();
+            assert_eq!(decoded.published(layout.records), bytes);
+            outputs.push(RingOutput {
+                hash: &[0; 32],
+                owner_tag: [0; 32],
+                body: match decoded.kind {
+                    RecordKind::Exit => SlotBody::Exit(&[]),
+                    RecordKind::Ring | RecordKind::Dummy => SlotBody::Recipient(ciphertext),
+                },
+                record: ciphertext,
+            });
         }
         assert_eq!(
-            hex::encode(create_hash_chain_4_from_slice(&hashes).unwrap()),
+            hex::encode(record_chain(&outputs, case.outputs, layout.records).unwrap()),
             case.record_chain,
             "{}",
             case.name
@@ -544,16 +701,12 @@ fn the_solved_go_stream_reads_back_under_the_rust_layout() {
 
 #[test]
 fn a_ring_body_opens_with_its_record() {
-    use custom_ring_interface::{encode_ring_body_output, ring_body_output, ring_body_record};
-    let body = [published(&record()), vec![0x55; 5]].concat();
+    use custom_ring_interface::{encode_ring_body_output, ring_body_output};
+    let body = [record().published(PLAIN), vec![0x55; 5]].concat();
     let data = encode_ring_body_output(&body, &[0x66; 97]).unwrap();
     let (read, reply) = ring_body_output(&data).unwrap();
     assert_eq!(read, &body[..]);
     assert_eq!(reply, &[0x66; 97]);
-    assert_eq!(
-        ring_body_record(read).map(|record| &record[..]),
-        Some(&published(&record())[..])
-    );
     assert_eq!(
         encode_ring_body_output(&body[..RING_RECORD_LEN - 1], &[]),
         Err(CustomRingError::OutputBodyLength)

@@ -14,11 +14,13 @@ import {
   ENVELOPE_KEY_LEN,
   STREAM_FIRST_COUNTER,
   TAGGED_KEY_LEN,
-  EXIT_RECORD_LEN,
   RECIPIENT_KEY_LEN,
+  RecordKind,
   auditorMessageLen,
   envelopeRegion,
+  publishedRecordLen,
   recipientKeysLen,
+  voucherRegion,
   type AuditStreamLayout,
 } from "../../protocol/codec/ring-disclosure-layout.js";
 import { packBytesBe } from "../derivation/hasher.js";
@@ -59,6 +61,8 @@ export interface AuditorEnvelope {
   readonly envelope: Uint8Array;
   /** One sealed `V_i` per published slot. */
   readonly recipientKeys: readonly Uint8Array[];
+  /** The voucher's sealed Ed25519 key, present exactly on a vouched layout. */
+  readonly voucher?: Uint8Array;
 }
 
 /** The one message a ring transfer publishes under the auditor's view tag. */
@@ -67,6 +71,8 @@ export interface AuditorMessage {
   readonly envelope: Uint8Array;
   /** One sealed `V_i` per published slot. */
   readonly recipientKeys: readonly Uint8Array[];
+  /** The voucher's sealed Ed25519 key, present exactly on a vouched layout. */
+  readonly voucher?: Uint8Array;
   /** Each exit's record in slot order, an exit's SPP data holds its owner's scheme 3 body. */
   readonly exitRecords: readonly Uint8Array[];
 }
@@ -163,6 +169,7 @@ export function sealSaltedAuditorStream(
     auditorPublicKey: X25519PublicKey;
     envelope: Uint8Array;
     recipientKeys: readonly AuditorRegion[];
+    voucher?: AuditorRegion;
   }>,
 ): AuditorEnvelope {
   const key = X25519Keypair.fromBytes(input.txViewingSecret);
@@ -179,6 +186,7 @@ function sealRegions(
     auditorPublicKey: X25519PublicKey;
     envelope: Uint8Array;
     recipientKeys: readonly AuditorRegion[];
+    voucher?: AuditorRegion;
   }>,
   keyed: (shared: Bytes32) => Bytes32,
 ): AuditorEnvelope {
@@ -197,6 +205,9 @@ function sealRegions(
       ephemeralPublicKey: publicKey,
       envelope,
       recipientKeys,
+      ...(input.voucher === undefined
+        ? {}
+        : { voucher: stream.apply(input.voucher.counter, input.voucher.bytes) }),
     });
   } finally {
     secret.fill(0);
@@ -281,6 +292,7 @@ export function auditorMessageData(
       message.ephemeralPublicKey.toBytes(),
       message.envelope,
       ...message.recipientKeys,
+      ...(message.voucher === undefined ? [] : [message.voucher]),
       ...message.exitRecords,
     ),
   });
@@ -295,6 +307,7 @@ export function parseAuditorMessage(
   const bytes = checkedBytes(data, auditorMessageLen(layout, exits), "auditor message");
   const keysAt = TAGGED_KEY_LEN + envelopeRegion(layout).length;
   const recordsAt = keysAt + recipientKeysLen(layout);
+  const voucherAt = recordsAt - voucherRegion(layout).length;
   const cut = (at: number, length: number, count: number): readonly Uint8Array[] =>
     Object.freeze(
       Array.from({ length: count }, (_, slot) =>
@@ -305,7 +318,8 @@ export function parseAuditorMessage(
     ephemeralPublicKey: X25519PublicKey.fromBytes(bytes.subarray(0, TAGGED_KEY_LEN)),
     envelope: bytes.subarray(TAGGED_KEY_LEN, keysAt),
     recipientKeys: cut(keysAt, RECIPIENT_KEY_LEN, layout.outputs),
-    exitRecords: cut(recordsAt, EXIT_RECORD_LEN, exits),
+    ...(layout.vouched ? { voucher: bytes.subarray(voucherAt, recordsAt) } : {}),
+    exitRecords: cut(recordsAt, publishedRecordLen(layout.records, RecordKind.exit), exits),
   });
 }
 

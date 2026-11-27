@@ -446,6 +446,7 @@ mod tests {
                 mint: MINT,
                 blinding,
                 key: zolana_ring_transaction::carried_key(nullifier_pk),
+                ..OutputRecord::default()
             },
             seed,
         };

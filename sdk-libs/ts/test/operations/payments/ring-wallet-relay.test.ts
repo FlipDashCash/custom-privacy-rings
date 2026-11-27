@@ -21,14 +21,21 @@ import {
   type ApprovalRequest,
 } from "@heliuslabs/spr/transaction";
 import type { Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
+import { equalBytes } from "@heliuslabs/spr/internal";
 
 import { PreparedRingDeposit } from "../../../src/operations/payments/deposit.js";
 import { prepareRingMergeRelay } from "../../../src/operations/payments/merge.js";
 import { signingKeySpendSigner } from "../../../src/operations/payments/anonymous.js";
 import {
+  MAX_RING_TRANSFER_PAYMENTS,
   prepareRingTransferRelay,
   prepareRingWithdrawalRelay,
+  type RingTransferPayment,
 } from "../../../src/operations/payments/transfer.js";
+import {
+  approveRingUnattended,
+  type RingApprovalRequest,
+} from "../../../src/protocol/transaction/intent.js";
 import { buildRuleTable } from "../../../src/protocol/membership/policy.js";
 import {
   decodeRelayProofInputs,
@@ -142,7 +149,7 @@ function owner(fixture: Fixture, count: number, asset: Address = SOL_MINT) {
       const hash = utxo.proofInput(keypair.nullifierPublicKey(), TREE_ID).hash();
       return {
         utxo,
-        outputContext: { hash, tree: TREE, leafIndex: BigInt(index) },
+        outputContext: { hash, tree: TREE, treeId: TREE_ID, leafIndex: BigInt(index) },
         nullifier: utxo.nullifier(hash, keypair.nullifierKey()),
         spent: false,
       };
@@ -284,6 +291,80 @@ describe("wallet relay", () => {
     expect(prepared.chargedOutflows()).toEqual(charged);
   });
 
+  it("encodes several payments as one output each under one approved intent", async () => {
+    const fixture = await ringFixture({ table: buildRuleTable({ rules: [] }) });
+    const network = walletNetwork(fixture);
+    const sender = owner(fixture, 2);
+    const [first, second] = [
+      ShieldedKeypair.generate().shieldedAddress(),
+      ShieldedKeypair.generate().shieldedAddress(),
+    ];
+    const approvals: RingApprovalRequest[] = [];
+    const relay = (payments: readonly RingTransferPayment[]) =>
+      prepareRingTransferRelay({
+        client: network.client,
+        ringProgramId: fixture.ringProgramId,
+        wallet: sender.wallet,
+        keys: walletKeys(sender.keypair),
+        payments,
+        approve: (request) => {
+          approvals.push(request);
+          return approveRingUnattended(request);
+        },
+        confidential: {
+          quote: { feePayer: fixture.authority, validUntilSlot: 100n },
+          nullifierKey: sender.keypair.nullifierKey(),
+          signer: signingKeySpendSigner(sender.signing),
+        },
+      });
+
+    await expect(
+      relay(
+        Array.from({ length: MAX_RING_TRANSFER_PAYMENTS + 1 }, () => ({
+          recipient: first,
+          amount: 1n,
+        })),
+      ),
+    ).rejects.toMatchObject({ causeCode: "RING_TRANSFER_TOO_WIDE" });
+    const prepared = await relay([
+      { recipient: first, amount: 5n },
+      { recipient: second, amount: 7n },
+    ]).then(({ relay: unsigned }) => unsigned.sign());
+
+    expect(approvals).toMatchObject([
+      {
+        intent: {
+          kind: "ringMultiTransfer",
+          ringProgramId: fixture.ringProgramId,
+          asset: SOL_MINT,
+          payments: [
+            { recipient: first, amount: 5n },
+            { recipient: second, amount: 7n },
+          ],
+          defaultFunding: 0n,
+        },
+      },
+    ]);
+    expect(prepared.chargedOutflows()).toMatchObject([
+      { owner: sender.keypair.signingPublicKey().ownerProofInputHash(), chargedOutflow: 12n },
+    ]);
+    const { intent } = prepared.request;
+    if (intent.operation !== "confidential") throw new Error("a confidential relay");
+    const inputs = await decodeRelayProofInputs(
+      new Uint8Array(getBase64Encoder().encode(intent.proofInputs)),
+      sender.wallet.registry,
+    );
+    const own = sender.keypair.shieldedAddress().toBytes();
+    const paid = inputs.outputs
+      .filter((output) => !output.isDummy())
+      .map((output) => [output.ownerAddress?.toBytes(), output.amount, output.ringProgramId])
+      .filter(([owner]) => !(owner instanceof Uint8Array && equalBytes(owner, own)));
+    expect(paid).toEqual([
+      [first.toBytes(), 5n, fixture.ringProgramId],
+      [second.toBytes(), 7n, fixture.ringProgramId],
+    ]);
+  });
+
   it("reconciles a resent relay by its id and never prepares it twice", async () => {
     const fixture = await ringFixture({ table: buildRuleTable({ rules: [] }) });
     const network = walletNetwork(fixture);
@@ -342,8 +423,7 @@ describe("wallet relay", () => {
     expect(failedRelay.calls).toEqual(["prepareRelay", "getRelayStatus"]);
   });
 
-  // Zolana builds no transfer of only dummy inputs.
-  it.skip("relays a deposit into a key escrow ring with no opening request", async () => {
+  it("relays a deposit into a key escrow ring with no opening request", async () => {
     const fixture = await ringFixture({ mode: "confidential", records: [] });
     const network = walletNetwork(fixture);
     const recipient = ShieldedKeypair.generate().shieldedAddress();

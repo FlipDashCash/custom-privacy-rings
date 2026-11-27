@@ -2,9 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use sea_orm::{ConnectionTrait, DatabaseTransaction, DbErr, QueryResult, Statement, Value};
 use solana_address::Address;
-use solana_signature::Signature;
 
-use crate::cosign::{AssetFlow, CoSignSettlement, OwnerFlow};
+use crate::cosign::{AssetFlow, CoSignSettlement, OwnerFlow, Ticket};
 
 #[path = "cosign_window_index.rs"]
 mod window_index;
@@ -61,7 +60,7 @@ pub(crate) struct WindowSum<'a> {
 }
 
 pub(crate) struct Reserve<'a> {
-    pub signature: &'a Signature,
+    pub ticket: &'a Ticket,
     pub ring: &'a Address,
     pub slot: u64,
     pub flows: &'a [OwnerFlow],
@@ -137,13 +136,13 @@ impl SettlementScope {
 impl<C: ConnectionTrait> UsageLedger<'_, C> {
     pub async fn reservation_state(
         &self,
-        signature: &Signature,
+        ticket: &Ticket,
     ) -> Result<Option<ReservationState>, DbErr> {
         let row = self
             .conn
             .query_one(self.statement(
                 "SELECT state FROM cosign_usage WHERE signature=$1 LIMIT 1",
-                vec![signature_value(signature)],
+                vec![ticket_value(ticket)],
             ))
             .await?;
         row.map(|row| ReservationState::read(&row.try_get::<String>("", "state")?))
@@ -152,9 +151,9 @@ impl<C: ConnectionTrait> UsageLedger<'_, C> {
 
     pub async fn settlement_scope(
         &self,
-        signature: &Signature,
+        ticket: &Ticket,
     ) -> Result<Option<SettlementScope>, DbErr> {
-        let rows = self.reservations(signature).await?;
+        let rows = self.reservations(ticket).await?;
         let Some(first) = rows.first() else {
             return Ok(None);
         };
@@ -239,14 +238,14 @@ impl<C: ConnectionTrait> UsageLedger<'_, C> {
         Ok(slots)
     }
 
-    async fn reservations(&self, signature: &Signature) -> Result<Vec<Reservation>, DbErr> {
+    async fn reservations(&self, ticket: &Ticket) -> Result<Vec<Reservation>, DbErr> {
         let sql = format!(
             "SELECT ring,owner,asset,slot,state,outflow_hi,outflow_lo,deposited_hi,deposited_lo,withdrawn_hi,withdrawn_lo FROM cosign_usage WHERE signature=$1 LIMIT {}",
             MAX_USAGE_FLOWS + 1
         );
         let rows = self
             .conn
-            .query_all(self.statement(&sql, vec![signature_value(signature)]))
+            .query_all(self.statement(&sql, vec![ticket_value(ticket)]))
             .await?;
         if rows.len() > MAX_USAGE_FLOWS {
             return Err(DbErr::Custom(
@@ -317,7 +316,7 @@ impl UsageLedger<'_, DatabaseTransaction> {
                         .join(",")
                 ));
                 values.extend([
-                    signature_value(reserve.signature),
+                    ticket_value(reserve.ticket),
                     address_value(&row.asset),
                     address_value(&row.ring),
                     Value::from(row.owner.to_vec()),
@@ -348,11 +347,11 @@ impl UsageLedger<'_, DatabaseTransaction> {
     }
 
     pub async fn settle(&self, settlement: CoSignSettlement) -> Result<(), DbErr> {
-        let (signature, next) = match settlement {
-            CoSignSettlement::Confirmed(signature) => (signature, ReservationState::Confirmed),
-            CoSignSettlement::Failed(signature) => (signature, ReservationState::Released),
+        let (ticket, next) = match settlement {
+            CoSignSettlement::Confirmed(ticket) => (ticket, ReservationState::Confirmed),
+            CoSignSettlement::Failed(ticket) => (ticket, ReservationState::Released),
         };
-        let rows = self.reservations(&signature).await?;
+        let rows = self.reservations(&ticket).await?;
         let Some(first) = rows.first() else {
             return Ok(());
         };
@@ -410,7 +409,7 @@ impl UsageLedger<'_, DatabaseTransaction> {
             .execute(self.statement(
                 sql,
                 vec![
-                    signature_value(&signature),
+                    ticket_value(&ticket),
                     Value::from(next.stored()),
                     Value::from(ReservationState::Held.stored()),
                 ],
@@ -540,8 +539,8 @@ fn bytes<const N: usize>(row: &QueryResult, column: &str) -> Result<[u8; N], DbE
         .map_err(|_| DbErr::Custom(format!("usage column {column} has another length")))
 }
 
-fn signature_value(signature: &Signature) -> Value {
-    Value::from(signature.as_ref().to_vec())
+fn ticket_value(ticket: &Ticket) -> Value {
+    Value::from(ticket.as_bytes().to_vec())
 }
 
 fn address_value(address: &Address) -> Value {

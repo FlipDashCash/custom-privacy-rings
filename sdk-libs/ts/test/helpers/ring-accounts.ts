@@ -56,14 +56,18 @@ export async function sppRingRegistration(
     ringProgramId: Address;
     activated?: boolean;
     paused?: boolean;
+    /** Follows `activated` as creation sets both, governance can set it apart. */
+    authorityRail?: boolean;
   }>,
 ): Promise<readonly [Address, RpcAccount]> {
+  const activated = input.activated !== false;
   const data = new Uint8Array(69);
   data[0] = StateDiscriminator.ringConfig;
   data.set(addressBytes(input.authority), 1);
   data.set(addressBytes(input.ringProgramId), 33);
+  data[65] = (input.authorityRail ?? activated) ? 1 : 0;
   data[66] = input.paused === true ? 1 : 0;
-  data[67] = input.activated === false ? 0 : 1;
+  data[67] = activated ? 1 : 0;
   return [await ringAuthAddress(input.ringProgramId), ownedAccount(SHIELDED_POOL_PROGRAM_ID, data)];
 }
 
@@ -159,6 +163,7 @@ export function ringPolicyData(
     sources?: readonly RingSourceSlot[];
     table?: RuleTable;
     generation?: number;
+    ringListTag?: Bytes32;
   }>,
 ): Uint8Array {
   const roles = { ...FIXTURE_ROLES, ...input.roles };
@@ -189,6 +194,7 @@ function writePolicyFields(
     sources?: readonly RingSourceSlot[];
     table?: RuleTable;
     generation?: number;
+    ringListTag?: Bytes32;
   }>,
 ): Writer {
   writer.bytes(input.policyHash ?? new Uint8Array(32));
@@ -196,7 +202,10 @@ function writePolicyFields(
   for (const source of sources)
     writer.u8(source.listId, "listId").bytes(addressBytes(source.registry));
   counted(writer, (input.table ?? { rules: [] }).rules.map(encodeRule), 16);
-  return writer.u32(input.generation ?? 0, "generation").u64(0n, "generationSlot");
+  return writer
+    .u32(input.generation ?? 0, "generation")
+    .u64(0n, "generationSlot")
+    .bytes(input.ringListTag ?? new Uint8Array(32), 32, "ringListTag");
 }
 
 function counted(writer: Writer, rows: readonly Uint8Array[], slots: number): void {

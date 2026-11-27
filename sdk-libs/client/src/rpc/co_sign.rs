@@ -19,6 +19,19 @@ pub const GET_CO_SIGN_LISTS: &str = "getCoSignLists";
 pub struct CoSignTransactionRequest {
     pub ring: SerializablePubkey,
     pub message: Base64String,
+    /// Set where a program calls the transfer under the message's `ApproveTransfer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_transfer: Option<ApprovedTransfer>,
+}
+
+/// The ring `Transfer` call an `ApproveTransfer` digest commits to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ApprovedTransfer {
+    /// From the `TRANSFER` tag.
+    pub data: Base64String,
+    /// In call order.
+    pub accounts: Vec<SerializablePubkey>,
 }
 
 /// `signature` signs the request message under `signer`.

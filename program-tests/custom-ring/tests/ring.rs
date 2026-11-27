@@ -55,6 +55,11 @@ mod migration;
 mod one_key;
 #[path = "ring/policy.rs"]
 mod policy;
+#[path = "ring/program_owner.rs"]
+mod program_owner;
+#[cfg(feature = "proofs")]
+#[path = "ring/program_update.rs"]
+mod program_update;
 #[path = "ring/relay.rs"]
 mod relay;
 #[path = "ring/transfers.rs"]
@@ -63,7 +68,6 @@ mod transfers;
 use std::{
     collections::HashMap,
     net::{TcpStream, ToSocketAddrs},
-    path::PathBuf,
     time::Duration,
 };
 
@@ -89,9 +93,9 @@ use custom_ring_test_validator::{
     ring_rpc::RingRpcSpec,
     ring_wallet::RingWallet,
     shared::{
-        custom_ring_program_id, prover_url, send, send_expecting_rejection, setup, AuthorityRail,
-        ExpectRejection, RegisterRing, RejectedTransact, RingRoleKeys, SendAs, TestEnv, Tier,
-        WalletSync, USDC_ASSET_ID,
+        custom_ring_program_id, prover_url, send, send_expecting_rejection, setup,
+        setup_with_programs, AuthorityRail, ExpectRejection, RegisterRing, RejectedTransact,
+        RingRoleKeys, SendAs, TestEnv, Tier, WalletSync, USDC_ASSET_ID,
     },
 };
 use solana_address::Address;
@@ -115,7 +119,7 @@ use spr_interface::{
     },
     SHIELDED_POOL_PROGRAM_ID, ZERO_NULLIFIER_PUBKEY,
 };
-use spr_keypair::{random_blinding, ShieldedAddress, ShieldedKeypair, X25519Keypair};
+use spr_keypair::{random_blinding, NullifierKey, ShieldedAddress, ShieldedKeypair, X25519Keypair};
 use spr_program::instruction::{
     AssetDeposit, Deposit as SppDeposit, DepositAsset, DepositSplAccounts,
     TransactInterfaceTransferAccounts, TransactSplWithdrawalAccounts, UpdateRingConfig,
@@ -123,7 +127,6 @@ use spr_program::instruction::{
 use spr_program_test::Rejection;
 use spr_test_utils::wallet::Wallet;
 use spr_test_utils::{
-    localnet::isolated_temp_path,
     smart_account,
     spl::{create_token_account, mint_to},
     test_validator_asserts::{
@@ -134,15 +137,14 @@ use spr_test_utils::{
 use spr_transaction::{
     decrypt_spendable,
     instructions::transact::{canonical_shape, ConfidentialTransaction, SppProofOutputUtxo},
-    AssetRegistry, Data, Mint, Utxo, WalletUtxo, SOL_ASSET_ID, SOL_MINT,
+    AssetRegistry, Data, LocalShieldedKeys, Mint, ShieldedKeys, Utxo, WalletUtxo, SOL_ASSET_ID,
+    SOL_MINT,
 };
 use spr_tree::TreeAccount;
 use spr_user_registry_interface::user_registry_program_id;
 use zolana_ring_client::{
-    auditor_view_tag,
-    rpc::{write_auditor_key, CreateAuditorKeyRequest},
-    AuditedTransaction, AuditedUtxo, KnownUtxo, OutputOpening, RecoveryStep, RingRecovery,
-    RingScan, SourceMember, ViewingHistory,
+    auditor_view_tag, rpc::CreateAuditorKeyRequest, AuditedTransaction, AuditedUtxo, KnownUtxo,
+    OutputOpening, RecoveryStep, RingRecovery, RingScan, SourceMember, ViewingHistory,
 };
 use zolana_ring_keys::{RingAddress, RingPaymentRequest};
 use zolana_ring_policy::{ListId, Member, Rule, RuleTable, Subject};
@@ -180,8 +182,8 @@ const MERGED_SPEND: u64 = 100_000_000;
 /// Output slot layout this test publishes: the sender's change first, the
 /// recipient second. A slot's index is what its ciphertext is bound to, so these
 /// are also the `slot_index` values the auditor must report.
-const CHANGE_SLOT: u32 = 1;
-const RECIPIENT_SLOT: u32 = 0;
+const CHANGE_SLOT: u32 = 0;
+const RECIPIENT_SLOT: u32 = 1;
 
 /// Every settled transfer stays at or under four fifths of the declared budget.
 const CUSTOM_RING_TRANSACT_CU_LIMIT: u64 =
@@ -215,17 +217,10 @@ fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
     let env = setup()?;
     let tree = env.register_default_tree()?;
     let ring = CustomRing::new(custom_ring_program_id()?);
-    let auditor = X25519Keypair::new();
-    let ring_rpc = RingRpcSpec {
-        env: &env,
-        ring: ring.program_id(),
-        auditor: auditor.clone(),
-    }
-    .serve()?;
-    let project = RingProject::create(&env, &auditor.pubkey())?;
+    let project = RingProject::create(&env)?;
     project.write_config(RingToml {
         env: &env,
-        ring_rpc: &ring_rpc.url,
+        ring_rpc: &project.ring_rpc.url,
         policy: None,
         mode: ModeName::Anonymous,
     })?;
@@ -246,7 +241,7 @@ fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
         owners: &[&sender],
         env: &env,
     }
-    .send()?;
+    .submit(&project.enrollment_rpc())?;
     for &amount in amounts {
         let deposit = RingDeposit {
             ring,
@@ -264,7 +259,7 @@ fn cli_merge_fragments(amounts: &[u64]) -> Result<()> {
 
     let output = project.run(&[
         "--fee-payer-keypair",
-        "upgrade.json",
+        project.write_member_fee_payer()?,
         "merge",
         "--count",
         &count,
@@ -965,6 +960,49 @@ fn expect_foreign_ring(result: Result<ProvenRingTransfer, RingError>, ring: Addr
             "expected ForeignRing({ring}), the transfer was proven"
         )),
     }
+}
+
+/// A PDA's note proven by the indexer under the zero key.
+fn pda_note(env: &TestEnv, utxo: Utxo, data_hash: Option<[u8; 32]>) -> Result<WalletUtxo> {
+    let tree_id = env.tree_id(env.tree)?;
+    let zero_key = NullifierKey::from_secret([0; 31]);
+    let hash = utxo.hash(
+        &zero_key.pubkey()?,
+        &data_hash.unwrap_or_default(),
+        &[0; 32],
+        tree_id,
+    )?;
+    let state = wait_for_merkle_proof(env.client.indexer(), env.tree, hash);
+    spr_test_utils::utxo::wallet(utxo, &zero_key, tree_id, state.leaf_index, data_hash, None)
+}
+
+/// `output` as the note its PDA `holder` spends.
+fn pda_output(
+    env: &TestEnv,
+    output: &SppProofOutputUtxo,
+    holder: &ShieldedAddress,
+) -> Result<WalletUtxo> {
+    pda_note(
+        env,
+        Utxo {
+            owner: holder.signing_pubkey,
+            asset: output.asset,
+            amount: output.amount,
+            blinding: output.blinding,
+            ring_program_id: output.ring_program_id,
+            data: output.data.clone(),
+        },
+        output.data_hash,
+    )
+}
+
+/// The ring keys of a PDA, its notes sealed to the operator's viewing key.
+fn pda_keys(pda: &Address, operator: &ShieldedKeypair) -> Result<LocalShieldedKeys> {
+    Ok(LocalShieldedKeys::new(
+        ShieldedAddress::for_pda(pda, ZERO_NULLIFIER_PUBKEY, operator.viewing_pubkey()),
+        vec![operator.viewing_key.clone()],
+        NullifierKey::from_secret([0; 31]),
+    )?)
 }
 
 fn indexed_note(

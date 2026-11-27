@@ -33,6 +33,7 @@ use crate::{
     grant_rows::{GrantPair, GrantRow},
     grants::{GrantQuery, Grants, ReadScope},
     hub::Shared,
+    keys::RingSaltDerivation,
     limits::ReaderPermit,
     projection_lease::{LeaseClaim, ProjectionLease},
     projection_reads::EnrollmentKey,
@@ -192,6 +193,16 @@ impl<S: TransactionSource> AuditService<S> {
 
     pub fn auditor_pubkey(&self) -> X25519Pubkey {
         self.auditor.pubkey()
+    }
+
+    /// Leaves the service only through `getListSalt`, never logged.
+    pub(crate) fn ring_salt(&self) -> Result<zeroize::Zeroizing<[u8; 32]>, RingRpcError> {
+        RingSaltDerivation {
+            auditor: &self.auditor,
+            genesis_hash: &self.shared.genesis_hash,
+            ring: self.ring,
+        }
+        .derive()
     }
 
     pub fn auditor_view_tag(&self) -> [u8; 32] {

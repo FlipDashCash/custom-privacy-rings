@@ -311,7 +311,11 @@ fn held_transfer(payer: &ShieldedKeypair) -> RingSubmission<'static> {
         accounts: vec![AccountMeta::new(payer.pubkey(), true)],
         data: vec![tag::SET_DELEGATE],
     }));
-    submission.pending = Some(Attempt { proved, sent: None });
+    submission.pending = Some(Attempt {
+        payer: payer.pubkey(),
+        proved,
+        sent: None,
+    });
     submission.attempts = 1;
     submission
 }
@@ -338,6 +342,75 @@ async fn a_submission_signs_only_an_attempt_its_charges_were_read_from() {
         .is_empty());
     let _sent = submission.send(&client, &payer, &[]).await.unwrap();
     assert_eq!(cluster.sent_tags(), [tag::SET_DELEGATE]);
+}
+
+#[tokio::test]
+async fn a_proved_instruction_naming_an_absent_signer_is_refused_unsent() {
+    let cluster = Cluster::default();
+    let client = client(&cluster);
+    let (payer, approver) = (keypair(1), keypair(2));
+    let mut submission = RingSubmission::new(RingOperation::Instruction(Instruction {
+        program_id: program(),
+        accounts: vec![
+            AccountMeta::new(payer.pubkey(), true),
+            AccountMeta::new_readonly(approver.pubkey(), true),
+        ],
+        data: vec![tag::SET_DELEGATE],
+    }));
+    assert!(matches!(
+        submission.prove(&client, &payer, &[]).await,
+        Err(RingError::Signer(SignerError::NotEnoughSigners))
+    ));
+    assert_eq!(submission.attempts(), 0);
+    assert!(matches!(
+        submission.send(&client, &payer, &[]).await,
+        Err(RingError::SubmissionUnproved)
+    ));
+
+    submission
+        .prove(&client, &payer, &[&approver])
+        .await
+        .expect("every named signer is provided");
+    let _sent = submission
+        .send(&client, &payer, &[&approver])
+        .await
+        .unwrap();
+    let sent = cluster.0.lock().unwrap().sent.clone();
+    let [transaction] = sent.as_slice() else {
+        panic!("one transaction, {sent:?}");
+    };
+    assert_eq!(transaction.signatures.len(), 2);
+}
+
+struct ForeignMessageSigner<'a>(&'a ShieldedKeypair);
+
+impl SubmissionSigners for ForeignMessageSigner<'_> {
+    fn payer(&self) -> Address {
+        self.0.pubkey()
+    }
+
+    fn additional(&self) -> impl Iterator<Item = Address> {
+        core::iter::empty()
+    }
+
+    async fn sign(&self, _message: &VersionedMessage) -> Result<Vec<Signature>, RingError> {
+        Ok(vec![Signer::sign_message(self.0, b"another message")])
+    }
+}
+
+#[tokio::test]
+async fn a_signature_over_another_message_is_never_sent() {
+    let cluster = Cluster::default();
+    let client = client(&cluster);
+    let payer = keypair(1);
+    let mut submission = held_transfer(&payer);
+    assert!(matches!(
+        submission
+            .send_until_settled_with(&client, &ForeignMessageSigner(&payer))
+            .await,
+        Err(RingError::SubmissionSignatures)
+    ));
+    assert!(cluster.sent_tags().is_empty());
 }
 
 #[tokio::test]
@@ -383,6 +456,20 @@ async fn an_unknown_transfer_holds_its_attempt_and_blocks_a_new_proof() {
     );
     assert_eq!(cluster.sent_tags(), [tag::TRANSFER]);
     assert!(submission.pending_transaction().is_none());
+}
+
+#[tokio::test]
+async fn a_landing_whose_status_read_fails_returns_the_sent_signature() {
+    let cluster = Cluster::default();
+    cluster.set(|state| state.transfer = Status::LookupFails);
+    let payer = keypair(1);
+    let landed = held_transfer(&payer)
+        .land(&client(&cluster), &payer, &[])
+        .await;
+    assert!(matches!(
+        landed,
+        Err(RingError::Unsettled { signature, .. }) if signature == cluster.last_signature()
+    ));
 }
 
 #[tokio::test]

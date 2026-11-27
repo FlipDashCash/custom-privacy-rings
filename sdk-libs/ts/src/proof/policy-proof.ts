@@ -1,4 +1,3 @@
-import type { PlannedSplExit } from "../operations/payments/planned-spl-exit.js";
 /** The policy section of a ring transfer, every record read under a root the statement binds. */
 import type { ShieldedPublicKey } from "@heliuslabs/spr/keypair";
 import { EMPTY_MINT_POLICY, type MintPolicy } from "../protocol/membership/mint-policy.js";
@@ -55,7 +54,7 @@ import {
   type PublicGross,
 } from "../protocol/membership/owner-debits.js";
 import { listTagOf } from "../crypto/keys/list-salt.js";
-import { privateListKey, publicListKey } from "../protocol/membership/private-list.js";
+import { privateListKey, publicListKey, ringListKey } from "../protocol/membership/private-list.js";
 import {
   evaluateInputAssets,
   evaluatePayments,
@@ -64,9 +63,11 @@ import {
   pinnedPolicy,
   policySourceView,
   policyTableProofInputs,
+  vouchedBy,
+  evaluateVoucher,
+  type VoucherRefusal,
   type PinnedPolicy,
   type RecordLists,
-  type RuleRefusal,
   type SourceView,
 } from "../protocol/membership/policy.js";
 import {
@@ -122,6 +123,10 @@ export interface PolicyInputs {
   /** At the key's owner rows, zero rows last. */
   readonly rows: readonly Bytes32[];
   readonly senderEntries: readonly PolicyOwnerEntry[];
+  /** The zero entry off a vouched frame and off a screened ring. */
+  readonly voucherEntry: PolicyOwnerEntry;
+  /** Set while a salted list reads under a ring salt the policy commits. */
+  readonly ringSalt?: Bytes32;
   /** The output slots then the withdrawals, the request pads them to the key. */
   readonly ownerEntries: readonly PolicyOwnerEntry[];
   readonly assetEntries: readonly PolicySubjectEntry[];
@@ -159,7 +164,6 @@ export interface PolicyDemand {
 
 export type PolicyDemandInput = Readonly<{
   tokenOwnerHint?: Address;
-  plannedSplExit?: PlannedSplExit;
   client: PolicyReadClient;
   config: RingPolicy;
   rail: RingRail;
@@ -168,6 +172,10 @@ export type PolicyDemandInput = Readonly<{
   proofInputs: SppProofInputs;
   publicSlots: PublicSlots;
   listSalts: readonly RingListSalt[];
+  /** The owner identity of the voucher's key, absent off a vouched frame. */
+  voucher?: Bytes32;
+  /** Every owner reads the salted lists under it on a ring whose policy commits its tag. */
+  ringSalt?: Bytes32;
 }>;
 
 export type PolicyReadInput = PolicyDemandInput &
@@ -186,6 +194,8 @@ const ABSENT_OWNER: PolicyOwnerEntry = Object.freeze({
   listSalt: ZERO_32,
   ownSalted: 0,
   curatorSalted: 0,
+  ownRing: 0,
+  curatorRing: 0,
 });
 /** A subject when nothing live opens a row, it brackets under the sentinel or holds its own leaf. */
 const PADDING_SUBJECT = Uint8Array.from({ length: 32 }, (_, at) => (at === 31 ? 1 : 0)) as Bytes32;
@@ -223,7 +233,7 @@ interface PolicySubjects {
   readonly assets: readonly (Bytes32 | undefined)[];
   /** By published input slot, undefined on a dummy or an address slot and off a policy. */
   readonly inputAssets: readonly (Bytes32 | undefined)[];
-  /** Screened owners, empty off a policy. */
+  /** Screened owners and the voucher, empty off a policy. */
   readonly ownerMembers: readonly Bytes32[];
   readonly assetMembers: readonly Bytes32[];
   readonly publicAssets: readonly Bytes32[];
@@ -237,6 +247,8 @@ function policySubjects(
 ): PolicySubjects {
   const { config, rail, proofInputs } = input;
   const pinned = config.hasPolicy && !isDelegateRail(rail) ? pinnedPolicy(config) : undefined;
+  if (pinned === undefined && input.voucher !== undefined)
+    throw new RingError("RING_VOUCHER_UNSCREENED");
   const view = pinned === undefined ? undefined : policySourceView(pinned.sources);
   const liveRows = input.rows.filter((row) => !isZero(row));
   const { outputs } = proofInputs;
@@ -255,7 +267,7 @@ function policySubjects(
   const ownerMembers =
     pinned === undefined
       ? []
-      : firstSeen([...liveRows, ...owners, ...withdrawals.map((leg) => leg.owner)]);
+      : firstSeen([...liveRows, ...owners, ...withdrawals.map((leg) => leg.owner), input.voucher]);
   const ringOwners = outputs.map((output) =>
     output.ringProgramId === undefined
       ? undefined
@@ -313,8 +325,18 @@ export function relayListSalts(
   return policySourceView(pinnedPolicy(config).sources).salted === 0 ? [] : salts;
 }
 
-function saltsByOwner(salts: readonly RingListSalt[]): ReadonlyMap<string, Bytes32> {
-  return new Map(salts.map(({ owner, salt }) => [bytesKey(owner), salt]));
+/** An address and an explicit salt that differ for one owner are refused, neither wins. */
+export function saltsByOwner(salts: readonly RingListSalt[]): ReadonlyMap<string, Bytes32> {
+  const byOwner = new Map<string, Bytes32>();
+  for (const { owner, salt } of salts) {
+    const held = byOwner.get(bytesKey(owner));
+    if (held !== undefined && !equalBytes(held, salt))
+      throw new RingError("RING_ADDRESS_MISMATCH", {
+        details: { field: "listSalt", member: bytesKey(owner) },
+      });
+    byOwner.set(bytesKey(owner), salt);
+  }
+  return byOwner;
 }
 
 /** The withdrawals and the pools a key must hold, a salted read takes a row beside the public one. */
@@ -329,7 +351,6 @@ export async function policyDemand(
         proofInputs.externalData.interfaceTransfers,
         input.tokenOwnerHint,
         context,
-        input.plannedSplExit,
       )
     : { withdrawals: [], splWithdrawalOwners: [] };
   const subjects = policySubjects(input, read.withdrawals);
@@ -339,7 +360,10 @@ export async function policyDemand(
       ? []
       : subjects.ownerMembers.flatMap((member) => {
           const salt = salts.get(bytesKey(member));
-          return salt === undefined ? [] : [privateListKey(member, salt)];
+          return [
+            ...(salt === undefined ? [] : [privateListKey(member, salt)]),
+            ...(input.ringSalt === undefined ? [] : [ringListKey(member, input.ringSalt)]),
+          ];
         });
   const members = poolMembers(subjects, saltedKeys);
   return Object.freeze({
@@ -376,6 +400,7 @@ export async function readPolicy(
     policyHash: ZERO_32,
     rows: input.rows,
     senderEntries: Object.freeze(input.rows.map(() => ABSENT_OWNER)),
+    voucherEntry: ABSENT_OWNER,
     ownerEntries: Object.freeze([]) as readonly PolicyOwnerEntry[],
     assetEntries: Object.freeze([]) as readonly PolicySubjectEntry[],
     inputAssetEntries: Object.freeze([]) as readonly PolicySubjectEntry[],
@@ -400,7 +425,13 @@ export async function readPolicy(
       return [owner, privateListKey(member as Bytes32, salt)] as const;
     }),
   );
-  const members = poolMembers(subjects, [...keyOf.values()]);
+  const ringSalt = anySalted
+    ? committedRingSalt(pinned?.ringListTag ?? ZERO_32, input.ringSalt)
+    : undefined;
+  const ringKeyOf = (member: Bytes32): Bytes32 | undefined =>
+    ringSalt === undefined ? undefined : ringListKey(member, ringSalt);
+  const ringKeys = subjects.ownerMembers.flatMap((member) => ringKeyOf(member) ?? []);
+  const members = poolMembers(subjects, [...keyOf.values(), ...ringKeys]);
   const capacity = transferPoolCapacity(circuit);
   const ownMembers = members.own.length === 0 ? [PADDING_SUBJECT] : members.own;
   // A lagging pool answer holds only for its root, each attempt reads the roots again.
@@ -458,24 +489,30 @@ export async function readPolicy(
   const ownerEntry = (member: Bytes32 | undefined): PolicyOwnerEntry => {
     if (member === undefined || !screening) return ABSENT_OWNER;
     const key = keyOf.get(bytesKey(member));
+    const ringKey = ringKeyOf(member);
     return {
       ...entry(publicKey(member)),
       tracking: trackingEntry(member),
       listSalt: saltOf.get(bytesKey(member)) ?? ZERO_32,
       ownSalted: subject(ownReads, key),
       curatorSalted: curatorReads === undefined ? 0 : subject(curatorReads, key),
+      ownRing: subject(ownReads, ringKey),
+      curatorRing: curatorReads === undefined ? 0 : subject(curatorReads, ringKey),
     };
   };
   const on = (reads: SubjectReads | undefined, read: Bytes32 | undefined): bigint =>
     read === undefined ? 0n : (reads?.get(bytesKey(read))?.read.record()?.lists ?? 0n);
   const ownerLists = (member: Bytes32 | undefined): RecordLists => {
-    const key = member === undefined ? undefined : keyOf.get(bytesKey(member));
+    const keys = member === undefined ? [] : [keyOf.get(bytesKey(member)), ringKeyOf(member)];
     const foreign = BigInt(view?.foreign ?? 0);
     const shown = publicKey(member);
     return Object.freeze({
       own: on(ownReads, shown),
       curator: on(curatorReads, shown),
-      salted: (on(ownReads, key) & ~foreign) | (on(curatorReads, key) & foreign),
+      salted: keys.reduce(
+        (lists, key) => lists | (on(ownReads, key) & ~foreign) | (on(curatorReads, key) & foreign),
+        0n,
+      ),
     });
   };
   const assetLists = (asset: Bytes32 | undefined): RecordLists =>
@@ -491,20 +528,23 @@ export async function readPolicy(
       output.isDummy() ? [] : [{ output, slot }],
     );
     const ringInputs = spent.filter((note) => note.ring);
+    const voucherLists = input.voucher === undefined ? undefined : ownerLists(input.voucher);
+    const covered = (member: Bytes32 | undefined): RecordLists =>
+      voucherLists === undefined ? ownerLists(member) : vouchedBy(ownerLists(member), voucherLists);
     const payments = [
       ...live.map(({ output, slot }) => ({
         ring: output.ringProgramId !== undefined,
         owner: owners[slot] ?? ZERO_32,
         asset: memberOfAsset(output.asset),
         amount: output.amount,
-        ownerLists: ownerLists(owners[slot]),
+        ownerLists: covered(owners[slot]),
         assetLists: assetLists(assets[slot]),
         mintPolicy: policyOf(memberOfAsset(output.asset)),
       })),
       ...withdrawals.map((leg) => ({
         ...leg,
         ring: false,
-        ownerLists: ownerLists(leg.owner),
+        ownerLists: covered(leg.owner),
         assetLists: assetLists(leg.asset),
         mintPolicy: policyOf(leg.asset),
       })),
@@ -512,7 +552,10 @@ export async function readPolicy(
     // A co-owner who receives nothing is screened, every row passes the sender rules. Payments
     // read once with or without a row, a dummy sender would hold a deposit to sender rules.
     const refusal =
-      evaluateSenders(pinned.table, sources, liveRows.map(ownerLists)) ??
+      (voucherLists === undefined
+        ? undefined
+        : evaluateVoucher(pinned.table, sources, voucherLists)) ??
+      evaluateSenders(pinned.table, sources, liveRows.map(covered)) ??
       evaluatePayments(pinned.table, sources, { ringInputs, outputs: payments }) ??
       evaluateInputAssets(
         pinned.table,
@@ -534,9 +577,10 @@ export async function readPolicy(
     ...(pinned === undefined
       ? {}
       : {
-          table: policyTableProofInputs(pinned.table, pinned.sources),
+          table: policyTableProofInputs(pinned.table, pinned.sources, pinned.ringListTag),
           policyHash: pinned.policyHash,
         }),
+    ...(ringSalt === undefined ? {} : { ringSalt }),
     own,
     ...(curatorRoot === undefined ? {} : { curator: curatorRoot }),
     ownPool: ownPool.pool,
@@ -544,6 +588,7 @@ export async function readPolicy(
     senderEntries: Object.freeze(
       input.rows.map((row) => (isZero(row) ? ABSENT_OWNER : ownerEntry(row))),
     ),
+    voucherEntry: ownerEntry(input.voucher),
     ownerEntries: Object.freeze([
       ...owners.map(ownerEntry),
       ...padding(ABSENT_OWNER),
@@ -581,6 +626,14 @@ export function enrolledSalt(
     throw new RingError("RING_ADDRESS_MISMATCH", {
       details: { field: "listSalt", member: bytesKey(member) },
     });
+  return salt;
+}
+
+/** `undefined` under a zero tag, else the salt every owner reads under, Go `resolveOwner`. */
+export function committedRingSalt(tag: Bytes32, salt: Bytes32 | undefined): Bytes32 | undefined {
+  if (isZero(tag)) return undefined;
+  if (salt === undefined || !equalBytes(listTagOf(salt), tag))
+    throw new RingError("RING_LIST_SALT_MISSING", { details: { ringSalt: true } });
   return salt;
 }
 
@@ -787,6 +840,8 @@ export function policyParams(policy: PolicyInputs, proving: PolicyProving): Poli
     ownPool: policy.ownPool ?? unopenedRecordPool(capacity.own),
     curatorPool: policy.curatorPool ?? unopenedRecordPool(capacity.curator),
     senderEntries: policy.senderEntries,
+    voucherEntry: policy.voucherEntry,
+    ...(policy.ringSalt === undefined ? {} : { ringSalt: policy.ringSalt }),
     ownerEntries: pad(policy.ownerEntries, slots, ABSENT_OWNER),
     assetEntries: [
       ...pad(policy.assetEntries, slots, ABSENT_ENTRY),
@@ -919,16 +974,21 @@ function emptyTable(): PolicyTableProofInputs {
     salted: 0,
     policyLen: 0,
     rules: Object.freeze(Array.from({ length: RING_RULE_SLOTS }, () => ZERO_32)),
+    ringListTag: ZERO_32,
   });
 }
 
 /** The rule and the subject a refusal names, outputs by their SPP slot. */
-function ruleUnsatisfied(refusal: RuleRefusal, live: readonly number[]): RingError {
+function ruleUnsatisfied(refusal: VoucherRefusal, live: readonly number[]): RingError {
+  if (refusal.kind === "voucherUnlisted")
+    return new RingError("RING_POLICY_RULE_UNSATISFIED", {
+      details: { reason: refusal.kind, subject: "voucher" },
+    });
   const { subject } = refusal;
   const reason = { reason: refusal.kind, ruleIndex: refusal.rule, subject: subject.kind };
   return new RingError("RING_POLICY_RULE_UNSATISFIED", {
     details:
-      subject.kind === "sender"
+      subject.kind === "sender" || subject.kind === "voucher"
         ? reason
         : subject.kind === "inputAsset"
           ? { ...reason, inputIndex: subject.input }

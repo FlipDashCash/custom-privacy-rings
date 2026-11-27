@@ -131,18 +131,38 @@ func TestEntryRecordsServeMixedOwners(t *testing.T) {
 	}
 }
 
-// Data hashes stay private, bound by the commitment alone, and no layout bit opens them.
-func TestDataHashesNeedNoLayoutBit(t *testing.T) {
+// A clear layout bit holds that hash to zero on every slot, and the bits are the frame's.
+func TestDataHashesFollowTheLayoutBits(t *testing.T) {
 	c := compileSection(t, plainShape)
-	s := ringaudit.NewSection(t, plainShape)
-	s.Outputs[0].Utxo.DataHash = big.NewInt(0xda7a)
-	s.Outputs[0].Utxo.RingDataHash = big.NewInt(0x5ca1e)
-	c.RequireSolved(t, s.Circuit(t))
-	t.Run("bit 0", func(t *testing.T) {
-		circuit := s.Circuit(t)
-		circuit.Layout = 1
-		c.Refuse(t, circuit)
-	})
+	c.RequireSolved(t, dataSection(t).Circuit(t))
+	const ring, exit = 0, 2
+	for name, mutate := range map[string]func(*ringaudit.Audit){
+		"a data hash under a clear data bit":           func(s *ringaudit.Audit) { s.Outputs[exit].Utxo.DataHash, s.Data = big.NewInt(0), false },
+		"an exit's data hash under a clear data bit":   func(s *ringaudit.Audit) { s.Outputs[ring].Utxo.DataHash, s.Data = big.NewInt(0), false },
+		"a ring data hash under a clear ring data bit": func(s *ringaudit.Audit) { s.RingData = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := dataSection(t)
+			mutate(&s)
+			c.Refuse(t, s.Circuit(t))
+		})
+	}
+	for name, bit := range map[string]int64{"a data bit": audit.LayoutData, "a ring data bit": audit.LayoutRingData} {
+		t.Run(name+" the frame clears against the proof", func(t *testing.T) {
+			s := dataSection(t)
+			statement := s.Statement(t)
+			const layout = 9
+			statement[layout] = new(big.Int).Xor(statement[layout], big.NewInt(bit))
+			c.RefuseStatement(t, s.Circuit(t), statement)
+		})
+		t.Run(name+" the frame sets against the proof", func(t *testing.T) {
+			s := ringaudit.NewSection(t, plainShape)
+			statement := s.Statement(t)
+			const layout = 9
+			statement[layout] = new(big.Int).Xor(statement[layout], big.NewInt(bit))
+			c.RefuseStatement(t, s.Circuit(t), statement)
+		})
+	}
 }
 
 func TestLayoutIsTheKeys(t *testing.T) {
@@ -155,31 +175,69 @@ func TestLayoutIsTheKeys(t *testing.T) {
 	}
 	t.Run("entry on a key with no entry capacity", func(t *testing.T) { refuse(t, plainShape, audit.LayoutEntry) })
 	t.Run("no entry on an entry key", func(t *testing.T) { refuse(t, entryShape, 0) })
-	t.Run("a bit past the flags", func(t *testing.T) { refuse(t, plainShape, 1<<2) })
-	t.Run("bit 0 on an entry key", func(t *testing.T) { refuse(t, entryShape, audit.LayoutEntry|1) })
+	t.Run("a bit past the flags", func(t *testing.T) { refuse(t, plainShape, 1<<4) })
 }
 
-// The reader rebuilds every slot with no mint registry.
-func TestReaderRebuildsEverySlot(t *testing.T) {
+// The auditor opens the voucher's key from its own blocks, and a frame nobody vouches for seals zeros there.
+func TestStreamSealsTheVoucherKey(t *testing.T) {
 	for _, shape := range []audit.StreamShape{plainShape, entryShape} {
-		s := ringaudit.NewSection(t, shape)
+		c := compileSection(t, shape)
+		region := func(s ringaudit.Audit) []byte {
+			return s.Keys.Open(t, s.Stream(t))[shape.Ranges().VoucherOffset():][:audit.KeyLen]
+		}
+		vouched := ringaudit.NewSection(t, shape)
+		vouched.Voucher = ringaudit.VoucherKey
+		c.RequireSolved(t, vouched.Circuit(t))
+		if !bytes.Equal(region(vouched), vouched.SignerKey()) {
+			t.Fatal("the stream seals another key")
+		}
+		if !bytes.Equal(region(ringaudit.NewSection(t, shape)), make([]byte, audit.KeyLen)) {
+			t.Fatal("an unvouched stream seals a key")
+		}
+		t.Run("a voucher region the frame left out", func(t *testing.T) {
+			unvouched := vouched
+			unvouched.Voucher = nil
+			c.RefuseStatement(t, vouched.Circuit(t), unvouched.Statement(t))
+		})
+		t.Run("a flipped voucher ciphertext byte", func(t *testing.T) {
+			stream := vouched.Stream(t)
+			stream.Voucher()[0] ^= 1
+			c.RefuseStatement(t, vouched.Circuit(t), vouched.StatementOf(t, stream, vouched.Claim()))
+		})
+	}
+}
+
+// The reader rebuilds every slot from its record alone, with no mint registry and no payload.
+func TestReaderRebuildsEverySlot(t *testing.T) {
+	for name, s := range map[string]ringaudit.Audit{
+		"plain": ringaudit.NewSection(t, plainShape), "entry": ringaudit.NewSection(t, entryShape), "data": dataSection(t),
+	} {
 		stream, hashes, reader := s.Stream(t), s.PublishedHashes(t), s.Reader()
 		for i, hash := range hashes {
 			note, err := reader.Read(t, stream, i, hash)
 			if err != nil {
-				t.Fatalf("%+v slot %d: %v", shape, i, err)
+				t.Fatalf("%s slot %d: %v", name, i, err)
 			}
-			if !s.Outputs[i].Utxo.IsUtxo() {
+			utxo := s.Outputs[i].Utxo
+			if !utxo.IsUtxo() {
 				if note != nil {
-					t.Fatalf("%+v slot %d: a dummy read as a note", shape, i)
+					t.Fatalf("%s slot %d: a dummy read as a note", name, i)
 				}
 				continue
 			}
-			if note == nil || note.Hash.Cmp(hash) != 0 || note.Blinding.Cmp(s.Outputs[i].Utxo.Blinding) != 0 {
-				t.Fatalf("%+v slot %d: read %+v", shape, i, note)
+			if note == nil || note.Hash.Cmp(hash) != 0 || note.Blinding.Cmp(utxo.Blinding) != 0 || note.DataHash.Cmp(utxo.DataHash) != 0 || note.RingDataHash.Cmp(utxo.RingDataHash) != 0 {
+				t.Fatalf("%s slot %d: read %+v", name, i, note)
 			}
 		}
 	}
+	t.Run("a reader of another layout rebuilds no data note", func(t *testing.T) {
+		s := dataSection(t)
+		reader := s.Reader()
+		reader.Data = false
+		if note, err := reader.Read(t, s.Stream(t), 0, s.Outputs[0].Utxo.Hash(t)); err == nil {
+			t.Fatalf("read %+v", note)
+		}
+	})
 }
 
 // The auditor never saw a default-ring note, its record names the note and the commitment SPP spends.
@@ -246,6 +304,7 @@ func TestStreamVector(t *testing.T) {
 		EnvelopeCt    string   `json:"envelope_ciphertext"`
 		RecipientKeys []string `json:"recipient_keys"`
 		KeysCt        string   `json:"recipient_keys_ciphertext"`
+		Voucher       string   `json:"voucher"`
 		Records       []string `json:"records"`
 		RecordCts     []string `json:"record_ciphertexts"`
 		OutputHashes  []string `json:"output_hashes"`
@@ -253,11 +312,11 @@ func TestStreamVector(t *testing.T) {
 		EnvelopeHash  string   `json:"envelope_digest"`
 		RecordChain   string   `json:"record_chain"`
 	}
-	data := ringaudit.NewSection(t, plainShape)
-	data.Outputs[0].Utxo.DataHash = big.NewInt(0xda7a)
-	data.Outputs[0].Utxo.RingDataHash = big.NewInt(0x5ca1e)
+	data := dataSection(t)
 	defaultFirst := ringaudit.NewSection(t, audit.StreamShape{InputClass: 4, Outputs: 2, Entry: true})
 	defaultFirst.Inputs[0], defaultFirst.Inputs[1] = defaultFirst.Inputs[1], defaultFirst.Inputs[0]
+	vouched := ringaudit.NewSection(t, plainShape)
+	vouched.Voucher = ringaudit.VoucherKey
 	sections := []struct {
 		name    string
 		section ringaudit.Audit
@@ -268,6 +327,7 @@ func TestStreamVector(t *testing.T) {
 		{"entry", ringaudit.NewSection(t, entryShape)},
 		{"no_spend", ringaudit.NewSection(t, plainShape).Spending(t, 0)},
 		{"entry_default_first", defaultFirst},
+		{"vouched", vouched},
 	}
 	cases := make([]vectorCase, len(sections))
 	for k, tc := range sections {
@@ -277,22 +337,25 @@ func TestStreamVector(t *testing.T) {
 		v := vectorCase{
 			Name: tc.name, Layout: s.Layout(), InputClass: s.Shape.InputClass, Outputs: s.Shape.Outputs, OutputCount: s.OutputCount(), InputCount: s.InputCount,
 			Envelope: hex.EncodeToString(p.Envelope), EnvelopeCt: hex.EncodeToString(stream.Envelope(s.InputCount)),
-			KeysCt:       hex.EncodeToString(stream.Keys(s.OutputCount())),
+			KeysCt:       hex.EncodeToString(sealedKeys(s, stream)),
 			EnvelopeHash: ringtest.FieldHex(s.StatementOf(t, stream, s.Claim())[7]),
 			RecordChain:  ringtest.FieldHex(ringaudit.RecordChain(t, s.StatementOutputs(t, stream))),
 		}
 		for i := range s.OutputCount() {
 			v.RecipientKeys = append(v.RecipientKeys, hex.EncodeToString(p.RecipientKeys[i][:]))
-			v.Records = append(v.Records, hex.EncodeToString(p.Records[i][:s.Outputs[i].PublishedLen()]))
+			v.Records = append(v.Records, hex.EncodeToString(p.Records[i][:s.PublishedLen(i)]))
 			v.RecordCts = append(v.RecordCts, hex.EncodeToString(stream.Record(i)))
 			v.OutputHashes = append(v.OutputHashes, ringtest.FieldHex(s.Outputs[i].Utxo.Hash(t)))
 			v.Blindings = append(v.Blindings, ringtest.FieldHex(s.Blinding(t, i)))
+		}
+		if s.Vouched() {
+			v.Voucher = hex.EncodeToString(s.SignerKey())
 		}
 		cases[k] = v
 	}
 	txViewingSk, auditorSk := sections[0].section.Keys.TxViewingSk(), ringaudit.AuditorSk()
 	ringtest.PinVector(t, "audit/audit-stream.json", map[string]any{
-		"description":     "Auditor streams under CRING/adt and output records under CRING/rcp and each slot's delivered secret, from solved witnesses. Records and record_ciphertexts hold the published bytes, 137 on an exit and 105 otherwise.",
+		"description":     "Auditor streams under CRING/adt and output records under CRING/rcp and each slot's delivered secret, from solved witnesses. Records and record_ciphertexts hold the published prefix of the 169 byte record, 105 bytes and 32 per layout flag on a ring slot or a dummy, 137 bytes and 32 under the data flag on an exit. Each record_chain cell is Poseidon(exit, hash_bytes(record_ciphertext)). recipient_keys_ciphertext is the sealed key region a frame carries, the slot keys then the voucher key on a vouched frame, and voucher is that key's plaintext.",
 		"tx_viewing_sk":   hex.EncodeToString(txViewingSk[:]),
 		"auditor_sk":      hex.EncodeToString(auditorSk[:]),
 		"salt":            hex.EncodeToString(sections[0].section.Salt[:]),
@@ -301,4 +364,13 @@ func TestStreamVector(t *testing.T) {
 		"output_tree_id":  ringaudit.OutputTreeID,
 		"cases":           cases,
 	})
+}
+
+// sealedKeys is the key region a frame carries, the slot keys then the voucher's on a vouched frame.
+func sealedKeys(s ringaudit.Audit, stream ringaudit.Stream) []byte {
+	keys := stream.Keys(s.OutputCount())
+	if s.Vouched() {
+		return slices.Concat(keys, stream.Voucher())
+	}
+	return keys
 }

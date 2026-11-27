@@ -5,11 +5,13 @@ use std::{
 
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use sea_orm::{ConnectionTrait, Statement};
-use solana_message::Message;
+use solana_keypair::Keypair;
+use solana_message::{Message, VersionedMessage};
+use solana_signer::Signer;
 use zolana_ring_policy::AssetLimits;
 
 use super::*;
-use crate::cosign::{ApproveClass, CoSignPolicy, CoSignRequest};
+use crate::cosign::{ApproveClass, CoSignDecision, CoSignPolicy, CoSignRequest, Ticket};
 
 const RING: Address = Address::new_from_array([9; 32]);
 const SOL: Address = Address::new_from_array([3; 32]);
@@ -81,7 +83,7 @@ impl AssetLimitSource for Clocked {
     async fn transfer_flows(
         &self,
         _ring: Address,
-        _message: &VersionedMessage,
+        _frame: FrameSource<'_>,
     ) -> Result<FrameRead, RingRpcError> {
         self.frame_reads.fetch_add(1, Ordering::Relaxed);
         Ok(FrameRead::Transfer(TransferRead {
@@ -112,7 +114,7 @@ impl Window {
     fn over(store: Store, frame: Vec<OwnerFlow>) -> Self {
         let slot = Arc::new(AtomicU64::new(START_SLOT));
         let co_signer = LimitedCoSignerInit {
-            signer: Keypair::new_from_array([5; 32]),
+            signer: Arc::new(Keypair::new_from_array([5; 32])),
             limits: Clocked {
                 slot: slot.clone(),
                 limits: std::sync::Mutex::new(SENDER_LIMITS),
@@ -137,9 +139,9 @@ impl Window {
             .expect("decision")
     }
 
-    async fn signed(&self, nonce: u8, flows: Vec<OwnerFlow>) -> Signature {
+    async fn signed(&self, nonce: u8, flows: Vec<OwnerFlow>) -> Ticket {
         match self.decide(nonce, flows).await {
-            CoSignDecision::Signed(signature) => signature,
+            CoSignDecision::Signed(_) => ticket(nonce),
             refused => panic!("within the cap, got {refused:?}"),
         }
     }
@@ -204,11 +206,16 @@ fn message(nonce: u8) -> VersionedMessage {
     })
 }
 
+fn ticket(nonce: u8) -> Ticket {
+    Ticket::of(&Keypair::new_from_array([5; 32]).pubkey(), &message(nonce))
+}
+
 fn request(nonce: u8, flows: Vec<OwnerFlow>) -> CoSignRequest {
     CoSignRequest {
         ring: RING,
         message: message(nonce),
         flows: CoSignFlows::Published(flows),
+        approved_transfer: None,
     }
 }
 
@@ -365,6 +372,7 @@ async fn a_frame_read_past_a_repeated_message_never_moves_its_rows() {
         ring: RING,
         message: message(1),
         flows: CoSignFlows::Frame,
+        approved_transfer: None,
     };
     let first = window.co_signer.decide(&framed()).await.expect("first");
     assert!(matches!(first, CoSignDecision::Signed(_)));
@@ -440,9 +448,9 @@ async fn a_settlement_touches_only_its_own_message() {
     assert_eq!(window.rows().await, [(7, start_slot, 40)]);
     window
         .co_signer
-        .settle(CoSignSettlement::Failed(Signature::from([0x42; 64])))
+        .settle(CoSignSettlement::Failed(ticket(0x42)))
         .await
-        .expect("an unknown signature frees nothing");
+        .expect("an unknown ticket frees nothing");
     assert_eq!(window.rows().await.len(), 1);
 }
 
@@ -525,20 +533,20 @@ async fn window_enlargement_recovers_usage_across_an_epoch_boundary() {
 }
 
 #[tokio::test]
-async fn released_signatures_remain_tombstoned_after_restart() {
+async fn released_tickets_remain_tombstoned_after_restart() {
     let file = StoreFile::new("released");
     let window = Window::open(&file.url()).await;
-    let signature = window.signed(1, vec![flow(7, SOL, CAP)]).await;
+    let ticket = window.signed(1, vec![flow(7, SOL, CAP)]).await;
     for _ in 0..2 {
         window
             .co_signer
-            .settle(CoSignSettlement::Failed(signature))
+            .settle(CoSignSettlement::Failed(ticket))
             .await
             .expect("release");
     }
     assert!(window
         .co_signer
-        .settle(CoSignSettlement::Confirmed(signature))
+        .settle(CoSignSettlement::Confirmed(ticket))
         .await
         .is_err());
     drop(window);
@@ -738,7 +746,7 @@ async fn all_window_measures_match_an_immutable_ledger_after_out_of_order_refund
     window.limit(AssetLimits::EMPTY);
     let epoch = MAX_LIMIT_WINDOW_SLOTS.next_power_of_two();
     let mut entries = Vec::new();
-    let mut signatures = Vec::new();
+    let mut tickets = Vec::new();
     for (index, slot) in [
         0,
         0,
@@ -762,7 +770,7 @@ async fn all_window_measures_match_an_immutable_ledger_after_out_of_order_refund
         );
         moved.flow.deposited = u128::from(amount * 2);
         moved.flow.withdrawn = u128::from(amount * 3);
-        signatures.push(window.signed(amount as u8, vec![moved]).await);
+        tickets.push(window.signed(amount as u8, vec![moved]).await);
         entries.push((slot, moved));
         WindowOracle {
             entries: &entries,
@@ -774,7 +782,7 @@ async fn all_window_measures_match_an_immutable_ledger_after_out_of_order_refund
     for index in [7, 4, 0] {
         window
             .co_signer
-            .settle(CoSignSettlement::Failed(signatures[index]))
+            .settle(CoSignSettlement::Failed(tickets[index]))
             .await
             .expect("refund");
         entries[index].1.flow.charged_outflow = 0;
@@ -826,7 +834,7 @@ async fn seeded_window_histories_match_direct_sums_through_refunds() {
     slots.extend((0..11).map(|_| random.gen_range(0..=2 * epoch + WINDOW)));
     slots.sort_unstable();
     let mut entries = Vec::new();
-    let mut signatures = Vec::new();
+    let mut tickets = Vec::new();
     for (index, slot) in slots.into_iter().enumerate() {
         window.slot.store(slot, Ordering::Relaxed);
         let mut moved = flow(
@@ -847,7 +855,7 @@ async fn seeded_window_histories_match_direct_sums_through_refunds() {
                 _ => random.gen_range(1..=10_000),
             };
         }
-        signatures.push(window.signed(index as u8 + 1, vec![moved]).await);
+        tickets.push(window.signed(index as u8 + 1, vec![moved]).await);
         entries.push((slot, moved));
         let age = slot - entries[random.gen_range(0..entries.len())].0;
         let windows = [
@@ -865,11 +873,11 @@ async fn seeded_window_histories_match_direct_sums_through_refunds() {
         .assert_matches(&window)
         .await;
         if index % 3 == 2 {
-            let refunded = random.gen_range(0..signatures.len());
+            let refunded = random.gen_range(0..tickets.len());
             for _ in 0..2 {
                 window
                     .co_signer
-                    .settle(CoSignSettlement::Failed(signatures[refunded]))
+                    .settle(CoSignSettlement::Failed(tickets[refunded]))
                     .await
                     .expect("refund");
             }

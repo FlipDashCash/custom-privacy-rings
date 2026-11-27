@@ -4,7 +4,6 @@ use anyhow::Result;
 use custom_ring_interface::{RingPolicy, RingRoles};
 use custom_ring_sdk::{live_registry, RingError, RingMode};
 use solana_address::Address;
-use solana_signer::Signer;
 use spr_client::Rpc;
 
 use crate::{
@@ -25,11 +24,11 @@ pub fn run(ctx: &Context) -> Result<()> {
     line("target", config.target);
     line("program id", config.program_id);
     for (label, key) in [
-        ("policy key", config.policy_authority()),
-        ("upgrade key", config.upgrade_authority()),
+        ("policy key", ctx.policy_address()),
+        ("upgrade key", ctx.upgrade_authority_address()),
     ] {
         match key {
-            Ok(key) => line(label, key.pubkey()),
+            Ok(key) => line(label, key),
             Err(error) => line(label, format_args!("unavailable ({error})")),
         }
     }
@@ -95,8 +94,8 @@ fn percent_encode(text: &str) -> String {
 
 fn print_chain(ctx: &Context) -> Result<()> {
     let (ring, chain) = (ctx.ring, ctx.chain());
-    if let Ok(authority) = ctx.authority() {
-        let lamports = ctx.rpc().get_balance(authority.pubkey())?;
+    if let Ok(policy) = ctx.policy_address() {
+        let lamports = ctx.rpc().get_balance(policy)?;
         let sol = lamports as f64 / 1e9;
         line("balance", format_args!("{sol} SOL ({lamports} lamports)"));
     }
@@ -201,13 +200,13 @@ fn program_state(ctx: &Context) -> Result<String> {
     let Some(data) = deploy::program_data(ctx)? else {
         return Ok("deployed (not upgradeable)".to_owned());
     };
-    let configured = ctx.config.upgrade_authority().map(|key| key.pubkey());
+    let configured = ctx.upgrade_authority_address();
     let relation = match (data.upgrade_authority, &configured) {
         (Some(authority), Ok(configured)) if authority == *configured => "matches",
         _ => "differs from",
     };
     Ok(format!(
-        "deployed, upgrade authority {}, {relation} ring.toml {}, capacity {} bytes",
+        "deployed, upgrade authority {}, {relation} the operator manifest {}, capacity {} bytes",
         data.upgrade_authority
             .map_or_else(|| "none (immutable)".to_owned(), |key| key.to_string()),
         configured.map_or_else(
@@ -226,7 +225,7 @@ mod tests {
 name = "x"
 target = "devnet"
 program_id = "11111111111111111111111111111111"
-authority_keypair = "a.json"
+operator_manifest = "operator.json"
 
 [localnet]
 rpc = "http://127.0.0.1:8899"

@@ -5,7 +5,7 @@ import {
   getBase64Encoder,
   type Address,
 } from "@solana/kit";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
 import type { Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
@@ -89,8 +89,7 @@ function indexedFrame(fixture: Fixture): IndexedShieldedTransaction {
 }
 
 describe("ring deposit", () => {
-  // Zolana builds no transfer of only dummy inputs.
-  it.skip("proves a confidential deposit as a transfer that spends no note, the funder signing its leg", async () => {
+  it("proves a confidential deposit as a transfer that spends no note, the funder signing its leg", async () => {
     const fixture = await ringFixture();
     const recipient = ShieldedKeypair.generate();
     fixture.enroll(recipient.shieldedAddress());
@@ -123,6 +122,46 @@ describe("ring deposit", () => {
     });
   });
 
+  it.each([false, true])("reviews the proven deposit exactly once (reject=%s)", async (reject) => {
+    const fixture = await ringFixture();
+    const recipient = ShieldedKeypair.generate().shieldedAddress();
+    fixture.enroll(recipient);
+    const client = depositClient(fixture);
+    const prepared = await PreparedRingDeposit.prepare({
+      client,
+      ringProgramId: fixture.ringProgramId,
+      feePayer: fixture.authority,
+      recipient: { kind: "confidential", address: recipient },
+      amount: 25n,
+    });
+    const refusal = new Error("review refused");
+    const review = vi.fn(() => {
+      if (reject) throw refusal;
+    });
+
+    await expect(
+      prepared.proveForComposition(depositClient(fixture, "client"), review),
+    ).rejects.toMatchObject({ code: "RING_DEPOSIT_PROOF_DATA_SOURCE" });
+    expect(review).not.toHaveBeenCalled();
+    expect(fixture.sppCalls).toHaveLength(0);
+
+    const result = prepared.proveForComposition(client, review);
+    if (reject) {
+      await expect(result).rejects.toBe(refusal);
+    } else {
+      const original = await result;
+      expect(review).toHaveBeenCalledWith(original);
+      expect((await original.instruction()).data?.[0]).toBe(RingInstructionTag.transfer);
+    }
+    expect(review).toHaveBeenCalledTimes(1);
+    expect(review.mock.calls[0]).toHaveLength(1);
+    expect(fixture.sppCalls).toHaveLength(1);
+    await expect(prepared.proveForComposition(client, review)).rejects.toMatchObject({
+      code: "RING_DEPOSIT_FRAME_REUSED",
+    });
+    expect(review).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses a client that assembles proof data itself before any proof", async () => {
     const fixture = await ringFixture();
     const recipient = ShieldedKeypair.generate();
@@ -143,8 +182,7 @@ describe("ring deposit", () => {
     expect(fixture.ringRequests).toEqual([]);
   });
 
-  // Zolana builds no transfer of only dummy inputs.
-  it.skip("pays an anonymous recipient a plan slot it finds through its normal sync", async () => {
+  it("pays an anonymous recipient a plan slot it finds through its normal sync", async () => {
     const fixture = await ringFixture({ mode: "anonymous" });
     const recipient = ShieldedKeypair.generate();
     fixture.enroll(recipient.shieldedAddress());
@@ -177,8 +215,7 @@ describe("ring deposit", () => {
     ]);
   });
 
-  // Zolana builds no transfer of only dummy inputs.
-  it.skip("refuses a recipient of the other ring mode and a ring address of another ring before proving", async () => {
+  it("refuses a recipient of the other ring mode and a ring address of another ring before proving", async () => {
     const confidential = await ringFixture();
     const anonymous = await ringFixture({ mode: "anonymous" });
     const owner = ShieldedKeypair.generate();
@@ -211,8 +248,7 @@ describe("ring deposit", () => {
     expect([...confidential.sppCalls, ...anonymous.sppCalls]).toEqual([]);
   });
 
-  // Zolana builds no transfer of only dummy inputs.
-  it.skip("relays a deposit on the deposit rail under the funder's request text and refuses a funding fee payer", async () => {
+  it("relays a deposit on the deposit rail under the funder's request text and refuses a funding fee payer", async () => {
     const fixture = await ringFixture({ mode: "anonymous" });
     const owner = ShieldedKeypair.generate();
     fixture.enroll(owner.shieldedAddress());

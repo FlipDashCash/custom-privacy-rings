@@ -1,6 +1,6 @@
 use custom_ring_interface::{
     encode_confidential_output, encode_ring_body_output, AuditKey, AuditStreamLayout,
-    AuditorMessage, CONFIDENTIAL_DATA_FREE_BODY_LEN, RECORD_ZERO_KEY_BIT,
+    AuditorMessage, RecordForm, CONFIDENTIAL_DATA_FREE_BODY_LEN, RECORD_ZERO_KEY_BIT,
 };
 use serde_json::Value;
 use solana_address::Address;
@@ -56,6 +56,11 @@ fn every_stream_rebuilds_its_published_hashes_with_no_mint_registry() {
             inputs: case["input_count"].as_u64().unwrap() as usize,
             outputs: case["output_count"].as_u64().unwrap() as usize,
             capacity: case["outputs"].as_u64().unwrap() as usize,
+            vouched: bits & 1 != 0,
+            records: RecordForm {
+                data: bits & 4 != 0,
+                ring_data: bits & 8 != 0,
+            },
         };
         let hashes = list(&case["output_hashes"]);
         let plain_records = list(&case["records"]);

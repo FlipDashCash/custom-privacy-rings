@@ -5,7 +5,7 @@ use std::sync::Mutex;
 use crate::ZolanaServices;
 use custom_ring_interface::{
     blinding::ring_blinding_seed, encode_ring_body_output, encode_ring_sender_bundle_output,
-    stream::DeliveredSlot, OutputRecord, RecordKind, SenderBundle,
+    stream::DeliveredSlot, OutputRecord, RecordForm, RecordKind, SenderBundle,
 };
 use solana_address::Address;
 use solana_signature::Signature;
@@ -20,11 +20,9 @@ use spr_keypair::{viewing_key::ViewTag, ShieldedAddress, ShieldedKeypair};
 use spr_transaction::{
     serialization::proofless::{Proofless, ProoflessEncode},
     utxo::blinding::derive_transact_output_blinding,
-    AssetRegistry, Data, Mint, OwnerCx, Utxo, UtxoSerialization,
+    AssetRegistry, Data, Mint, OwnerCx, Utxo, UtxoSerialization, WalletUtxo,
 };
-use zolana_ring_transaction::{
-    record_key, seal_recipient_body, seal_sender_bundle, OutputBlindings,
-};
+use zolana_ring_transaction::{record_key, seal_sender_bundle, OutputBlindings, RecipientBody};
 
 use super::{
     fixtures::{keypair, Member, RING},
@@ -90,8 +88,15 @@ fn ring_body(
         mint: sealed.asset.asset.to_bytes(),
         blinding,
         key: record_key(RecordKind::Ring, owner.nullifier_pubkey),
+        ..OutputRecord::default()
     };
-    let ciphertext = seal_recipient_body(&record, None, secret).unwrap();
+    let ciphertext = RecipientBody {
+        record: &record,
+        form: RecordForm::default(),
+        payload: None,
+    }
+    .seal(secret)
+    .unwrap();
     encode_ring_body_output(&ciphertext, &[]).unwrap()
 }
 
@@ -256,6 +261,23 @@ impl Ledger {
         hash
     }
 
+    /// A ring spend of `nullifier` with no output of the wallet.
+    fn spend(&mut self, nullifier: [u8; 32]) {
+        self.transactions.push(ShieldedTransaction {
+            slot: 6,
+            tx_signature: Signature::from([0xee; 64]),
+            event_index: Some(0),
+            tx_viewing_pk: None,
+            salt: None,
+            output_slots: Vec::new(),
+            messages: Vec::new(),
+            nullifiers: vec![nullifier],
+            proofless: false,
+            ring_config: None,
+            ring_program_id: Some(RING),
+        });
+    }
+
     fn client(self) -> Zolana<NoRpc, Self> {
         ZolanaServices {
             rpc: NoRpc,
@@ -378,17 +400,15 @@ impl Member {
     }
 
     /// Registers nothing up front, the chain's assets name the ledger's mints.
-    fn scan_in(&self, zolana: &Zolana<NoRpc, Ledger>, mode: RingMode) -> WalletNotes {
+    fn scan_in(&self, zolana: &Zolana<NoRpc, Ledger>, mode: RingMode) -> RingWalletNotes {
         let assets = RingAssets::new([]).unwrap();
+        let keys = zolana_ring_keys::RotatingRingKeys::new(&self.keys).unwrap();
         ScanAt {
-            keys: &zolana_ring_keys::RotatingRingKeys::new(&self.keys).unwrap(),
-            assets: &assets,
-            chain_assets: &|| Ok(RingAssets::new(zolana.indexer().mints.clone())?),
-            slot: 9,
+            sync: RingWalletSync::new(&keys, &assets)
+                .with_indexer_config(IndexerRpcConfig::at_slot(9))
+                .with_chain_assets(&|| Ok(RingAssets::new(zolana.indexer().mints.clone())?)),
             store: &self.store,
-            mode,
-            ring: RING,
-            sender_audit: None,
+            watch: (mode == RingMode::Anonymous).then_some(RING),
         }
         .fetch(zolana)
         .unwrap()
@@ -455,6 +475,28 @@ fn an_anonymous_scan_adds_payments_and_the_change_of_a_default_ring_spend() {
     assert!(current.known_senders().is_empty());
 }
 
+#[test]
+fn one_sync_finds_a_ring_payment_and_the_next_drops_it_once_spent() {
+    let wallet = Member::new(1, "spent-payment");
+    let ring_notes = |ledger: Ledger| -> Vec<WalletUtxo> {
+        let notes = wallet.scan_in(&ledger.client(), RingMode::Anonymous);
+        let ring = notes.spendable.ring_balances().remove(&RING);
+        ring.into_iter()
+            .flat_map(|balances| balances.assets)
+            .flat_map(|balance| balance.utxos)
+            .collect()
+    };
+    let mut ledger = Ledger::default();
+    let paid = wallet.payment_from_2(&mut ledger, Mint::SOL);
+    let found = ring_notes(ledger);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].utxo_hash, paid);
+    let mut ledger = Ledger::default();
+    wallet.payment_from_2(&mut ledger, Mint::SOL);
+    ledger.spend(found[0].nullifier);
+    assert!(ring_notes(ledger).is_empty());
+}
+
 /// A confidential ring keeps a ledger, each slot publishes the 8 B tag alone.
 #[test]
 fn a_confidential_ring_wallet_finds_a_payment_under_its_slot_tag_and_resumes_past_it() {
@@ -508,6 +550,35 @@ fn a_confidential_note_in_a_mint_registered_after_the_registry_read_is_kept() {
     assert_eq!(wallet.confidential_scan(&zolana), [paid]);
     assert!(wallet.store.load().unwrap().pending_notes().is_empty());
     assert_eq!(wallet.confidential_scan(&zolana), [paid], "a second scan");
+}
+
+#[test]
+fn a_confidential_note_waits_pending_until_its_mint_registers() {
+    let wallet = Member::new(1, "pending-mint-confidential");
+    let mint = Mint {
+        asset: Address::new_from_array([0x6d; 32]),
+        asset_id: 9,
+    };
+    let chain = |mints| {
+        let mut ledger = Ledger {
+            mints,
+            ..Ledger::default()
+        };
+        let paid = wallet.payment_from_2(&mut ledger, mint);
+        wallet.confidential_tags(&mut ledger);
+        (paid, ledger.client())
+    };
+    let (paid, unregistered) = chain(Vec::new());
+    let synced = wallet.scan_in(&unregistered, RingMode::Confidential);
+    assert_eq!(synced.spendable.utxos().count(), 0);
+    assert!(synced.spendable.unknown_mints.contains(&mint.asset));
+    let pending = wallet.store.load().unwrap().pending_notes().to_vec();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].utxo_hash(), paid);
+
+    let (_, registered) = chain(vec![mint]);
+    assert_eq!(wallet.confidential_scan(&registered), [paid]);
+    assert!(wallet.store.load().unwrap().pending_notes().is_empty());
 }
 
 #[test]

@@ -526,7 +526,7 @@ pub(crate) mod tests {
     pub(crate) fn urls(port: u16) -> Urls {
         Urls {
             rpc: format!("http://127.0.0.1:{port}"),
-            indexer: "http://127.0.0.1:8784".to_owned(),
+            indexer: "http://127.0.0.1:8786".to_owned(),
             prover: "http://127.0.0.1:3001".to_owned(),
             ring_rpc: "http://127.0.0.1:8785".to_owned(),
             ring_rpc_pubkey: None,

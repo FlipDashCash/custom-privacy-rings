@@ -52,7 +52,7 @@ use crate::{
         PrivateOwnerRequest, RecordWriteProofInputRequest,
     },
     submission::BoundRoot,
-    CustomRing, RingError,
+    CustomRing, OwnerEnrollment, RingError,
 };
 
 #[cfg(test)]
@@ -269,7 +269,8 @@ impl PrivateStorageWrite<'_> {
         }
         // 2. One tracking root answers every owner. Storage raises the floor to its revision, so a
         //    frame never proves absence under a root older than the rows the write relies on.
-        let tracking = BoundRoot::tracking(&*self.ring.require_policy(rpc).await?, rpc).await?;
+        let policy = self.ring.require_policy(rpc).await?;
+        let tracking = BoundRoot::tracking(&policy, rpc).await?;
         let mut requests = vec![None; width];
         for owner in &owners {
             let opening = TrackingMemberRead {
@@ -278,28 +279,8 @@ impl PrivateStorageWrite<'_> {
             }
             .read(rpc)
             .await?;
-            // 3. Only an enrolled row under a nonzero key carries a list tag the salt can match.
-            let TrackingOpening::Present { record, path } = opening else {
-                return Err(RingError::WriteOwnerNotEnrolled {
-                    write_index: owner.write.write_index,
-                });
-            };
-            if record.nullifier_pk == ZERO_NULLIFIER_PUBKEY {
-                return Err(RingError::WriteOwnerNotEnrolled {
-                    write_index: owner.write.write_index,
-                });
-            }
-            if domain::list_tag(&owner.write.list_salt)? != record.list_tag {
-                return Err(RingError::ListSaltMismatch {
-                    member: owner.member,
-                });
-            }
-            requests[usize::from(owner.write.write_index)] = Some(PrivateOwnerRequest {
-                list_salt: owner.write.list_salt,
-                record: (&record).into(),
-                index: path.index,
-                path: path.siblings.as_flattened().to_vec(),
-            });
+            requests[usize::from(owner.write.write_index)] =
+                Some(owner.request(opening, &policy.ring_list_tag)?);
         }
         let statement = self.inputs.statement(RecordStatementContext {
             registry: self.registry,
@@ -323,6 +304,8 @@ impl PrivateStorageWrite<'_> {
 struct BoundOwner {
     write: SaltedOwnerWrite,
     member: [u8; 32],
+    /// The written key sits under the ring salt.
+    ring: bool,
 }
 
 impl BoundOwner {
@@ -330,18 +313,66 @@ impl BoundOwner {
         inputs: &ApplyProofInputs,
     ) -> impl Fn(&SaltedOwnerWrite) -> Result<Self, RingError> + '_ {
         move |write| {
-            let member = solana_owner_identity(write.owner.as_array())?;
-            let key = Member::salted(&Member::from_bytes(member)?, &write.list_salt)?;
-            match inputs.writes.get(usize::from(write.write_index)) {
-                Some(written) if written.entry.member == *key.as_bytes() => Ok(Self {
-                    write: *write,
-                    member,
-                }),
-                _ => Err(RingError::ListKeyMismatch {
-                    write_index: write.write_index,
-                }),
-            }
+            let written = inputs.writes.get(usize::from(write.write_index));
+            Self::keyed(write, written.map(|written| written.entry.member))
         }
+    }
+
+    /// The written key names its family, the owner's salt or the ring's.
+    fn keyed(write: &SaltedOwnerWrite, written: Option<[u8; 32]>) -> Result<Self, RingError> {
+        let member = solana_owner_identity(write.owner.as_array())?;
+        let owner = Member::from_bytes(member)?;
+        let keyed = |key: Member| written == Some(*key.as_bytes());
+        let ring = match Member::salted(&owner, &write.list_salt).is_ok_and(keyed) {
+            true => false,
+            false if keyed(Member::ring_salted(&owner, &write.list_salt)?) => true,
+            false => {
+                return Err(RingError::ListKeyMismatch {
+                    write_index: write.write_index,
+                })
+            }
+        };
+        Ok(Self {
+            write: *write,
+            member,
+            ring,
+        })
+    }
+
+    /// The circuit checks no ring tag, a salt off the committed one writes a record no proof reads.
+    fn request(
+        &self,
+        opening: TrackingOpening,
+        ring_list_tag: &[u8; 32],
+    ) -> Result<PrivateOwnerRequest, RingError> {
+        let write_index = self.write.write_index;
+        let tag = domain::list_tag(&self.write.list_salt)?;
+        let (record, path, absent) = match (self.ring, opening) {
+            (true, _) if tag != *ring_list_tag => {
+                return Err(RingError::RingSaltUncommitted { write_index })
+            }
+            (true, TrackingOpening::Absent { low, path }) => (low, path, Some(self.member)),
+            (true, TrackingOpening::Present { record, path }) => (record, path, None),
+            (false, TrackingOpening::Present { record, path })
+                if record.nullifier_pk != ZERO_NULLIFIER_PUBKEY =>
+            {
+                if tag != record.list_tag {
+                    return Err(RingError::ListSaltMismatch {
+                        member: self.member,
+                    });
+                }
+                (record, path, None)
+            }
+            (false, _) => return Err(RingError::WriteOwnerNotEnrolled { write_index }),
+        };
+        Ok(PrivateOwnerRequest {
+            list_salt: self.write.list_salt,
+            ring: self.ring,
+            absent,
+            record: (&record).into(),
+            index: path.index,
+            path: path.siblings.as_flattened().to_vec(),
+        })
     }
 }
 
@@ -442,6 +473,106 @@ impl EnrollBatch<'_> {
         client: &RingClient<R, I>,
     ) -> Result<ProvenEnrollBatch, RingError> {
         let writes = self.verified()?;
+        let ix = self.accounts().prove(&writes, client).await?;
+        Ok(ProvenEnrollBatch {
+            instructions: self.instructions(&ix, writes)?,
+            revision: ix.revision,
+        })
+    }
+
+    fn accounts(&self) -> EnrollmentAccounts {
+        EnrollmentAccounts {
+            ring: self.ring,
+            writer: self.writer,
+            tracking_registry: self.tracking_registry,
+            authorization: AccountMeta::new_readonly(sysvar::instructions::ID, false),
+        }
+    }
+
+    /// Each write verifies again, a write whose signature fails would refuse the whole batch.
+    pub(crate) fn verified(&self) -> Result<Vec<EnrollmentWrite<'_>>, RingError> {
+        Ok(self
+            .writes
+            .iter()
+            .map(|request| request.verify(&self.tracking_registry))
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The ed25519 precompile instruction, then the ring `EnrollBatch` it must directly precede.
+    pub(crate) fn instructions(
+        &self,
+        ix: &ApplyEnrollmentsIxData,
+        writes: Vec<EnrollmentWrite<'_>>,
+    ) -> Result<[Instruction; 2], RingError> {
+        let writes_len = writes.len() as u64;
+        let signed = writes
+            .iter()
+            .map(|write| write.signed(&self.tracking_registry))
+            .collect::<Result<Vec<_>, _>>()?;
+        let raw: Vec<[u8; 64]> = self
+            .writes
+            .iter()
+            .map(|request| request.signature.0.into())
+            .collect();
+        let signatures: Vec<_> = writes
+            .iter()
+            .zip(&raw)
+            .zip(&signed)
+            .map(|((write, signature), signed)| OwnerSignature {
+                owner: write.owner,
+                signature,
+                message: &signed.message,
+            })
+            .collect();
+        // Storage reads the signatures from the instruction just before the top level one.
+        let precompile = Instruction {
+            program_id: ed25519_program::ID,
+            accounts: Vec::new(),
+            data: Ed25519Signatures::encode(&signatures)
+                .ok_or(RingError::EnrollmentBatchSize { writes: writes_len })?,
+        };
+        Ok([
+            precompile,
+            self.accounts()
+                .instruction(ApplyEnrollmentsRequest { ix, writes }),
+        ])
+    }
+}
+
+impl OwnerEnrollment {
+    /// The writer and the owner PDA must sign the ring invocation.
+    pub async fn prove_cpi<R: AsyncRpc, I: RingIndexerBackend>(
+        &self,
+        writer: Address,
+        client: &RingClient<R, I>,
+    ) -> Result<Instruction, RingError> {
+        let write = self.write();
+        write.check_pda_owner(&self.ring.ring_auth_pda())?;
+        let accounts = EnrollmentAccounts {
+            ring: self.ring,
+            writer,
+            tracking_registry: self.tracking_registry,
+            authorization: AccountMeta::new_readonly(self.owner, true),
+        };
+        let writes = vec![write];
+        let ix = accounts.prove(&writes, client).await?;
+        Ok(accounts.instruction(ApplyEnrollmentsRequest { ix: &ix, writes }))
+    }
+}
+
+pub(super) struct EnrollmentAccounts {
+    pub(super) ring: CustomRing,
+    pub(super) writer: Address,
+    pub(super) tracking_registry: Address,
+    pub(super) authorization: AccountMeta,
+}
+
+impl EnrollmentAccounts {
+    async fn prove<R: AsyncRpc, I: RingIndexerBackend>(
+        &self,
+        writes: &[EnrollmentWrite<'_>],
+        client: &RingClient<R, I>,
+    ) -> Result<ApplyEnrollmentsIxData, RingError> {
         // The apply proof covers the entries in write order from the current root.
         let entries = writes
             .iter()
@@ -487,73 +618,32 @@ impl EnrollBatch<'_> {
         let proof = RingRequest::new(circuit, &body)?
             .prove(client, public_input_hash)
             .await?;
-        let ix = ApplyEnrollmentsIxData {
+        Ok(ApplyEnrollmentsIxData {
             revision,
             proof: to_instruction_proof(proof)?,
             new_root: statement.new_root,
             new_next_index: statement.new_next_index.to_le_bytes(),
             count: body.count,
-        };
-        Ok(ProvenEnrollBatch {
-            instructions: self.instructions(&ix, writes)?,
-            revision,
         })
     }
 
-    /// Each write verifies again, a write whose signature fails would refuse the whole batch.
-    pub(crate) fn verified(&self) -> Result<Vec<EnrollmentWrite<'_>>, RingError> {
-        Ok(self
-            .writes
-            .iter()
-            .map(|request| request.verify(&self.tracking_registry))
-            .collect::<Result<Vec<_>, _>>()?)
+    fn instruction(self, request: ApplyEnrollmentsRequest<'_>) -> Instruction {
+        self.ring.ix(
+            self.metas(),
+            [&[ring_tag::ENROLL_BATCH][..], &request.encode()].concat(),
+        )
     }
 
-    /// The ed25519 precompile instruction, then the ring `EnrollBatch` it must directly precede.
-    pub(crate) fn instructions(
-        &self,
-        ix: &ApplyEnrollmentsIxData,
-        writes: Vec<EnrollmentWrite<'_>>,
-    ) -> Result<[Instruction; 2], RingError> {
-        let writes_len = writes.len() as u64;
-        let signed = writes
-            .iter()
-            .map(|write| write.signed(&self.tracking_registry))
-            .collect::<Result<Vec<_>, _>>()?;
-        let raw: Vec<[u8; 64]> = self
-            .writes
-            .iter()
-            .map(|request| request.signature.0.into())
-            .collect();
-        let signatures: Vec<_> = writes
-            .iter()
-            .zip(&raw)
-            .zip(&signed)
-            .map(|((write, signature), signed)| OwnerSignature {
-                owner: write.owner,
-                signature,
-                message: &signed.message,
-            })
-            .collect();
-        let data = ApplyEnrollmentsRequest { ix, writes }.encode();
-        // Storage reads the signatures from the instruction just before the top level one.
-        let precompile = Instruction {
-            program_id: ed25519_program::ID,
-            accounts: Vec::new(),
-            data: Ed25519Signatures::encode(&signatures)
-                .ok_or(RingError::EnrollmentBatchSize { writes: writes_len })?,
-        };
+    pub(super) fn metas(self) -> Vec<AccountMeta> {
         let ring = self.ring;
-        let accounts = vec![
+        vec![
             AccountMeta::new_readonly(self.writer, true),
             AccountMeta::new_readonly(ring.policy_pda(), false),
             AccountMeta::new(ring.ring_auth_pda(), false),
             AccountMeta::new(self.tracking_registry, false),
-            AccountMeta::new_readonly(sysvar::instructions::ID, false),
+            self.authorization,
             AccountMeta::new_readonly(STORAGE_PROGRAM_ID, false),
-        ];
-        let batch = ring.ix(accounts, [&[ring_tag::ENROLL_BATCH][..], &data].concat());
-        Ok([precompile, batch])
+        ]
     }
 }
 

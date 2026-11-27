@@ -35,13 +35,15 @@ The policy defines which checks a transfer must prove. `Initialize` pins the fir
 
 An allowlist is a list of approved identities. A rule can require the sender, every recipient, or both, to be on it. A recipient rule screens every output, the sender's change and each exit included, and the owner of each withdrawal. A guard can exempt payments at or below a threshold, so only recipients above it must be listed. The threshold is one value for the rule, compared with each owner's total of each asset, or one value per asset in the asset's record. Change that the sender's own ring notes fund adds no receipt.
 
+A listed identity can vouch for one transfer. It signs the transfer, the proof verifies the signature without revealing the key, and its entry on `Allow` or `PrivateAllow` then admits every sender and recipient of that transfer. The ring must have a rule table, and the voucher must hold an entry on one of those two lists and pass every sender rule itself. A vouch covers no other list, so a blocked or frozen identity stays refused. The auditor reads the voucher's key from the transfer. A wallet or a program address its user never listed transacts this way under the user's one listed key. See [proof composition](design/proof-composition.md#a-vouchers-allow-entry-admits-the-transfer-it-signs).
+
 ### 1.2. Blocklist
 
 A blocklist is a list of identities or assets the ring refuses. A sender rule over it stops every transfer of a blocked identity. Its notes stay in the ring, it can still merge them, and the delegate can still move them. A blocklist refuses known members only. A fresh key passes it.
 
 ### 1.3. Frozen list
 
-The frozen list is a second authority list, kept apart from the blocklist. A sender rule over it stops every transfer of a frozen identity. A merge and a delegate move read no rule. The private frozen list is its salted counterpart. It holds enrolled owners under salted keys, and a rule reads it as its own deny list.
+The frozen list is a second authority list, kept apart from the blocklist. A sender rule over it stops every transfer of a frozen identity. A merge and a delegate move read no rule. The private frozen list is its salted counterpart. It holds an owner under the key of its own salt or of the ring salt, and a rule reads it as its own deny list.
 
 ### 1.4. Asset allowlist
 
@@ -97,6 +99,8 @@ The permanent delegate of a Token-2022 mint signs the same move for a transfer w
 
 A co-signer is a key that the co-signer admin designates to approve selected operations. Each co-signer has its own account and scope. A transaction carries a co-signer for each demanded class, and one co-signer may cover several classes. The program refuses a co-signer that covers no class still uncovered, and a hidden sender cannot approve itself. The co-signer on its own cannot move funds. Differs from the PR 15 draft: co-signer approval is enforced by the ring program, and only its limits live in Ring RPC.
 
+A program that owns ring notes makes its transfer by CPI, see [program owners](design/owner-rails.md#program-owners). Its co-signer approves the call with a top-level `ApproveTransfer` instruction that names a position and a digest, and the transfer reads the approval from the instructions sysvar in place of the signature. The program counts no calls, and Ring RPC signs only when its simulation makes the call exactly once.
+
 #### Operations that can require approval
 
 - **`TRANSFERS`**: a transfer that spends a note. A frame with `no_spend` set, a merge and a delegate move never demand it.
@@ -128,7 +132,7 @@ These limits bind only the operations the ring requires co-signing for. Ring RPC
 1. **Ring program:** one deployment per ring. Verifies the ring proofs and controls, then calls SPP signed by its ring PDA.
 2. **Storage program:** one shared deployment. Keeps the root history of policy record trees, each under one authority, and of each ring's tracking tree. It verifies the proof of each tree update and of each first enrollment. It checks no policy.
 3. **Ring RPC:** our hosted service. Holds the auditor key, writes policy records, applies enrollments, relays and pays for wallet operations, co-signs under limits, merges enrolled owners' notes and serves readers. It opens every enrolled owner's sealed secret from the ring's tracking rows.
-4. **Ring indexer:** projects every policy and tracking tree from confirmed blocks and lists pending enrollments. It serves record and tracking openings, and forwards every other call to Photon.
+4. **Ring indexer:** projects every policy and tracking tree from confirmed blocks and lists pending enrollments. It serves record and tracking openings, and forwards every other call to Photon. Ring RPC and the ring indexer can each announce their methods to Photon. Photon forwards them after its operator approves the service key, so either Photon or the ring indexer can be the one client endpoint.
 5. **Ring prover:** the zolana prover with the ring circuits added.
 6. **SDKs and CLI:** the Rust and TypeScript SDKs build ring operations. A wallet sends them through Ring RPC by default, or reads the records and Merkle paths from the ring indexer, proves and sends them itself. The operator CLI creates, deploys and governs rings.
 
@@ -158,17 +162,18 @@ A transfer or deposit passes the ring account and the tracking registry. It adds
 
 ## Authorities
 
-Five on-chain roles govern a ring. Every role key is nonzero once set, and no key holds two roles.
+Five role keys and one delegate govern a ring. Every role key is nonzero, and one key may hold several roles. The delegate holds none.
 
-1. **Admin:** hands the admin, policy, pauser or co-signer admin role to a new key, which also signs. It appoints the delegate once.
+1. **Admin:** hands any of the five roles to a new key, which also signs. It appoints the delegate once.
 2. **Policy authority:** sets the policy and signs the authority record updates: authority lists, mint settings and limits, ring-wide reader grants and list approvals.
 3. **Pauser:** pauses and resumes the ring.
 4. **Co-signer admin:** creates, rescopes and closes co-signer accounts.
-5. **Delegate:** moves any note of the ring outside the rules. Set once, never rotated.
+5. **Enrollment writer:** sends `EnrollBatch`, the one path into the ring's tracking tree.
+6. **Delegate:** moves any note of the ring outside the rules. Set once, never rotated.
 
-The upgrade authority deploys the program. Among ring instructions it signs only `Initialize`, which names the four role keys. Before that it can request the auditor key and the records tree from Ring RPC. Differs from the PR 15 draft: its single Config Authority splits into these roles.
+The upgrade authority deploys the program. Among ring instructions it signs only `Initialize`, which names the five role keys. Before that it can request the auditor key and the records tree from Ring RPC. Differs from the PR 15 draft: its single Config Authority splits into these roles.
 
-Ring RPC keeps one key file per role. The auditor key opens ring activity. The service key signs auditor key releases, and every signed read and grant binds it. The storage authority signs record tree updates. The co-signer signs co-signatures. The fee payer pays for relayed transactions. The grant rows key seals database reader grants. Each key does one job. Ring RPC refuses to start when two role files hold the same secret, and its root secret yields auditor keys only.
+Ring RPC signs through separate AWS KMS Ed25519 keys for service attestations, storage updates, co-signatures, relay fees and enrollment batches. It unwraps the auditor secret and the database grant key in memory. One auditor root can derive auditors for many rings on one cluster. Each wrapped secret binds the deployment, cluster and purpose. A single-ring auditor also binds the ring program ID. Ring RPC refuses to start when two signing roles pin the same address or the grant key matches the auditor secret, and its root secret yields auditor keys only.
 
 ## Trust Assumptions
 
@@ -216,15 +221,15 @@ Ring RPC keeps one key file per role. The auditor key opens ring activity. The s
 | 25 | **Storage authority** | Authority | Signs the updates of one record tree. Ring RPC holds it for the ring's records. |
 | 26 | **Upgrade authority** | Authority | Deploys and upgrades the ring program and signs `Initialize`. |
 | 27 | **Auditor stream** | Ciphertext | One AES-256-CTR stream per transfer, sealed to the auditor key and proven. It carries the transaction viewing secret, the note count, the entry records on an entry key and each published slot's recipient key. |
-| 28 | **Output record** | Ciphertext | One per published slot, the slot's kind, amount, owner key, mint, nullifier key and blinding, sealed to the recipient key the sender supplies. The proof holds it to the slot's commitment. A non-exit slot's body carries it, and an exit's travels in the auditor message. |
-| 29 | **Change** | Output | An anonymous output to the sender. It leads the slots under a zero tag, and its record is sealed to the sender's own viewing key. |
-| 30 | **Sender bundle** | Ciphertext | One per anonymous transfer, encrypted to the sender's viewing key. It holds the output seed and each slot's recipient key. No proof constrains it. |
+| 28 | **Output record** | Ciphertext | One per published slot, the slot's kind, amount, owner key, mint and blinding, sealed to the recipient key the sender supplies. A ring output's record names the zero key by a bit and publishes no other key, and an exit's record carries its key. The proof holds it to the slot's commitment. A non-exit slot's body carries it, and an exit's travels in the auditor message. |
+| 29 | **Change** | Output | The output the SDK adds for the sender's remainder. It leads every frame, an SPL change ahead of the SOL change, then each dataless ring output declared to the sender, then every other output in declared order. An anonymous frame publishes it under a zero tag and carries a zero one in a spare slot when nothing returns. Its record is sealed to the sender's own viewing key. |
+| 30 | **Sender bundle** | Ciphertext | One per anonymous transfer, encrypted to the sender's viewing key. It holds the output seed. No proof constrains it. |
 | 31 | **Reply metadata** | Ciphertext | An optional unauthenticated claim about the sender, one fixed length per frame. |
 | 32 | **Published slot** | Output position | An output position below the frame's count `m`. A compact frame omits every later position. |
 | 33 | **Tracking registry** | Storage tree | One ring's tree of enrollments. Any applier moves pending enrollments into it, and no authority writes it. |
-| 34 | **Tracking floor** | Registry field | The highest tracking revision a private write proved a row under. A frame that reads a salted list through the registry names no lower tracking revision. |
+| 34 | **Tracking floor** | Registry field | The highest tracking revision a private write proved a row or an absence under. A frame that reads a salted list through the registry names no lower tracking revision. |
 | 35 | **Note count** | Envelope field | The sealed count `R` of spent notes among the published inputs. The proof names no note position. |
-| 36 | **Payload** | Ciphertext | A non-exit slot's data hashes and application data past its record, under the frame's `HAS_DATA`. No proof constrains it. |
+| 36 | **Payload** | Ciphertext | A non-exit slot's application data past its record, under the frame's `HAS_DATA`. No proof constrains it. |
 
 ## Flows
 
@@ -247,7 +252,7 @@ Every owner that spends a ring note under a nonzero nullifier key enrolls on the
 3. **Storage program:** reads each owner signature from the precompile instruction, verifies every first enrollment's `RegisterKey` proof against the ring id and the auditor key the tracking registry pins, refuses the zero nullifier key, and applies the batch proof over the entries it computes from the writes.
 4. **Ring indexer:** lists pending authorizations, projects the tracking tree and serves its openings.
 
-An enrollment grants nothing until an apply places its row under a tracking root. The owner's notes under its key spend from the first root that holds its row. Before then a salted owner write for it fails. The `EnrollmentWriter` alone sends `EnrollBatch`, and Storage checks every owner signature itself. [Tracking](design/records-and-roots.md#tracking)
+An enrollment grants nothing until an apply places its row under a tracking root. The owner's notes under its key spend from the first root that holds its row. Before then a salted owner write for it lands only under the ring salt of a ring that commits one. The `EnrollmentWriter` alone sends `EnrollBatch`, and Storage checks every owner signature itself. [Tracking](design/records-and-roots.md#tracking)
 
 A wallet rotates its viewing key per ring. It signs `Enroll` again on that ring's tracking registry with the new viewing key and every other field unchanged. The rotation carries no proof, and the program refuses a change to any other field. The rotation moves only the authorization's viewing key and waits on no apply. A sender verifies the owner's row under a tracking root and reads the viewing key from the owner's authorization at `confirmed`. An address that carries an older viewing key therefore seals to the current one.
 
@@ -273,7 +278,7 @@ The **Wallet** writes its own viewing flag and its wallet grants. The **Policy a
    2. Queues wallet and authority updates in separate batches. An update its list approval joined rides first in its approver's batch.
    3. Sends an authority batch at its next pass, and a wallet batch when it is full, aged or ahead of a queued authority update.
    4. Leaves the grace to the **Storage program**. The apply proof marks a batch [restrictive](design/records-and-roots.md#root-history) when it tightens a list, guard or bound, writes a private list or changes an asset limit. Such a batch retires every earlier root. Any other batch keeps the outgoing root for the grace period, and over a full history it evicts the oldest kept root.
-   5. Proves a batch with salted owner writes under the private apply key. The proof opens each such owner's applied row under one root of the pinned tracking registry. It holds the written key to the owner's salted member under a salt that opens the row's list tag. A wrong salt fails the proof. The update names that root's revision. The Storage program reads the root and raises the registry's tracking floor to the revision in the same instruction. A batch whose salted owner has no applied row fails before the proof.
+   5. Proves a batch with salted owner writes under the private apply key. The proof opens each such owner's applied row, or the row that proves the owner absent, under one root of the pinned tracking registry. A key under the owner's salt needs the enrolled row, and the row's list tag fixes the salt. A key under the ring domain takes any salt, and the SDK refuses one that does not open the policy's ring list tag. The update names that root's revision. The Storage program reads the root and raises the registry's tracking floor to the revision in the same instruction. A batch whose owner has no applied row fails before the proof unless its key sits under the committed ring salt.
    6. Refuses a queued authority update once its signer no longer holds the policy role.
    7. Proves each batch and submits it, paying fees.
 
@@ -442,27 +447,28 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 
 ### Ring Program
 
-1. `Initialize`: creates the ring account with the four role keys and the auditor key. It creates the ring's tracking registry through the Storage program, binds the records, and on a policy ring pins the rule table. It registers the ring with SPP. It refuses a records registry whose ring id is not this ring's. The upgrade authority signs.
-2. `UpdatePolicy`: replaces the rule table, repoints one list's source, or rebinds the records to a registry of this ring. Its trailing accounts are the registries the write names, then every other registry a private list of the resulting account reads, matched by address. It refuses a salted source of another ring and stores nothing on a refusal. The policy authority signs.
+1. `Initialize`: creates the ring account with the five role keys and the auditor key. It creates the ring's tracking registry through the Storage program, binds the records, and on a policy ring pins the rule table. It registers the ring with SPP. It refuses a records registry whose ring id is not this ring's. The upgrade authority signs.
+2. `UpdatePolicy`: replaces the rule table, repoints one list's source, rebinds the records to a registry of this ring, or commits the ring list tag. Its trailing accounts are the registries the write names, then every other registry a private list of the resulting account reads, matched by address. It refuses a salted source of another ring and stores nothing on a refusal. The policy authority signs.
 3. `UpdateAuthority`: hands one role to a new key. The admin and the new key sign. Differs from the PR 15 draft: it names the role.
 4. `SetPaused`: pauses or resumes the ring in SPP. The pauser signs.
-5. `SetCoSigner`: creates a co-signer account or changes its scope. The co-signer admin signs.
+5. `SetCoSigner`: creates a co-signer account or changes its scope. The co-signer admin and the payer sign.
 6. `ClearCoSigner`: closes a co-signer account to a rent recipient. The co-signer admin signs.
 7. `SetDelegate`: sets the delegate once. It changes no mode and needs no policy. The admin and the delegate sign.
 8. Tag 58 is unassigned. A deposit is a `Transfer` that spends no note.
-9. `Transfer`: verifies the one ring proof before SPP CPI. Its statement carries the audit, the tracking root and the policy section under the ring's written policy hash. It also carries `approval_mask` under the thresholds of the ring's own records. The payer signs. On the signer rail each input owner also signs. On the in-proof rail the owner the frame names signs inside the SPP proof, and each other owner of the run signs the transaction. The proof holds every input to one of them. On the anonymous rail each public co-owner signs. Each co-signer the demanded classes need and each deposit leg's funder also sign.
+9. `Transfer`: verifies the one ring proof before SPP CPI. Its statement carries the audit, the tracking root and the policy section under the ring's written policy hash. It also carries `approval_mask` under the thresholds of the ring's own records. The payer signs. On the signer rail each input owner also signs. On the in-proof rail the owner the frame names signs inside the SPP proof, and each other owner of the run signs the transaction. The proof holds every input to one of them. On the anonymous rail each public co-owner signs. Each co-signer the demanded classes need and each deposit leg's funder also sign. A program owner's PDA signs through its program's CPI. A co-signer pair that names `[co_signer_record, instructions_sysvar]` reads an `ApproveTransfer` of that record in place of the signature.
 10. `AuthorityTransfer`: as `Transfer` on the authority rail, on a confidential or an anonymous ring. It reads no policy root, sets no approval bit, demands no co-signer and takes no deposit leg. The delegate and the payer sign. A signer other than the ring's delegate names a Token-2022 mint whose permanent delegate it is, and the proof holds every note to that mint.
 11. `Merge`: verifies the ring merge proof before SPP CPI. Its statement carries the output hash, the first nullifier, the ring id, the auditor and ephemeral keys and the sealed envelope and record. It also carries the payer, the tracking root and SPP's output ciphertext. The payer signs. No co-signer signs.
+12. `ApproveTransfer`: tag 65, accounts `[ring, co_signer_record, co_signer]`. It approves the `Transfer` call of one position and digest, counts no calls and writes nothing. Its data names the top-level position of the instruction that makes the call, and the SHA-256 digest of the call's program id, data and ordered accounts. The program refuses it below the top level. The record's co-signer signs.
+13. `EnrollBatch`: tag 66, accounts `[writer, ring, ring_auth, tracking_registry, owner_authorization, storage_program]`. It forwards its data unchanged to the Storage program's `ApplyEnrollments` under the ring PDA's signature. It refuses a tracking registry other than the one the ring account binds. The enrollment writer signs.
 
 ### Storage Program
 
 1. `Initialize`: creates a policy registry at an address only its creator can take, with the empty root. Its grace, ring id and tracking registry pin are final. The creator becomes the authority.
 2. `Update`: applies 1 to 16 writes with a proof of the tree update. The proof binds whether the batch is restrictive, and a restrictive batch retires every earlier root. Any other batch keeps the earlier root valid for the grace period and evicts the oldest kept root from a full history. A write to a private list is a private write, unless it names an asset whose mint hashes to its member. A batch with a private write proves under the private apply key. That proof opens each private write's owner row under the pinned tracking registry's root at the revision the update names. It holds the written key to `Poseidon(CRPL, member, list_salt)` for a salt whose `Poseidon(CRPT, list_salt)` is the row's list tag. The program refuses a private write on a registry with no tracking pin. It raises the tracking floor to that revision with the new root. The authority signs.
 3. `UpdateAuthority`: hands the registry to a new authority. Both keys sign.
-4. `Enroll`: creates an owner's tracking authorization with a `RegisterKey` proof the program verifies, or rotates its viewing key with no proof. The owner and the payer sign.
-5. `ApplyEnrollments`: applies 1 to 16 named authorizations to the tracking tree with a proof of the tree update. The program computes each entry from its account. Every retired root keeps its full grace, and an apply over a full history of unexpired roots fails with `RootHistoryRetained`. No authority signs.
-6. `OwnerGrant`: grants or revokes one reader's access to a program owner's activity. The owner signs, a program through CPI, and the payer funds the account.
-7. `InitializeTracking`: creates a tracking registry under a signing creator, with its final ring id and auditor key. Ring `Initialize` creates the ring's own through CPI signed by its ring PDA, and binds its address.
+4. `ApplyEnrollments`: accounts `[authority, tracking_registry, owner_authorization, storage_program]`. It applies 1 to 5 owner-signed writes to the tracking tree with a proof of the tree update. The registry's authority signs. A ring's registry has the ring PDA as its authority, so its writes arrive through ring `EnrollBatch`. `owner_authorization` is the instructions sysvar, and the Ed25519 precompile instruction directly before carries one owner signature per write over the registry, the entry and the action. A PDA owner instead signs as `owner_authorization` for one write of its own. The program verifies the `RegisterKey` proof of each first enrollment, and a viewing key rotation carries none. Every retired root keeps its full grace, and an apply over a full history of unexpired roots fails with `RootHistoryRetained`.
+5. `OwnerGrant`: grants or revokes one reader's access to a program owner's activity. The owner signs, a program through CPI, and the payer funds the account.
+6. `InitializeTracking`: creates a tracking registry under a signing creator, with its final ring id and auditor key. Ring `Initialize` creates the ring's own through CPI signed by its ring PDA, and binds its address.
 
 ## Design decisions
 
@@ -474,8 +480,8 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 6. Authority and wallet writes never share a batch, except an update its list approval joined. After proving, the writer checks each update's expiry and any required policy role before signing. An invalid member prevents submission of the batch. Later expiry or role rotation does not revoke an already signed transaction.
 7. An update pending list approval waits within a bounded window under rate limits, with no cap on pending updates. A cap would let spam lock list approval out.
 8. The config and the policy are one ring account. A transfer loads fewer accounts.
-9. Five on-chain roles replace the single Config Authority. A stolen key other than the admin key reaches one control.
-10. Ring RPC reads one key file per role. A leaked file exposes one job.
+9. Five role keys and the delegate replace the single Config Authority, and one key may hold several roles. A stolen key other than the admin key reaches only the controls of the roles it holds.
+10. Ring RPC pins a separate KMS signing address per role. A compromised signing key exposes one job. The root secret opens audit records for every ring that uses a derived auditor from that root.
 11. Each co-signer has its own account. A transaction carries a co-signer for each demanded class, and one co-signer may cover several. A ring can then keep separate outflow and withdrawal approvers. The hot path loads each co-signer account by owner and discriminator, as the draft's note 2 asks.
 12. Co-signer limits live per asset in the asset record, each cap with its own window. The tree already serves per-asset data under a root the program reads.
 13. Co-signing fails closed when Ring RPC cannot read the limits or the asset has no record. Either would otherwise read as no limits.
@@ -495,7 +501,7 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 27. `Initialize` creates the ring account, binds the records and registers the ring with SPP in one instruction. No half-created ring exists.
 28. Ring RPC creates the ring's records tree under its storage authority, and `Initialize` binds it. The program accepts any storage registry of this ring as the records, so whoever binds them picks the records writer. A tree written outside Ring RPC skips its checks.
 29. One Poseidon schedule under a 9-byte label keys every ring stream, the merge record included.
-30. Every published slot has one record in its own output data, an exit's in the auditor message, and the statement chains the records. The data hashes have no proven copy, so a malformed payload loses them for the recipient and the auditor. The auditor stream holds the envelope and one recipient key per slot, and no counter serves two regions.
+30. Every published slot has one record in its own output data, an exit's in the auditor message, and the statement chains the records. The record proves `data_hash` and `ring_data_hash`, and a clear frame bit proves that hash zero on every slot. Each chain cell is tagged with the slot's exit claim. The payload holds application data only, so a lost payload loses the data and not the commitment. The auditor stream holds the envelope and one recipient key per slot, and no counter serves two regions.
 31. The key catalog fixes one input class per family and output count. A wider class costs a key, so no class grows without a verdict behind it.
 32. A nullifier key enters a tracking row only through an owner-signed `Enroll`, never through instruction data of another party. A wallet and a PDA share one path, and no authority can delay or change an enrollment. `ApplyEnrollments` computes every entry from an authorization, so a row under a root proves a verified enrollment.
 33. Enrollment lives in a tracking tree apart from the policy registry, because one tree would make enrollment and revocation race on one revision. A curator source reads list bits only, so any registry other than the ring's records can serve as a curator.
@@ -503,9 +509,10 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 35. A transfer's co-signer derives each owner's debit from the frame it signs with the auditor key. Client-sent openings would widen what the co-signer learns.
 36. A note under the zero nullifier key needs no enrollment. A zero-key transfer output requires owner absence at the accepted tracking root. A retained root can prove absence during the enrollment grace period. An old zero-key note stays spendable after enrollment, and a merge preserves its key. Readers mark a zero-key note `exposed_if_spent`, and automatic selection leaves it out.
 37. A slot's discovery tag is a hint no proof constrains. One every-site scan reads no tag, so a wrong tag cannot hide a note its recipient can decrypt.
-38. A salted owner write proves the owner's row under one tracking root. In the same instruction it raises the source's tracking floor to that root's revision. Rows never leave the tracking tree, so every root a salted read accepts holds each owner with a private entry. No such owner proves absence. An owner with no applied row has no private entry, so its proven absence hides none.
+38. A salted owner write proves the owner's row or absence under one tracking root. In the same instruction it raises the source's tracking floor to that root's revision. Rows never leave the tracking tree, so every root a salted read accepts holds each owner with an entry under its own salt. No such owner proves absence to skip that entry. Every owner also reads the record under the ring salt the policy commits, whatever its row, so an entry there binds before and after enrollment.
 39. The envelope seals the note count `R` and no note position. The ring's inputs hold SPP's spent notes in note order, and the proof takes the address chain as a private witness the shared `private_tx_hash` checks. The auditor classifies each nullifier from its own index, and `R` checks the count.
 40. No statement element counts a signer's outputs. The SDKs sign for a relayed signer only after every published output opens to it.
+41. A program owns ring notes under its PDA and spends them by CPI into `Transfer`. A policy lists the PDA as a member like a wallet, so the ring program has no hook for programs.
 
 ## Notes
 
@@ -522,6 +529,5 @@ The **Ring Program** checks only the required co-signer signature, never the lim
 3. SPP reads an output's encryption scheme byte as its exit marker. Should SPP carry an explicit exit marker in the output data instead?
 5. Does this scope fit the two-week audit, and what moves out if it does not?
 7. A ring reads lists from one curator. Is one enough?
-8. Third-party ZK programs settle through plain SPP transfers and cannot touch ring notes. Should the ring program offer a hook for allowlisted programs?
 10. An enrolled nullifier key cannot change once its tracking row exists. Should a wallet be able to rotate it?
 11. Roots are read live from the storage registries, so a policy transfer passes the ring account plus one or two registry accounts. Do you accept this over your question 3.1, which syncs roots into the policy account?

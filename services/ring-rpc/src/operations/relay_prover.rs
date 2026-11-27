@@ -25,6 +25,8 @@ pub struct RelayProofRequest<'a> {
     pub payload: &'a RelayPayload,
     /// Verified over `SppProofInputs::message_hash`, the anonymous and confidential proofs take it.
     pub owner_signature: Option<[u8; 64]>,
+    /// Every owner reads the private lists under it.
+    pub ring_salt: Option<[u8; 32]>,
 }
 
 /// The source's notes open under the escrowed key, the source signs nothing.
@@ -165,6 +167,9 @@ impl<R: AsyncRpc + 'static, I: RingIndexerBackend + 'static> SdkRelayProver<R, I
         }
         for co_signer in &request.parties.co_signers {
             transfer = transfer.with_co_signer(*co_signer);
+        }
+        if let Some(ring_salt) = request.ring_salt {
+            transfer = transfer.with_ring_salt(ring_salt);
         }
         let proven = transfer
             .prove(&self.client)

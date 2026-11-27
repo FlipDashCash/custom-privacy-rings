@@ -4,6 +4,8 @@
 
 use spr_hasher::primitives::{pack_be_chunks, PACK_BE_CHUNK_BYTES};
 
+use crate::audit_stream::{RecordForm, SEALED_KEY_LEN};
+
 pub const TRANSFER_OUTPUT_CAPACITIES: [usize; 4] = [2, 4, 8, 16];
 
 /// The transfer statement's layout element, mirror `prover/circuits/audit/layout.go`.
@@ -11,13 +13,42 @@ pub const TRANSFER_OUTPUT_CAPACITIES: [usize; 4] = [2, 4, 8, 16];
 pub struct AuditLayout {
     /// The key carries default bits and one evidence entry per published input.
     pub entry: bool,
+    /// The frame publishes the voucher's sealed key after the slot keys.
+    pub vouched: bool,
+    pub records: RecordForm,
 }
 
 impl AuditLayout {
-    /// Bit 1, bit 0 stays clear in the circuit.
+    /// Bit 0 vouched, bit 1 entry, bit 2 data, bit 3 ring data.
     pub const fn value(self) -> u8 {
-        (self.entry as u8) << 1
+        self.vouched as u8
+            | (self.entry as u8) << 1
+            | (self.records.data as u8) << 2
+            | (self.records.ring_data as u8) << 3
     }
+
+    /// `None` on a vouched region shorter than one key.
+    pub fn split_keys(self, sealed: &[u8]) -> Option<SealedKeys<'_>> {
+        match self.vouched {
+            false => Some(SealedKeys {
+                slots: sealed,
+                voucher: None,
+            }),
+            true => sealed
+                .split_last_chunk()
+                .map(|(slots, voucher)| SealedKeys {
+                    slots,
+                    voucher: Some(voucher),
+                }),
+        }
+    }
+}
+
+/// A frame's sealed key region, the slot keys then the voucher's key on a vouched frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SealedKeys<'a> {
+    pub slots: &'a [u8],
+    pub voucher: Option<&'a [u8; SEALED_KEY_LEN]>,
 }
 
 /// Zero pads the plaintext at its end to whole 31-byte chunks, one chunk per field.
@@ -55,8 +86,27 @@ mod tests {
 
     #[test]
     fn the_layout_value_is_the_circuit_flag() {
-        assert_eq!(AuditLayout { entry: false }.value(), 0);
-        assert_eq!(AuditLayout { entry: true }.value(), 2);
+        let layout = |entry, vouched| {
+            AuditLayout {
+                entry,
+                vouched,
+                records: RecordForm::default(),
+            }
+            .value()
+        };
+        assert_eq!(layout(false, false), 0);
+        assert_eq!(layout(false, true), 1);
+        assert_eq!(layout(true, false), 2);
+        assert_eq!(layout(true, true), 3);
+        let records = |data, ring_data| {
+            AuditLayout {
+                records: RecordForm { data, ring_data },
+                ..AuditLayout::default()
+            }
+            .value()
+        };
+        assert_eq!(records(true, false), 4);
+        assert_eq!(records(false, true), 8);
     }
 
     #[test]

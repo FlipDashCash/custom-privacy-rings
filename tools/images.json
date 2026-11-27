@@ -19,11 +19,11 @@
     },
     "ring-prover": {
       "repository": "zolana-ring-prover",
-      "context": "zolana/prover/server",
-      "file": "zolana/prover/server/Dockerfile.light",
+      "context": ".",
+      "file": "prover/Dockerfile",
       "title": "Zolana Ring Prover",
-      "description": "Zolana Groth16 proving server with the custom ring circuits",
-      "smoke": "docker run --rm \"$image\" --help >/dev/null && test -n \"$(docker run --rm \"$image\" release-keys)\""
+      "description": "Zolana Groth16 proving server with the custom ring circuits, the ring keys and the SPP ring transfer keys",
+      "smoke": "set -eo pipefail; docker run --rm \"$image\" --help >/dev/null; test -n \"$(docker run --rm \"$image\" release-keys)\"; c=\"$(docker create \"$image\")\"; trap 'docker rm \"$c\" >/dev/null' EXIT; for key in transfer_ring_1_2.key transfer_ring_2_2.key custom_ring_merge.key; do docker cp \"$c:/proving-keys/$key\" - | tar -t >/dev/null; done"
     }
   }
 }

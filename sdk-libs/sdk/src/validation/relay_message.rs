@@ -472,7 +472,7 @@ fn open_records(
             }
             .secret()
             .map_err(|_| MessageMismatch::Data)?;
-            let record = open_recipient_body(output.record, &secret)
+            let record = open_recipient_body(output.record, &secret, data.record_form())
                 .map_err(|_| MessageMismatch::Data)?
                 .record;
             Ok((record, key))
@@ -592,7 +592,7 @@ impl ExpectedDelegate {
         let data = parsed.data();
         // 1. The stream opens under the requested keys, and the legs are the requested withdrawals.
         let opened = open_stream(parsed, &self.tx_viewing_key, &self.auditor)?;
-        if data.has_data {
+        if data.has_data || data.ring_data {
             return Err(MessageMismatch::Data);
         }
         self.check_withdrawals(data, accounts)?;
@@ -617,26 +617,26 @@ impl ExpectedDelegate {
             let paid = unpaid
                 .iter()
                 .position(|payment| payment.matches(&record) && sealed_to(&payment.owner));
-            match paid {
-                Some(index) => {
-                    let payment = unpaid.swap_remove(index);
-                    let owner_tag = match payment.kind {
-                        RecordKind::Exit => Some(payment.owner.owner_key),
-                        RecordKind::Ring if !data.rail.anonymous_frame() => {
-                            Some(confidential_slot_tag(payment.owner.viewing_u))
-                        }
-                        _ => None,
-                    };
-                    if owner_tag.is_some_and(|tag| output.owner_tag != tag) {
-                        return Err(MessageMismatch::Recipients);
-                    }
+            let owner = match paid {
+                Some(index) => unpaid.swap_remove(index).owner,
+                None => *self
+                    .sources
+                    .iter()
+                    .find(|source| {
+                        record.kind == RecordKind::Ring && source.owns(&record) && sealed_to(source)
+                    })
+                    .ok_or(MessageMismatch::Recipients)?,
+            };
+            // A confidential reader finds its note by the tag, a change under another tag is lost to its source.
+            let owner_tag = match record.kind {
+                RecordKind::Exit => Some(owner.owner_key),
+                RecordKind::Ring if !data.rail.anonymous_frame() => {
+                    Some(confidential_slot_tag(owner.viewing_u))
                 }
-                None if record.kind == RecordKind::Ring
-                    && self
-                        .sources
-                        .iter()
-                        .any(|source| source.owns(&record) && sealed_to(source)) => {}
-                None => return Err(MessageMismatch::Recipients),
+                _ => None,
+            };
+            if owner_tag.is_some_and(|tag| output.owner_tag != tag) {
+                return Err(MessageMismatch::Recipients);
             }
         }
         match unpaid.is_empty() {

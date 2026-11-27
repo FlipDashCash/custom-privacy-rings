@@ -147,6 +147,7 @@ impl Fixture {
             }),
             envelope: &[],
             recipient_keys: &[],
+            vouched: false,
             private_tx_hash: &self.fields[0],
             anonymous: hidden_sender.then(|| AnonymousProofData {
                 commitment: &self.keys[3],
@@ -160,6 +161,7 @@ impl Fixture {
                 utxo_tree_root_index: 1,
                 nullifier_tree_root_index: 2,
             }),
+            ring_data: false,
         };
         data.outputs = (0..usize::from(n_out))
             .map(|slot| RingOutput {

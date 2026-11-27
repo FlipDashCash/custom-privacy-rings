@@ -70,15 +70,27 @@ just check-all && just test-hermetic
 The build needs the Rust and Solana toolchains zolana pins, Go at the version
 `prover/go.mod` names, and `just`. `just fetch-custom-ring-keys` downloads the
 proving keys the lockfiles pin. The `test-custom-ring-*` suites start a local
-validator, Photon, the ring indexer and the ring prover.
+validator, Photon, the ring indexer, the ring prover and
+`tools/localnet-kms.mjs`, a local KMS emulator. They need Node at the version
+`package.json` names, `jq` and `curl`.
 
 ## Use
 
-`zolana-ring new`, `deploy` and `init` create a ring, deploy its program and
-fix its auditor key, tier and policy. `init` creates any missing admin,
-pauser and co-signer admin key file, by default in `keys/` beside `ring.toml`,
-so the role split holds only once each key leaves that machine. Members pay
-with `zolana-ring transfer` and `merge`, or through the Rust and TypeScript
+`zolana-ring new NAME --operator-manifest ./operator.json` creates the ring
+directory and `ring.toml`, and takes the program address from the manifest.
+`deploy` deploys the released program under the upgrade authority, or upgrades
+it in place. `init` creates the ring config with the auditor key, pins the
+policy and registers the ring with SPP.
+
+Provision a separate AWS KMS Ed25519 key for each
+signer. Use `ring-rpc signer-ref` to populate the `program`, `upgrade_authority`,
+`admin`, `policy`, `pauser`, `cosign_admin` and `enrollment_writer` entries.
+Set `region` and `deployment`. Fund the upgrade authority for `deploy` and the
+policy authority for `init`. Confirm the service signing address out of band
+before accepting its auditor key. The ring fixes the auditor at initialization.
+See [Ring RPC custody](services/ring-rpc/README.md#keys).
+
+Members pay with `zolana-ring transfer` and `merge`, or through the Rust and TypeScript
 SDKs.
 
 ## Limits

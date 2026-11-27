@@ -19,36 +19,36 @@ export const RING_PROVING_KEY_SHA256S: Readonly<Record<string, string>> = Object
   "custom_ring_apply_records_8.key":
     "6109969bbef6607c3fcc8e4d884f03a3721a4479888720f78c380b96f66f47d6",
   "custom_ring_apply_records_private_1.key":
-    "dba130b0a85269861b7285615df1161faa1e753eac096abbc8898e7b6add6962",
+    "192c0739123e3c4cb80587ff6d8cc8240ef8d6746d3abc2bb5272d8789799985",
   "custom_ring_apply_records_private_16.key":
-    "51b648bb7da031ed8c369cd484b2238271f9d92242e14c4bdfb72437c9d80def",
+    "0462d1e07946f3741940bc35e2ab2b11cc57618634cdfff4a7f060ccb88e0b70",
   "custom_ring_apply_records_private_2.key":
-    "ed8260ae03d5bf4c7bed14f01fef67772f20e9d89cf672585b0547180f8b2c03",
+    "2f34912fd4666239d326def947587be87667af9ff33165128ef0fa71af98d07e",
   "custom_ring_apply_records_private_4.key":
-    "68bf635e3bc7d4fa7405ca824d59c3a8fafab071221ba2acc75d9de74260abdc",
+    "a057052789177e1f5dda6e307527b6144768ccfee3bf7ea6f190708eab4e3520",
   "custom_ring_apply_records_private_8.key":
-    "f0eccf9d604ad99414deeb87152e11d148ccca12f92a57d044fd209801f8184a",
+    "b174f62ff8bf932d44d015039376528df54d8e1542508e39302b459696cb3289",
   "custom_ring_merge.key": "64a8ab474e1ad0aeb2a520cd21fab2bbef75c7b6e7a8ae506c18980bc893db2f",
   "custom_ring_register_key.key":
     "90d0f3a05edf2bef59de6726aa1e3c4b08abed8dd4c627f94a169752a49fcfe6",
   "custom_ring_transfer_16_in4_w4_s2.key":
-    "4f51ebc3ca11b501ea8a94af6fbdc7066faf6b1d80b64e44e3f8cd0fc51888a9",
+    "1c5cc04c09fa4f278ffcffe6b13423a35ac8e4fa262a6cabf6431b75d54d6837",
   "custom_ring_transfer_2_in24_w4_s4.key":
-    "13a3503fac341ff16804a7ee3ef96e75db15bac3cf9c8df7b71b870a76c43137",
+    "fa51a57af14cc2cc52ec97d56f53e4b56def45c51f16a59cfb579fcd491c11e1",
   "custom_ring_transfer_4_in24_w4_s4.key":
-    "17e8d00006dc4ec9ced41a82f8f690ff50235e425be8b3207e3b477f7a6f9e22",
+    "567c754ad383c979a40debbfc6af6e5b0e09533143b8d8fa1caafe58a8ab0f44",
   "custom_ring_transfer_8_in16_w4_s4.key":
-    "973da329b0ca13f7542e8e1e8896ee00abca62c9897b55457c0a8cb3c105c1cd",
+    "3bb8f6c0adf468cab6e9ac76bb53c70bb67fe025700fd11b79751aad64f7597e",
   "custom_ring_transfer_entry_4_in8_w4_s8.key":
-    "b85d36bf7efc22d8dab71bcd2d26e1ca70c8d9b98888dab0ba7025b79eb669c3",
+    "a37d1336d9092a7eb52eb0273aede86d094c2682b492af04d5c93a550f7d9555",
   "custom_ring_transfer_entry_8_in2_w4_s2.key":
-    "c99800ef97a01b76199e9ed9f3658486e0e59b2ce58321595108ff9281539616",
+    "30d5ea4f4730160a58da4eb320881ad7a0f670c3f6799c33000f16caea4b29de",
   "custom_ring_transfer_entry_8_in5_w4_s4.key":
-    "6c16eac6bf17a199000cfd3ca4c521151dbe45fe0c4f8901068cab64867c5bf2",
+    "bc5cdc94cd19c727dc5a6945eae4bf9ebdfebff8cec2e898ca596f4b496215bd",
   "custom_ring_transfer_entry_8_in8_w32_s8.key":
-    "0260a09bba5d98c47b678c3e078b6827b09d5e4b3716fad2da3d433c444bd5af",
+    "ad02dfba0e8864ee72f545dc9da01685532274667f6a0c54853f6d148df915bb",
   "custom_ring_transfer_wide_2_in40_w4_s9.key":
-    "086ddebc3986d743954a7ad22306aad3509325e76439921db275e5732b9f0fc7",
+    "6a354d4ebeafd4eaef3c804e4fa9595ce661ffe37ef0528b61237eedfedc697b",
   "custom_ring_transfer_wide_8_in24_w32_s13.key":
-    "363f94d226211a08bd39ae29170ed9ef4f39488b1ba71b94bb58f217424132cf",
+    "b4e0a85ff533cf20aa89d83fa76f93b91c39e44dea078c68067949735db3adc0",
 });

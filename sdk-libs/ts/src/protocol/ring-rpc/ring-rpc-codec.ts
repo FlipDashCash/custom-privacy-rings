@@ -229,6 +229,7 @@ export function decodeRelayStatus(value: unknown): RelayStatus {
 
 /** Rust `SubmitRecordUpdateRequest`. */
 export function encodeSubmitRecordUpdateRequest(value: SubmitRecordUpdateRequest): WireObject {
+  const owners = value.unregisteredOwners ?? [];
   return {
     registry: checkedAddress(value.registry, "registry"),
     update: {
@@ -244,6 +245,13 @@ export function encodeSubmitRecordUpdateRequest(value: SubmitRecordUpdateRequest
     },
     signer: checkedAddress(value.signer, "signer"),
     signature: checkedSignature(value.signature, "signature"),
+    ...(owners.length === 0
+      ? {}
+      : {
+          unregisteredOwners: owners.map((owner, index) =>
+            checkedAddress(owner, `unregisteredOwners[${String(index)}]`),
+          ),
+        }),
   };
 }
 
@@ -460,6 +468,16 @@ export function encodeCoSignTransactionRequest(value: CoSignTransactionRequest):
   return {
     ring: checkedAddress(value.ring, "ring"),
     message: checkedBase64(value.message, "message"),
+    ...(value.approvedTransfer === undefined
+      ? {}
+      : {
+          approvedTransfer: {
+            data: checkedBase64(value.approvedTransfer.data, "approvedTransfer.data"),
+            accounts: value.approvedTransfer.accounts.map((account, index) =>
+              checkedAddress(account, `approvedTransfer.accounts[${index}]`),
+            ),
+          },
+        }),
   };
 }
 

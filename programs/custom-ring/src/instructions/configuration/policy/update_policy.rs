@@ -63,6 +63,7 @@ pub fn process_update_policy_ix(
         UpdatePolicyIxData::Rules(table) => write.replace_rules(&table),
         UpdatePolicyIxData::Source(source) => write.move_source(source),
         UpdatePolicyIxData::Records => write.rebind_records(),
+        UpdatePolicyIxData::RingListTag(tag) => write.commit_ring_salt(tag),
     }
 }
 
@@ -132,6 +133,16 @@ impl PolicyWrite<'_> {
         let (records, slot) = (*records.address(), self.slot);
         self.commit(Named::Records, |proposed| {
             proposed.rebind_records(records, slot)
+        })
+    }
+
+    /// Refused on an audit-only ring.
+    #[inline(never)]
+    fn commit_ring_salt(self, ring_list_tag: [u8; 32]) -> ProgramResult {
+        self.policy.policy_hash()?;
+        let slot = self.slot;
+        self.commit(Named::Nothing, |proposed| {
+            proposed.set_ring_list_tag(ring_list_tag, slot)
         })
     }
 

@@ -17,12 +17,12 @@ use anyhow::{ensure, Context as _, Result};
 use custom_ring_interface::{ListRegistry, RingPolicy};
 use custom_ring_sdk::{CustomRing, PinnedPolicy, PolicyTable, PolicyUpdate, UpdatePolicy};
 use solana_address::Address;
-use solana_signer::Signer;
 use zolana_ring_policy::{MintPolicy, RuleTable};
 
 use crate::{
     catalogue::check_curator,
     line,
+    submission::Operators,
     ui::{self, icon},
     Context, PolicyCommand,
 };
@@ -219,7 +219,7 @@ fn set(ctx: &Context, yes: bool) -> Result<()> {
     let shared_sources = curator_sources(ctx, &compiled.shared_sources)?;
     let replace = UpdatePolicy {
         ring: ctx.ring,
-        authority: authority.pubkey(),
+        authority: authority.address(),
         current: &current.account,
         update: PolicyUpdate::Rules(PolicyTable {
             rules: &compiled.rules,
@@ -227,7 +227,7 @@ fn set(ctx: &Context, yes: bool) -> Result<()> {
         }),
     }
     .instruction()?;
-    ctx.send(&[authority], &[replace])?;
+    ctx.send_operator(Operators::solo(authority.as_ref()), &[replace])?;
     crate::records::write_mint_policies(ctx, &mint_changes)?;
     let (before, after) = (
         current.account.generation(),

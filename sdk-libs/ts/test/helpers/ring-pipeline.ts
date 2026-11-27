@@ -46,6 +46,7 @@ import {
   X25519PublicKey,
 } from "@heliuslabs/spr/keypair";
 import type { ShieldedAddress, ShieldedKeypair } from "@heliuslabs/spr/keypair";
+import type { ShieldedPda } from "@heliuslabs/spr/program";
 import {
   AssetRegistry,
   SOL_MINT,
@@ -119,7 +120,7 @@ import {
 } from "./ring-accounts.js";
 import { settlementAccounts } from "../../src/protocol/transaction/spp.js";
 import { checkTransactionFits } from "../../src/operations/workflow/compile.js";
-import { openRecipientNote, ringOutputBlinding } from "../../src/crypto/derivation/blinding.js";
+import { openRecipientBody, ringOutputBlinding } from "../../src/crypto/derivation/blinding.js";
 import { LocalRingKeys, ringWalletKeys, type RingKeys } from "../../src/state/ring-keys.js";
 import { x25519FromU } from "../../src/crypto/keys/x25519.js";
 
@@ -177,6 +178,9 @@ export interface RingFixtureOptions {
   }>;
   readonly slot?: bigint;
   readonly registration?: Readonly<{ activated: boolean; paused: boolean }>;
+  /** Fixed by a shared vector, random otherwise. */
+  readonly ringProgramId?: Address;
+  readonly authority?: Address;
 }
 
 export const trackingEntry = enrolledEntry;
@@ -211,9 +215,9 @@ function pinnedRail(
 
 /** A ring the chain, Photon and the prover serve from memory, every proof request recorded. */
 export async function ringFixture(options: RingFixtureOptions = {}) {
-  const ringProgramId = randomAddress();
+  const ringProgramId = options.ringProgramId ?? randomAddress();
   const auditor = X25519Keypair.generate();
-  const authority = randomAddress();
+  const authority = options.authority ?? randomAddress();
   const accounts = new Map<Address, RpcAccount>();
   const ownRecords = new Map(
     (options.records ?? []).map((record) => [hex(record.member), record] as const),
@@ -520,8 +524,24 @@ export function walletKeys(keypair: ShieldedKeypair): LocalKeys & RingKeys {
 }
 
 /** A spendable note of `keypair` in `ring`, or in the default ring without one. */
+/** Role keys of a program's PDA owner, no signing secret. */
+export function pdaKeys(holder: ShieldedPda): LocalKeys & RingKeys {
+  const viewing = holder.viewingKey();
+  const nullifierKey = holder.nullifierKey();
+  try {
+    const roles = { address: holder.shieldedAddress(), viewingKeys: [viewing], nullifierKey };
+    return ringWalletKeys(
+      LocalKeys.fromKeys(roles, PROOF_SERVICE),
+      LocalRingKeys.fromKeys({ ...roles, listRoot: viewing }),
+    );
+  } finally {
+    viewing.destroy();
+    nullifierKey.destroy();
+  }
+}
+
 export function noteInput(
-  keypair: ShieldedKeypair,
+  keypair: Pick<ShieldedKeypair, "signingPublicKey" | "nullifierKey">,
   amount: bigint,
   ring?: Address,
   asset: Address = SOL_MINT,
@@ -711,6 +731,9 @@ export function checkDisclosure(
       recipientKeys: data.outputs.map((_, slot) =>
         data.recipientKeys.subarray(slot * RECIPIENT_KEY_LEN, (slot + 1) * RECIPIENT_KEY_LEN),
       ),
+      ...(data.vouched
+        ? { voucher: data.recipientKeys.subarray(data.outputs.length * RECIPIENT_KEY_LEN) }
+        : {}),
     },
     salt: data.salt,
   });
@@ -718,6 +741,7 @@ export function checkDisclosure(
   expect(txKey.publicKey().u()).toEqual(data.txViewingU);
   const published = call.proofInputs.outputs.filter((output) => !output.isCompact());
   expect(disclosure.recipientKeys).toHaveLength(published.length);
+  const form = RingTransactData.recordForm(data);
   data.outputs.forEach((wire, index) => {
     const secret = txKeySlotSecret({
       txViewingKey: txKey,
@@ -728,8 +752,8 @@ export function checkDisclosure(
     });
     const record =
       wire.body.kind === "exit"
-        ? openExitRecord(secret, wire.record)
-        : openOutputSlot(secret, wire.record).record;
+        ? openExitRecord(secret, wire.record, form)
+        : openOutputSlot(secret, wire.record, form).record;
     const output = itemAt(published, index);
     const owner = output.ownerAddress;
     if (owner === undefined || output.isDummy()) {
@@ -744,6 +768,8 @@ export function checkDisclosure(
       mint: output.asset,
       blinding: output.blinding,
       key: sealedRecordKey(kind, owner.nullifierPublicKey),
+      dataHash: output.dataHash ?? ZERO_32,
+      ringDataHash: output.ringDataHash ?? ZERO_32,
     });
   });
   txKey.destroy();
@@ -776,13 +802,7 @@ export async function openDelivered(
     throw new Error("no recipient slot");
   const owner = input.keys.address();
   // Another key's secret decrypts noise the record codec refuses, as a reader skips the slot.
-  let opened: ReturnType<typeof openOutputSlot>;
-  try {
-    opened = openOutputSlot(slotSecret, concatBytes(wire.record, wire.body.payload));
-  } catch {
-    return undefined;
-  }
-  return openRecipientNote(
+  return openRecipientBody(
     {
       owner: {
         signingPublicKey: owner.signingPublicKey,
@@ -793,7 +813,8 @@ export async function openDelivered(
       commitment: wire.hash,
       assets: new AssetRegistry(),
     },
-    opened,
+    slotSecret,
+    concatBytes(wire.record, wire.body.payload),
   );
 }
 

@@ -77,7 +77,7 @@ pub fn process_instruction(
     match ix_tag {
         InstructionTag::Initialize => process_initialize_ix(program_id, accounts, ix_data),
         InstructionTag::Transfer | InstructionTag::AuthorityTransfer => {
-            process_transfer_ix(program_id, accounts, ix_data, ix_tag)
+            process_transfer_ix(program_id, accounts, instruction_data, ix_tag)
         }
         // SPP proves that owner, asset, value and ring ownership stay unchanged.
         InstructionTag::Merge => process_merge_ix(program_id, accounts, ix_data),
@@ -89,6 +89,9 @@ pub fn process_instruction(
         InstructionTag::SetCoSigner => process_set_cosigner_ix(program_id, accounts, ix_data),
         InstructionTag::ClearCoSigner => process_clear_cosigner_ix(program_id, accounts, ix_data),
         InstructionTag::SetDelegate => process_set_delegate_ix(program_id, accounts, ix_data),
+        InstructionTag::ApproveTransfer => {
+            process_approve_transfer_ix(program_id, accounts, ix_data)
+        }
         InstructionTag::EnrollBatch => process_enroll_batch_ix(program_id, accounts, ix_data),
     }
 }

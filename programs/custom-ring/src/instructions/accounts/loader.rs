@@ -23,11 +23,12 @@ use custom_ring_interface::{
     storage::{Revision, StorageRegistry},
     tracking::TrackingRegistry,
     CoSigner, CustomRingError, LiveRoots, MintDelegate, RingAccount, RingPolicy, RingRole,
-    RootRead, SettlementAccount, TokenAccountState, STORAGE_PROGRAM_ID,
+    RootRead, SettlementAccount, TokenAccountState, TransferApproval, STORAGE_PROGRAM_ID,
 };
 use pinocchio::{
     account::{Ref, RefMut},
     error::ProgramError,
+    sysvars::instructions::{Instructions, IntrospectedInstruction, INSTRUCTIONS_ID},
     AccountView, Address, ProgramResult,
 };
 use solana_loader_v3_interface::state::UpgradeableLoaderState;
@@ -235,16 +236,121 @@ pub fn check_funding_signer(
     Ok(funder)
 }
 
+/// `None` for every account but the instructions sysvar.
+pub fn load_instructions(
+    account: &AccountView,
+) -> Result<Option<Instructions<Ref<'_, [u8]>>>, ProgramError> {
+    if account.address() != &INSTRUCTIONS_ID {
+        return Ok(None);
+    }
+    Instructions::try_from(account).map(Some)
+}
+
+#[derive(Clone, Copy)]
+pub struct TransferCall<'a> {
+    pub program_id: &'a Address,
+    pub ring: &'a Address,
+    /// From the tag.
+    pub data: &'a [u8],
+    pub accounts: &'a [AccountView],
+}
+
+impl TransferCall<'_> {
+    fn digest(&self) -> Result<[u8; 32], CustomRingError> {
+        TransferApproval::digest(
+            self.program_id,
+            self.data,
+            self.accounts.iter().map(AccountView::address),
+        )
+    }
+}
+
+enum ListedInstruction {
+    /// No approval of the ring under the record.
+    Unrelated,
+    Refused(CustomRingError),
+    Approves,
+}
+
+#[must_use]
+struct TransferApprovalSearch<'a> {
+    call: &'a TransferCall<'a>,
+    record: &'a Address,
+    signer: &'a Address,
+}
+
+impl TransferApprovalSearch<'_> {
+    /// Refuses with the last listed approval's reason, a record may approve several transfers of one transaction.
+    #[inline(never)]
+    fn find(self, instructions: &Instructions<Ref<'_, [u8]>>) -> ProgramResult {
+        let position = instructions.load_current_index();
+        let mut refusal = CustomRingError::MissingTransferApproval;
+        for index in 0..instructions.num_instructions() {
+            match self.read(&instructions.load_instruction_at(index)?, position)? {
+                ListedInstruction::Unrelated => {}
+                ListedInstruction::Refused(reason) => refusal = reason,
+                ListedInstruction::Approves => return Ok(()),
+            }
+        }
+        Err(refusal.into())
+    }
+
+    /// The transaction's signer flag stands for the signature, the runtime runs every listed instruction or none.
+    fn read(
+        &self,
+        listed: &IntrospectedInstruction<'_>,
+        position: u16,
+    ) -> Result<ListedInstruction, ProgramError> {
+        if listed.get_program_id() != self.call.program_id
+            || listed.num_account_metas() < TransferApproval::ACCOUNTS
+        {
+            return Ok(ListedInstruction::Unrelated);
+        }
+        let Some(approval) = TransferApproval::parse(listed.get_instruction_data()) else {
+            return Ok(ListedInstruction::Unrelated);
+        };
+        let account = |index| listed.get_instruction_account_at(index);
+        if &account(TransferApproval::RING_ACCOUNT)?.key != self.call.ring
+            || &account(TransferApproval::RECORD_ACCOUNT)?.key != self.record
+        {
+            return Ok(ListedInstruction::Unrelated);
+        }
+        let co_signer = account(TransferApproval::CO_SIGNER_ACCOUNT)?;
+        let refusal = if &co_signer.key != self.signer {
+            CustomRingError::UnauthorizedCoSigner
+        } else if !co_signer.is_signer() {
+            CustomRingError::MissingCoSigner
+        } else if u16::from(approval.position) != position {
+            CustomRingError::TransferApprovalOtherPosition
+        } else if approval.digest != self.call.digest()? {
+            CustomRingError::TransferApprovalOtherCall
+        } else {
+            return Ok(ListedInstruction::Approves);
+        };
+        Ok(ListedInstruction::Refused(refusal))
+    }
+}
+
 #[must_use]
 pub struct CoSignerSlot<'a> {
-    pub program_id: &'a Address,
+    pub call: &'a TransferCall<'a>,
     pub record: &'a AccountView,
+    /// The record's signer, or the instructions sysvar listing its approval.
     pub signer: &'a AccountView,
 }
 
 impl CoSignerSlot<'_> {
     pub fn verify(self, requirement: CoSignRequirement) -> Result<CoSignCover, ProgramError> {
-        let cover = requirement.cover(&*load::<CoSigner>(self.program_id, self.record)?)?;
+        let cover = requirement.cover(&*load::<CoSigner>(self.call.program_id, self.record)?)?;
+        if let Some(instructions) = load_instructions(self.signer)? {
+            TransferApprovalSearch {
+                call: self.call,
+                record: self.record.address(),
+                signer: &cover.signer,
+            }
+            .find(&instructions)?;
+            return Ok(cover);
+        }
         if !self.signer.is_signer() {
             return Err(CustomRingError::MissingCoSigner.into());
         }
@@ -264,7 +370,7 @@ pub struct CoSigners {
 
 impl CoSigners {
     pub fn verify(
-        program_id: &Address,
+        call: &TransferCall<'_>,
         accounts: &[AccountView],
         mut requirement: Option<CoSignRequirement>,
     ) -> Result<Self, ProgramError> {
@@ -276,7 +382,7 @@ impl CoSigners {
             };
             let [record, signer] = pairs.next().ok_or(ProgramError::NotEnoughAccountKeys)?;
             let cover = CoSignerSlot {
-                program_id,
+                call,
                 record,
                 signer,
             }

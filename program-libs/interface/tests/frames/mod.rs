@@ -5,6 +5,7 @@ use custom_ring_interface::{
     CustomRingProof, FrameExtensions, FramedSenderBundle, InProofOwner, InputTrees,
     PlainGroth16Proof, PolicyProof, Replies, RingOutput, RingRail, RingTransactData, SlotBody,
     CONFIDENTIAL_DATA_FREE_BODY_LEN, EXIT_RECORD_LEN, RING_RECORD_LEN, SENDER_BUNDLE_LEN,
+    TRANSFER_RECORD_LEN,
 };
 use solana_bn254::compression::prelude::alt_bn128_g2_compress_be;
 use spr_interface::instruction::{InterfaceTransfer, TreeContext};
@@ -15,21 +16,23 @@ mod common;
 pub use common::spp_b;
 
 pub const ZERO_TAG: [u8; 32] = [0; 32];
+/// A non-exit record of a data frame.
+pub const DATA_RING_RECORD_LEN: usize = RING_RECORD_LEN + 32;
 
 pub struct Fixture {
     pub proofs: [CustomRingProof; 2],
     pub spp_proof: PlainGroth16Proof,
     pub fields: Vec<[u8; 32]>,
     pub bytes: [[u8; 32]; 64],
-    /// Slot `i`'s exit record, its first `RING_RECORD_LEN` bytes a recipient body with no payload.
-    pub records: [[u8; EXIT_RECORD_LEN]; 16],
+    /// Slot `i`'s sealed record, its first `RING_RECORD_LEN` bytes a recipient body with no payload.
+    pub records: [[u8; TRANSFER_RECORD_LEN]; 16],
     /// Cut to the stream layout's envelope length.
     pub envelope: Vec<u8>,
     /// Cut to one sealed key per published slot.
     pub keys: Vec<u8>,
     pub tags: [[u8; 32]; 16],
-    /// A record and a payload, a data-bearing frame's.
-    pub extended_bodies: [[u8; RING_RECORD_LEN + 35]; 16],
+    /// A record with its data hash and a payload, a data-bearing frame's.
+    pub extended_bodies: [[u8; DATA_RING_RECORD_LEN + 35]; 16],
     pub sender_body: [u8; SENDER_BUNDLE_LEN],
     /// Cut to one length per body-bearing slot.
     pub replies: Vec<u8>,
@@ -57,12 +60,12 @@ impl Fixture {
             },
             fields: (0..=u8::MAX).map(field).collect(),
             bytes: core::array::from_fn(|i| [0x40 + i as u8; 32]),
-            records: core::array::from_fn(|i| [0x80 + i as u8; EXIT_RECORD_LEN]),
+            records: core::array::from_fn(|i| [0x80 + i as u8; TRANSFER_RECORD_LEN]),
             envelope: (0..8192u32).map(|byte| byte as u8 ^ 0x93).collect(),
             keys: (0..512u32).map(|byte| byte as u8 ^ 0x71).collect(),
             tags: core::array::from_fn(|i| field(0xa0 + i as u8)),
             extended_bodies: core::array::from_fn(|i| {
-                core::array::from_fn(|byte| match byte < RING_RECORD_LEN {
+                core::array::from_fn(|byte| match byte < DATA_RING_RECORD_LEN {
                     true => 0x80 + i as u8,
                     false => byte as u8 ^ 0x3c,
                 })
@@ -95,6 +98,7 @@ impl Fixture {
             extensions: FrameExtensions::default(),
             interface_transfers: Vec::new(),
             has_data: false,
+            ring_data: false,
             entry: false,
             wide_owners: false,
             outputs: Vec::new(),
@@ -102,6 +106,7 @@ impl Fixture {
             sender: None,
             envelope: &[],
             recipient_keys: &[],
+            vouched: false,
             private_tx_hash: &self.fields[0],
             anonymous: None,
             in_proof_owner: None,
@@ -119,7 +124,7 @@ impl Fixture {
             hash: &self.fields[10 + slot],
             owner_tag: self.bytes[12 + slot],
             body: SlotBody::Exit(payload),
-            record: &self.records[slot],
+            record: &self.records[slot][..EXIT_RECORD_LEN],
         }
     }
 
@@ -209,9 +214,13 @@ impl Fixture {
         data.outputs = vec![
             RingOutput {
                 body: SlotBody::Recipient(&self.extended_bodies[0]),
+                record: &self.records[0][..DATA_RING_RECORD_LEN],
                 ..self.recipient(0)
             },
-            self.exit(1, &self.extended_bodies[1]),
+            RingOutput {
+                record: &self.records[1],
+                ..self.exit(1, &self.extended_bodies[1])
+            },
         ];
         self.with_audit_stream(data)
     }

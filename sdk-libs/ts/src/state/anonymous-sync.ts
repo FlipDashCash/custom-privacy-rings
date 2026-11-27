@@ -14,6 +14,7 @@ import {
   isCanonicalField,
   isZero,
   PAGE_LIMIT,
+  treeAddress,
   ZERO_NULLIFIER_PK,
 } from "@heliuslabs/spr/internal";
 import type { Address, Bytes16, Bytes32, RequestContext } from "@heliuslabs/spr/interface";
@@ -35,24 +36,21 @@ import {
 import { anonymousSlotTag, txKeySlotSecret } from "../crypto/derivation/ring-stream.js";
 import { isSmallOrder, x25519FromU } from "../crypto/keys/x25519.js";
 import {
-  openReply,
   openSenderBundle,
   SENDER_BUNDLE_LEN,
   type ReplyClaim,
 } from "../protocol/codec/anonymous-delivery.js";
 import { parseAuditorMessage } from "../crypto/audit/audit.js";
-import {
-  openOutputSlot,
-  openSealedDisclosure,
-  type OpenedOutput,
-} from "../crypto/audit/ring-disclosure.js";
+import { openOutputSlot, openSealedDisclosure } from "../crypto/audit/ring-disclosure.js";
+import type { OutputRecord } from "../protocol/codec/audit-stream.js";
 import {
   auditorMessageLen,
+  recipientBodyForms,
   type AuditStreamLayout,
 } from "../protocol/codec/ring-disclosure-layout.js";
 import { TRANSFER_SHAPES } from "../protocol/proof/transfer-shapes.js";
 import { ringBodyOutput, senderBundleOutputBody } from "../protocol/transaction/output.js";
-import { openRecipientNote } from "../crypto/derivation/blinding.js";
+import { openRecipientBody } from "../crypto/derivation/blinding.js";
 import { HalvingPageLimit, readRingPages, scanLimits, type ScanLimits } from "../rpc/history.js";
 import type { AnonymousWallet } from "./anonymous-wallet.js";
 import {
@@ -64,7 +62,7 @@ import {
 import { answered, decoded, unseen } from "./batch.js";
 import { isZeroKeyNote as isExposedNote, zeroKeyNullifier } from "./exposed-notes.js";
 import { registeredMint } from "../operations/workflow/recover.js";
-import { openRingMerges } from "./ring-sync.js";
+import { claimOf, openRingMerges } from "./ring-sync.js";
 import type { RingKeys, RingTagFrame } from "./ring-keys.js";
 import { RingError } from "../protocol/error.js";
 import { ViewingHistory, type ViewingKeyEntry } from "./viewing-history.js";
@@ -822,20 +820,9 @@ class Scan {
 
   /** Entries at one position of one ring share a read, a key added later is its own query. */
   async rings(): Promise<void> {
-    const reads = new Map<
-      string,
-      Readonly<{ ring: Address; afterSlot: bigint | null; keys: X25519PublicKey[] }>
-    >();
-    for (const entry of this.#history.entries.filter((held) => this.#holds(held)))
-      for (const { ring, afterSlot } of entry.ringPositions()) {
-        const position = this.#sync.fullRescan ? null : afterSlot;
-        const key = `${ring}:${String(position)}`;
-        const read = reads.get(key) ?? { ring, afterSlot: position, keys: [] };
-        read.keys.push(entry.viewingPublicKey);
-        reads.set(key, read);
-      }
-    for (const { ring, afterSlot, keys } of reads.values())
-      await this.#readRing({ ring, afterSlot, keys, trial: "tagHints" });
+    const held = this.#sync.keys.viewingPublicKeys();
+    for (const read of this.#history._ringReads(held, this.#sync.fullRescan))
+      await this.#readRing({ ...read, trial: "tagHints" });
   }
 
   /** Recovery, every site tried under every held key from the ring's start. */
@@ -1298,9 +1285,7 @@ class BodyRead {
   }
 
   recipientBody(body: Body, position: number, secret: Bytes32): void {
-    const opening = decoded(() => openOutputSlot(secret, body.ciphertext));
-    if (opening === undefined) return;
-    this.#note(body, position, opening, claimOf(body.reply, secret));
+    this.#note(body, position, secret, body.ciphertext, claimOf(body.reply, secret));
   }
 
   /** Rust `SenderBundle` and `Scan::open_bundle`, change candidates are the zero-tag bodies alone. */
@@ -1324,12 +1309,7 @@ class BodyRead {
         const parts = slot === undefined ? undefined : ringBodyOutput(slot.payload);
         const changeSecret = secrets[index];
         if (parts === undefined || changeSecret === undefined) return;
-        this.#note(
-          body,
-          position,
-          decoded(() => openOutputSlot(changeSecret, parts.body)),
-          undefined,
-        );
+        this.#note(body, position, changeSecret, parts.body, undefined);
       });
     } finally {
       secrets.forEach((changeSecret) => changeSecret.fill(0));
@@ -1350,12 +1330,16 @@ class BodyRead {
   #note(
     body: Body,
     position: number,
-    opening: OpenedOutput | undefined,
+    secret: Bytes32,
+    ciphertext: Uint8Array,
     claim: ReplyClaim | undefined,
   ): void {
     const slot = body.tx.outputSlots[position];
-    if (slot === undefined || opening === undefined) return;
-    const rebuilt = rebuild(this.#reads.assets, this.#owner, slot, body.context.ring, opening);
+    if (slot === undefined) return;
+    const rebuilt = rebuild(this.#reads.assets, this.#owner, slot, body.context.ring, {
+      secret,
+      ciphertext,
+    });
     if (rebuilt !== undefined) this.#keep(body, position, rebuilt, claim);
   }
 
@@ -1386,21 +1370,26 @@ class BodyRead {
       outputIndex: position,
       firstNullifier: body.context.firstNullifier,
     });
-    let opening: OpenedOutput | undefined;
+    let record: OutputRecord | undefined;
+    let verified: ShieldedAddress | undefined;
     try {
       // The tag binds `V_k` to its slot, a key read under another layout derives another tag.
       if (!equalBytes(anonymousSlotTag(secret), slot.viewTag)) return undefined;
-      opening = decoded(() => openOutputSlot(secret, parts.body));
+      const sealed = { secret, ciphertext: parts.body };
+      // The amount sits in the record's head, the same bytes under every form.
+      for (const form of recipientBodyForms(parts.body.length)) {
+        record = decoded(() => openOutputSlot(secret, parts.body, form))?.record;
+        if (record !== undefined) break;
+      }
+      if (record === undefined) return undefined;
+      verified = this.#reads.recipients.find(
+        (address) =>
+          address.viewingPublicKey.equals(recipient) &&
+          rebuild(this.#reads.assets, address, slot, body.context.ring, sealed) !== undefined,
+      );
     } finally {
       secret.fill(0);
     }
-    if (opening === undefined) return undefined;
-    const { record } = opening;
-    const verified = this.#reads.recipients.find(
-      (address) =>
-        address.viewingPublicKey.equals(recipient) &&
-        rebuild(this.#reads.assets, address, slot, body.context.ring, opening) !== undefined,
-    );
     return Object.freeze({
       txSignature: body.tx.txSignature,
       utxoHash: slot.outputContext.hash,
@@ -1529,12 +1518,16 @@ function rebuild(
   owner: ShieldedAddress,
   slot: OutputSlot,
   ring: Address,
-  opening: OpenedOutput,
+  sealed: Readonly<{ secret: Bytes32; ciphertext: Uint8Array }>,
 ): Rebuilt | undefined {
   const { hash, treeId } = slot.outputContext;
   if (treeId === undefined) return undefined;
   return decoded(() =>
-    openRecipientNote({ owner, ring, treeId, commitment: hash, assets }, opening),
+    openRecipientBody(
+      { owner, ring, treeId, commitment: hash, assets },
+      sealed.secret,
+      sealed.ciphertext,
+    ),
   );
 }
 
@@ -1556,7 +1549,7 @@ function sentRecipientKeys(
   const exits = tx.outputSlots.filter((slot) => ringBodyOutput(slot.payload) === undefined).length;
   const txViewingSecret = txViewingKey.secretBytes();
   try {
-    return senderAuditLayouts(tx.nullifiers.length, tx.outputSlots.length)
+    return senderAuditLayouts(tx.nullifiers.length, tx.outputSlots.length, exits)
       .filter((layout) => auditorMessageLen(layout, exits) === message.data.length)
       .flatMap((layout) => {
         const opened = decoded(() =>
@@ -1575,22 +1568,30 @@ function sentRecipientKeys(
   }
 }
 
-/** One plain layout, the plain envelope fixes every counter, then one per entry class holding `n`. */
-function senderAuditLayouts(inputs: number, outputs: number): readonly AuditStreamLayout[] {
+/**
+ * One plain layout, the plain envelope fixes every counter, then one per entry class holding `n`,
+ * each unvouched and vouched, and under an exit each with the data bit its record length reads.
+ */
+function senderAuditLayouts(
+  inputs: number,
+  outputs: number,
+  exits: number,
+): readonly AuditStreamLayout[] {
   const entryClasses = new Set(
     TRANSFER_SHAPES.filter((shape) => shape.entry && shape.inputs >= inputs).map(
       (shape) => shape.inputs,
     ),
   );
-  return [
-    { key: { class: inputs, entry: false }, inputs, outputs, capacity: outputs },
-    ...[...entryClasses].map((keyClass) => ({
-      key: { class: keyClass, entry: true },
-      inputs,
-      outputs,
-      capacity: outputs,
-    })),
+  const keys = [
+    { class: inputs, entry: false },
+    ...[...entryClasses].map((keyClass) => ({ class: keyClass, entry: true })),
   ];
+  const forms = (exits === 0 ? [false] : [false, true]).map((data) => ({ data, ringData: false }));
+  return keys.flatMap((key) =>
+    [false, true].flatMap((vouched) =>
+      forms.map((records) => ({ key, inputs, outputs, capacity: outputs, vouched, records })),
+    ),
+  );
 }
 
 /** Key `k` names slot `k`, zero keys, the sender's own change keys and keys no ECDH accepts left out. */
@@ -1644,11 +1645,6 @@ function bodyAt(
     : undefined;
 }
 
-/** `undefined` without a reply or on bytes that never decode. */
-function claimOf(reply: Uint8Array, secret: Bytes32): ReplyClaim | undefined {
-  return reply.length === 0 ? undefined : decoded(() => openReply(secret, reply));
-}
-
 /** A body at its position, a bundle at `m`, past every body's index. */
 function outputIndex(body: Body): number {
   return body.site.kind === "output" ? body.site.position : body.tx.outputSlots.length;
@@ -1681,7 +1677,8 @@ function slotContext(tx: IndexedShieldedTransaction): SlotContext | undefined {
 function walletContext(slot: OutputSlot): WalletUtxo["outputContext"] {
   return Object.freeze({
     hash: slot.outputContext.hash,
-    tree: slot.outputContext.tree,
+    tree: treeAddress(slot.outputContext.treeId),
+    treeId: slot.outputContext.treeId,
     leafIndex: slot.outputContext.leafIndex,
   });
 }

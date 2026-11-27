@@ -94,6 +94,8 @@ impl ListSet {
     /// A rule reads these by presence, a set bit grants.
     pub const GRANT_LISTS: Self =
         Self::of(&[ListId::Allow, ListId::Approval, ListId::PrivateAllow]);
+    /// A voucher's entry stands in for a subject's on these, mirror `vouchedLists` in `prover/circuits/policy/voucher.go`.
+    pub const VOUCHED: Self = Self::of(&[ListId::Allow, ListId::PrivateAllow]);
     /// A rule reads these by absence, a set bit denies.
     pub const DENY_LISTS: Self = Self::of(&[
         ListId::Block,

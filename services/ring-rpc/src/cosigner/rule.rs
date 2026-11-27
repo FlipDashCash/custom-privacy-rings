@@ -3,10 +3,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use solana_address::Address;
 use solana_message::VersionedMessage;
-use solana_signature::Signature;
 
+use super::scope::ApprovedCall;
 use crate::{
-    cosign::{CoSignFlows, CoSignRefusal, CoSignSettlement},
+    cosign::{CoSignFlows, CoSignRefusal, CoSignSettlement, FrameSource, Ticket},
     error::RingRpcError,
 };
 
@@ -14,9 +14,19 @@ use crate::{
 pub struct Operation<'a> {
     pub ring: Address,
     pub message: &'a VersionedMessage,
+    pub approved_transfer: Option<&'a ApprovedCall>,
     pub flows: &'a CoSignFlows,
-    /// The co-signature over `message`, the key of every reservation.
-    pub ticket: Signature,
+    /// Of `message`, the key of every reservation.
+    pub ticket: Ticket,
+}
+
+impl<'a> Operation<'a> {
+    pub const fn frame_source(&self) -> FrameSource<'a> {
+        FrameSource {
+            message: self.message,
+            approved_transfer: self.approved_transfer,
+        }
+    }
 }
 
 #[must_use]
@@ -31,7 +41,7 @@ pub enum Verdict {
 pub trait CoSignRule: Send + Sync {
     async fn admit(&self, operation: &Operation<'_>) -> Result<Verdict, RingRpcError>;
 
-    /// Keeps or frees what `admit` reserved under the settled signature.
+    /// Keeps or frees what `admit` reserved under the settled ticket.
     async fn settle(&self, _settlement: CoSignSettlement) -> Result<(), RingRpcError> {
         Ok(())
     }

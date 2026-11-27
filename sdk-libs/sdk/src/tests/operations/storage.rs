@@ -129,3 +129,141 @@ fn a_full_batch_of_first_enrollments_fits_one_transaction() {
     .unwrap();
     assert!(fit.bytes + widening <= MAX_TRANSACTION_SIZE);
 }
+
+mod owner_request {
+    use custom_ring_interface::{domain, tracking::TRACKING_QUAD_HEIGHT};
+    use spr_hasher::primitives::solana_owner_identity;
+    use zolana_ring_member_registry::{TrackingOpening, TrackingPath, TrackingRecord};
+    use zolana_ring_policy::Member;
+
+    use super::super::{BoundOwner, SaltedOwnerWrite};
+    use crate::RingError;
+
+    const OWNER: solana_address::Address = solana_address::Address::new_from_array([7; 32]);
+    const OWN_SALT: [u8; 32] = [4; 32];
+    const RING_SALT: [u8; 32] = [6; 32];
+
+    fn bound(list_salt: [u8; 32], ring: bool) -> BoundOwner {
+        BoundOwner {
+            write: SaltedOwnerWrite {
+                write_index: 0,
+                owner: OWNER,
+                list_salt,
+            },
+            member: solana_owner_identity(OWNER.as_array()).unwrap(),
+            ring,
+        }
+    }
+
+    fn path() -> TrackingPath {
+        TrackingPath {
+            index: 3,
+            siblings: [[[0; 32]; 3]; TRACKING_QUAD_HEIGHT],
+        }
+    }
+
+    fn row(list_salt: &[u8; 32]) -> TrackingRecord {
+        TrackingRecord {
+            member: solana_owner_identity(OWNER.as_array()).unwrap(),
+            next: [0; 32],
+            nullifier_pk: [5; 32],
+            ct_hash: [0; 32],
+            list_tag: domain::list_tag(list_salt).unwrap(),
+            viewing_hash: [0; 32],
+        }
+    }
+
+    fn present() -> TrackingOpening {
+        TrackingOpening::Present {
+            record: row(&OWN_SALT),
+            path: path(),
+        }
+    }
+
+    fn absent() -> TrackingOpening {
+        TrackingOpening::Absent {
+            low: TrackingRecord {
+                member: [0; 32],
+                ..row(&OWN_SALT)
+            },
+            path: path(),
+        }
+    }
+
+    #[test]
+    fn a_ring_salted_write_opens_the_committed_tag_for_an_owner_with_or_without_a_row() {
+        let tag = domain::list_tag(&RING_SALT).unwrap();
+        let unregistered = bound(RING_SALT, true).request(absent(), &tag).unwrap();
+        assert!(unregistered.ring && unregistered.absent.is_some());
+        let registered = bound(RING_SALT, true).request(present(), &tag).unwrap();
+        assert!(registered.ring && registered.absent.is_none());
+        for (salt, committed) in [(RING_SALT, [0; 32]), ([9; 32], tag), (OWN_SALT, tag)] {
+            for opening in [absent(), present()] {
+                assert!(matches!(
+                    bound(salt, true).request(opening, &committed),
+                    Err(RingError::RingSaltUncommitted { write_index: 0 })
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn a_write_under_the_owners_salt_needs_its_enrolled_row_and_tag() {
+        let tag = domain::list_tag(&RING_SALT).unwrap();
+        let own = bound(OWN_SALT, false).request(present(), &tag).unwrap();
+        assert!(!own.ring && own.absent.is_none());
+        assert!(matches!(
+            bound(OWN_SALT, false).request(absent(), &tag),
+            Err(RingError::WriteOwnerNotEnrolled { write_index: 0 })
+        ));
+        assert!(matches!(
+            bound(RING_SALT, false).request(present(), &tag),
+            Err(RingError::ListSaltMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn a_written_key_binds_to_its_family_or_is_refused() {
+        let member = Member::from_bytes(solana_owner_identity(OWNER.as_array()).unwrap()).unwrap();
+        let write = SaltedOwnerWrite {
+            write_index: 0,
+            owner: OWNER,
+            list_salt: RING_SALT,
+        };
+        let ring_key = *Member::ring_salted(&member, &RING_SALT).unwrap().as_bytes();
+        let own_key = *Member::salted(&member, &RING_SALT).unwrap().as_bytes();
+        assert!(BoundOwner::keyed(&write, Some(ring_key)).unwrap().ring);
+        assert!(!BoundOwner::keyed(&write, Some(own_key)).unwrap().ring);
+        for other in [Some([1; 32]), None] {
+            assert!(matches!(
+                BoundOwner::keyed(&write, other),
+                Err(RingError::ListKeyMismatch { write_index: 0 })
+            ));
+        }
+    }
+
+    #[test]
+    fn the_writer_check_takes_the_ring_salt_only_under_the_committed_tag_and_no_row() {
+        let tag = domain::list_tag(&RING_SALT).unwrap();
+        let check = |list_salt: &[u8; 32], opening: &TrackingOpening, committed: &[u8; 32]| {
+            crate::OwnerSaltCheck {
+                ring: crate::tests::support::ring(),
+                owner: &OWNER,
+                list_salt,
+            }
+            .opens(opening, committed)
+        };
+        check(&RING_SALT, &absent(), &tag).unwrap();
+        check(&OWN_SALT, &present(), &tag).unwrap();
+        for committed in [[0; 32], domain::list_tag(&[9; 32]).unwrap()] {
+            assert!(matches!(
+                check(&RING_SALT, &absent(), &committed),
+                Err(RingError::ListSaltUnknown { .. })
+            ));
+        }
+        assert!(matches!(
+            check(&RING_SALT, &present(), &tag),
+            Err(RingError::ListSaltMismatch { .. })
+        ));
+    }
+}

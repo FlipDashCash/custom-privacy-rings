@@ -48,8 +48,12 @@ const (
 	ListTagDomain = 0x43525054
 	// ListKeyDomain = "CRPL"
 	ListKeyDomain = 0x4352504c
+	// RingListKeyDomain = "CRPR"
+	RingListKeyDomain = 0x43525052
 	// DeliveredSlotDomain = "CRDS"
 	DeliveredSlotDomain = 0x43524453
+	// VouchDomain = "CRVC"
+	VouchDomain = 0x43525643
 )
 
 // The root of every auditor stream, mirrored by AUDIT_SHARED_SECRET in program-libs/interface/src/proof/domain.rs and DOM_SEP_CR_SHARED in sdk-libs/ts/src/crypto/audit/audit.ts.
@@ -88,9 +92,20 @@ func ListTag(api frontend.API, listSalt frontend.Variable) frontend.Variable {
 	return gadget.PoseidonHash(api, []frontend.Variable{ListTagDomain, listSalt})
 }
 
+// RingListKey is the member key of an owner's record under the ring salt, its domain keeps it off every ListKey.
+func RingListKey(api frontend.API, owner, ringSalt frontend.Variable) frontend.Variable {
+	return gadget.PoseidonHash(api, []frontend.Variable{RingListKeyDomain, owner, ringSalt})
+}
+
 // ListKey is the member key of an owner's salted record, pseudorandom without the salt.
 func ListKey(api frontend.API, owner, listSalt frontend.Variable) frontend.Variable {
 	return gadget.PoseidonHash(api, []frontend.Variable{ListKeyDomain, owner, listSalt})
+}
+
+// VouchDigest is Poseidon(CRVC, private_tx_hash, withdrawal_hash), the field a voucher signs as 32 big endian bytes, mirrored by VouchMessage::digest in program-libs/interface/src/proof/domain.rs.
+// The tag keeps the bytes apart from SPP's owner authorization digest, a vouch never authorizes a spend.
+func VouchDigest(api frontend.API, privateTxHash, withdrawalHash frontend.Variable) frontend.Variable {
+	return gadget.PoseidonHash(api, []frontend.Variable{VouchDomain, privateTxHash, withdrawalHash})
 }
 
 // AnonymousParties is one cell per co-signer, mirrored by ANONYMOUS_PARTIES.

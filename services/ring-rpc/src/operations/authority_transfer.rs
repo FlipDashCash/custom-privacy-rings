@@ -22,6 +22,7 @@ use crate::{
     authorize::WalletCheck,
     error::{redacted, RingRpcError},
     hub::Hub,
+    record_update::RecordUpdateRefusal,
     relay_prover::{DelegateSeal, SealedSource},
     replay::ReplayCheck,
     tracking::TrackingRefusal,
@@ -286,11 +287,19 @@ impl<S: TransactionSource> Hub<S> {
                 now,
             })
             .await?;
+        let list_salt = service.enrolled_list_salt(&owner.to_bytes()).await?;
+        // 3. An owner with no row reads and writes the private lists under the ring salt.
+        let ring_salt = match list_salt {
+            Some(_) => None,
+            None => {
+                let salt = service.ring_salt()?;
+                RecordUpdateRefusal::unless_committed(&salt, &config.ring_list_tag)?;
+                Some(Hash(*salt))
+            }
+        };
         Ok(GetListSaltResponse {
-            list_salt: service
-                .enrolled_list_salt(&owner.to_bytes())
-                .await?
-                .map(Hash),
+            list_salt: list_salt.map(Hash),
+            ring_salt,
         })
     }
 
@@ -618,7 +627,7 @@ mod tests {
         let relay = RelayParts {
             store: Store::open("sqlite::memory:", 1).await.expect("store"),
             prover: prover.clone(),
-            fee_payer: fee_payer(),
+            fee_payer: Arc::new(fee_payer()),
             chain: Arc::new(ScriptedChain::default()),
         };
         (Fixture::serving(Some(delegate), Some(relay)).await, prover)
@@ -844,7 +853,7 @@ mod tests {
         let relay = RelayParts {
             store: store.clone(),
             prover: prover.clone(),
-            fee_payer: fee_payer(),
+            fee_payer: Arc::new(fee_payer()),
             chain: chain.clone(),
         };
         let fixture = Fixture::serving(Some(delegate.pubkey()), Some(relay)).await;
@@ -1010,7 +1019,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_list_writer_reads_the_enrolled_salt_and_another_key_nothing() {
+    async fn a_list_writer_reads_the_enrolled_salt_or_the_ring_salt_and_another_key_nothing() {
         let (fixture, _prover) = served(Keypair::new_from_array([21; 32]).pubkey()).await;
         let wallet = Keypair::new_from_array([11; 32]);
         fixture.enroll(&wallet, &NullifierKey::from_secret([11; 31]));
@@ -1021,6 +1030,7 @@ mod tests {
             .await
             .expect("the writer reads");
         assert_eq!(read.list_salt.expect("salt").0, LIST_SALT);
+        assert_eq!(read.ring_salt, None);
         let impostor = Keypair::new_from_array([22; 32]);
         let refused = fixture
             .hub
@@ -1029,12 +1039,37 @@ mod tests {
             .expect_err("only a writer reads");
         assert_eq!(ErrorObjectOwned::from(refused).code(), -32226);
         let unenrolled = Keypair::new_from_array([12; 32]);
+        let uncommitted = fixture
+            .hub
+            .list_salt(&salt_request(&fixture, &writer, unenrolled.pubkey()))
+            .await
+            .expect_err("a ring with no ring list tag serves no ring salt");
+        assert_eq!(ErrorObjectOwned::from(uncommitted).code(), -32279);
+        let ring_salt = fixture
+            .hub
+            .service(Some(RING))
+            .expect("service")
+            .ring_salt()
+            .expect("ring salt");
+        let source = &fixture.hub.shared().source;
+        *source.ring_list_tag.lock().unwrap() =
+            custom_ring_interface::domain::list_tag(&[9; 32]).expect("tag");
+        fixture
+            .hub
+            .list_salt(&salt_request(&fixture, &writer, unenrolled.pubkey()))
+            .await
+            .expect_err("a tag of another salt serves no ring salt");
+        *source.ring_list_tag.lock().unwrap() =
+            custom_ring_interface::domain::list_tag(&ring_salt).expect("tag");
         let none = fixture
             .hub
             .list_salt(&salt_request(&fixture, &writer, unenrolled.pubkey()))
             .await
-            .expect("a complete scan without the enrollment reads nothing");
-        assert_eq!(none.list_salt, None);
+            .expect("an owner with no enrollment reads the committed ring salt");
+        assert_eq!(
+            (none.list_salt, none.ring_salt),
+            (None, Some(Hash(*ring_salt)))
+        );
     }
 
     #[tokio::test]

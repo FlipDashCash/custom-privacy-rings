@@ -13,11 +13,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { SYSTEM_PROGRAM, addressBytes, sha256 } from "@heliuslabs/spr/internal";
 import type { Bytes32 } from "@heliuslabs/spr/interface";
-import { ClientError } from "@heliuslabs/spr/client";
+import { ClientError, type RpcAccount } from "@heliuslabs/spr/client";
 import { X25519Keypair } from "@heliuslabs/spr/keypair";
 import { ringPolicyPda } from "../../../src/protocol/pda/index.js";
 import {
   BPF_LOADER_UPGRADEABLE_ID,
+  fetchSppRingConfig,
+  requireActiveRing,
   ringProgramDataAddress,
 } from "../../../src/protocol/membership/config.js";
 import {
@@ -31,6 +33,7 @@ import {
   initializeBufferInstruction,
   RingProgramBinary,
   closeBufferInstruction,
+  closeRingProgramInstruction,
   setUpgradeAuthorityInstruction,
   upgradeInstruction,
   verifyRingProgram,
@@ -41,7 +44,7 @@ import {
   BLOCKHASH,
   solanaRpcReads,
 } from "../../../../../zolana/sdk-libs/ts/test/helpers/clients.js";
-import { ownedAccount, ringPolicyData } from "../../helpers/ring-accounts.js";
+import { ownedAccount, ringPolicyData, sppRingRegistration } from "../../helpers/ring-accounts.js";
 
 const filled = (byte: number): Bytes32 => new Uint8Array(32).fill(byte) as Bytes32;
 const addressOf = (byte: number): Address => getAddressDecoder().decode(filled(byte));
@@ -353,6 +356,18 @@ describe("loader instructions", () => {
       [PAYER, AccountRole.WRITABLE],
       [AUTHORITY, AccountRole.READONLY_SIGNER],
     ]);
+    const closeProgram = await closeRingProgramInstruction({
+      ringProgramId: PROGRAM,
+      recipient: PAYER,
+      authority: AUTHORITY,
+    });
+    expect([...(closeProgram.data ?? [])]).toEqual([5, 0, 0, 0]);
+    expect(roles(closeProgram)).toEqual([
+      [dataAddress, AccountRole.WRITABLE],
+      [PAYER, AccountRole.WRITABLE],
+      [AUTHORITY, AccountRole.READONLY_SIGNER],
+      [PROGRAM, AccountRole.WRITABLE],
+    ]);
   });
 
   it("matches the Agave 4.2 loader extension encoding and accounts", async () => {
@@ -369,6 +384,61 @@ describe("loader instructions", () => {
       [SYSTEM_PROGRAM, AccountRole.READONLY],
       [PAYER, AccountRole.WRITABLE_SIGNER],
     ]);
+  });
+});
+
+describe("SPP ring config", () => {
+  it("reads the flags of a registered ring and nothing for an unregistered one", async () => {
+    const [ringAuth, account] = await sppRingRegistration({
+      authority: AUTHORITY,
+      ringProgramId: PROGRAM,
+      paused: true,
+    });
+    const reader = (stored: RpcAccount | undefined) => ({
+      getAccount: (at: Address) => Promise.resolve(at === ringAuth ? stored : undefined),
+    });
+    await expect(fetchSppRingConfig(reader(account), PROGRAM)).resolves.toEqual({
+      activated: true,
+      paused: true,
+      ringAuthorityTransactIsEnabled: true,
+    });
+    await expect(requireActiveRing(reader(account), PROGRAM)).rejects.toMatchObject({
+      code: "RING_PAUSED",
+    });
+    await expect(fetchSppRingConfig(reader(undefined), PROGRAM)).resolves.toBeUndefined();
+    await expect(requireActiveRing(reader(undefined), PROGRAM)).rejects.toMatchObject({
+      code: "RING_NOT_REGISTERED",
+    });
+    await expect(
+      fetchSppRingConfig(reader({ ...account, owner: PAYER }), PROGRAM),
+    ).rejects.toMatchObject({ code: "RING_CONFIG_INVALID" });
+  });
+
+  it("reads the authority rail apart from the activation", async () => {
+    const read = async (input: Readonly<{ activated: boolean; authorityRail?: boolean }>) => {
+      const [ringAuth, account] = await sppRingRegistration({
+        authority: AUTHORITY,
+        ringProgramId: PROGRAM,
+        ...input,
+      });
+      return fetchSppRingConfig(
+        { getAccount: (at: Address) => Promise.resolve(at === ringAuth ? account : undefined) },
+        PROGRAM,
+      );
+    };
+    // A pool with permissionless activation opens the rail at creation, any other pool leaves both off.
+    await expect(read({ activated: true })).resolves.toMatchObject({
+      activated: true,
+      ringAuthorityTransactIsEnabled: true,
+    });
+    await expect(read({ activated: false })).resolves.toMatchObject({
+      activated: false,
+      ringAuthorityTransactIsEnabled: false,
+    });
+    await expect(read({ activated: true, authorityRail: false })).resolves.toMatchObject({
+      activated: true,
+      ringAuthorityTransactIsEnabled: false,
+    });
   });
 });
 

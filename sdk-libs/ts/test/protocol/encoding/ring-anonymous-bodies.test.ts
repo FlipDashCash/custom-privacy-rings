@@ -45,15 +45,21 @@ import {
   encodeMergeRecord,
   encodeOutputRecord,
   encodeRecipientPayload,
-  publishedRecordLen,
+  publishedOutputRecord,
   sealedRecordKey,
+  type MergeOutputRecord,
   type OutputRecord,
 } from "../../../src/protocol/codec/audit-stream.js";
 import {
+  CLEAR_RECORD_FORM,
   EXIT_RECORD_LEN,
   MERGE_RECORD_LEN,
   RING_RECORD_LEN,
   STREAM_FIRST_COUNTER,
+  TRANSFER_RECORD_LEN,
+  publishedRecordLen,
+  recipientBodyForms,
+  type RecordForm,
 } from "../../../src/protocol/codec/ring-disclosure-layout.js";
 
 const SECRET = new Uint8Array(32).fill(0x11) as Bytes32;
@@ -87,7 +93,21 @@ const RECORD: OutputRecord = {
   mint: encodeBase58(filled(0x22)),
   blinding: filled(0x11),
   key: UNPUBLISHED_RECORD_KEY,
+  dataHash: ZERO_32,
+  ringDataHash: ZERO_32,
 };
+const DATA_HASH = filled(0x0d);
+const RING_DATA_HASH = filled(0x0e);
+const CLEAR = CLEAR_RECORD_FORM;
+const FORMS: readonly RecordForm[] = [false, true].flatMap((data) =>
+  [false, true].map((ringData) => ({ data, ringData })),
+);
+/** `record` under the hashes `form` publishes for its kind, the proof holds every other one to zero. */
+const hashed = (record: OutputRecord, form: RecordForm): OutputRecord => ({
+  ...record,
+  dataHash: form.data ? DATA_HASH : ZERO_32,
+  ringDataHash: form.ringData && record.kind !== RecordKind.exit ? RING_DATA_HASH : ZERO_32,
+});
 const EXIT_KEY = filled(0x0a);
 const EXIT: OutputRecord = {
   ...RECORD,
@@ -111,63 +131,113 @@ beforeAll(initializePoseidon);
 
 describe("output record codec", () => {
   it("lays the key last, the blinding at the ring record's end", () => {
-    const exit = encodeOutputRecord(EXIT);
-    expect(exit).toHaveLength(EXIT_RECORD_LEN);
+    const exit = encodeOutputRecord(EXIT, CLEAR);
+    expect(exit).toHaveLength(TRANSFER_RECORD_LEN);
     expect(exit[0]).toBe(RecordKind.exit);
     expect(exit.subarray(73, RING_RECORD_LEN)).toEqual(EXIT.blinding);
-    expect(exit.subarray(RING_RECORD_LEN)).toEqual(EXIT_KEY);
-    // An unpublished key seals as zero past the published bytes.
-    expect(encodeOutputRecord(RECORD).subarray(RING_RECORD_LEN)).toEqual(ZERO_32);
-    const zero = encodeOutputRecord(ZERO_KEY);
+    expect(exit.subarray(RING_RECORD_LEN, EXIT_RECORD_LEN)).toEqual(EXIT_KEY);
+    // A ring record seals no nullifier key.
+    expect(encodeOutputRecord(RECORD, CLEAR).subarray(RING_RECORD_LEN)).toEqual(new Uint8Array(64));
+    const zero = encodeOutputRecord(ZERO_KEY, CLEAR);
     expect(zero[0]).toBe(RecordKind.ring | RECORD_ZERO_KEY_BIT);
-    expect(zero.subarray(RING_RECORD_LEN)).toEqual(ZERO_NULLIFIER_PK);
-    expect(encodeOutputRecord({ ...EXIT, key: ZERO_RECORD_KEY })[0]).toBe(
+    expect(zero.subarray(RING_RECORD_LEN)).toEqual(new Uint8Array(64));
+    expect(encodeOutputRecord({ ...EXIT, key: ZERO_RECORD_KEY }, CLEAR)[0]).toBe(
       RecordKind.exit | RECORD_ZERO_KEY_BIT,
     );
     expect(carriedRecordKey(ZERO_NULLIFIER_PK as Bytes32)).toEqual(ZERO_RECORD_KEY);
   });
 
   it("names a ring key by the bit alone and carries an exit's", () => {
-    const published = (record: OutputRecord) =>
-      encodeOutputRecord(record).subarray(0, publishedRecordLen(record.kind));
     for (const record of [RECORD, ZERO_KEY, EXIT, { ...EXIT, key: ZERO_RECORD_KEY }])
-      expect(decodeOutputRecord(published(record))).toEqual(record);
+      expect(decodeOutputRecord(publishedOutputRecord(record, CLEAR), CLEAR)).toEqual(record);
     expect(sealedRecordKey(RecordKind.ring, EXIT_KEY)).toEqual(UNPUBLISHED_RECORD_KEY);
     expect(sealedRecordKey(RecordKind.exit, EXIT_KEY)).toEqual(EXIT.key);
     expect(sealedRecordKey(RecordKind.ring, ZERO_NULLIFIER_PK as Bytes32)).toEqual(ZERO_RECORD_KEY);
   });
 
-  it("refuses a 105-byte exit record and a 137-byte non-exit record", () => {
+  it("lays an exit's key then its data hash and a ring record's two hashes past the head", () => {
+    const both = { data: true, ringData: true };
+    const exit = encodeOutputRecord(hashed(EXIT, both), both);
+    expect(exit.subarray(RING_RECORD_LEN, EXIT_RECORD_LEN)).toEqual(EXIT_KEY);
+    expect(exit.subarray(EXIT_RECORD_LEN)).toEqual(DATA_HASH);
+    const ring = encodeOutputRecord(hashed(RECORD, both), both);
+    expect(ring.subarray(RING_RECORD_LEN, EXIT_RECORD_LEN)).toEqual(DATA_HASH);
+    expect(ring.subarray(EXIT_RECORD_LEN)).toEqual(RING_DATA_HASH);
+    // A clear data bit leaves the first hash cell to the ring data hash.
+    const ringData = { data: false, ringData: true };
+    expect(
+      publishedOutputRecord(hashed(RECORD, ringData), ringData).subarray(RING_RECORD_LEN),
+    ).toEqual(RING_DATA_HASH);
+  });
+
+  it("encodes and parses every form at its one length per kind", () => {
+    for (const form of FORMS) {
+      const hashes = Number(form.data) + Number(form.ringData);
+      expect(publishedRecordLen(form, RecordKind.ring)).toBe(RING_RECORD_LEN + 32 * hashes);
+      expect(publishedRecordLen(form, RecordKind.dummy)).toBe(RING_RECORD_LEN + 32 * hashes);
+      expect(publishedRecordLen(form, RecordKind.exit)).toBe(
+        EXIT_RECORD_LEN + 32 * Number(form.data),
+      );
+      for (const record of [hashed(RECORD, form), hashed(EXIT, form), DUMMY_RECORD]) {
+        const published = publishedOutputRecord(record, form);
+        expect(published).toHaveLength(publishedRecordLen(form, record.kind));
+        expect(decodeOutputRecord(published, form)).toEqual(record);
+        // No other length of the frame reads the record.
+        expect(() => decodeOutputRecord(published.subarray(0, -1), form)).toThrow();
+        expect(() => decodeOutputRecord(Uint8Array.of(...published, 0), form)).toThrow();
+      }
+    }
+    expect(encodeOutputRecord(DUMMY_RECORD, { data: true, ringData: true })).toEqual(
+      new Uint8Array(TRANSFER_RECORD_LEN),
+    );
+  });
+
+  it("refuses a dummy that publishes a hash", () => {
+    const form = { data: true, ringData: false };
+    const dummy = new Uint8Array(publishedRecordLen(form, RecordKind.dummy));
+    expect(decodeOutputRecord(dummy, form)).toEqual(DUMMY_RECORD);
+    dummy[RING_RECORD_LEN + 31] = 1;
+    expect(() => decodeOutputRecord(dummy, form)).toThrow();
+  });
+
+  it("refuses a 105-byte exit record and a 137-byte non-exit record under the clear form", () => {
     expect(() =>
-      decodeOutputRecord(encodeOutputRecord(EXIT).subarray(0, RING_RECORD_LEN)),
+      decodeOutputRecord(encodeOutputRecord(EXIT, CLEAR).subarray(0, RING_RECORD_LEN), CLEAR),
     ).toThrow();
-    expect(() => decodeOutputRecord(encodeOutputRecord(RECORD))).toThrow();
-    expect(() => decodeOutputRecord(new Uint8Array(EXIT_RECORD_LEN))).toThrow();
+    expect(() =>
+      decodeOutputRecord(encodeOutputRecord(RECORD, CLEAR).subarray(0, EXIT_RECORD_LEN), CLEAR),
+    ).toThrow();
+    expect(() => decodeOutputRecord(new Uint8Array(EXIT_RECORD_LEN), CLEAR)).toThrow();
   });
 
   it("refuses a kind off the three, a dummy with the bit and an exit whose bit disagrees", () => {
-    const ring = encodeOutputRecord(RECORD).subarray(0, RING_RECORD_LEN);
+    const ring = publishedOutputRecord(RECORD, CLEAR);
     for (const kind of [3, RecordKind.dummy | RECORD_ZERO_KEY_BIT, 8]) {
       const edited = ring.slice();
       edited[0] = kind;
-      expect(() => decodeOutputRecord(edited)).toThrow();
+      expect(() => decodeOutputRecord(edited, CLEAR)).toThrow();
     }
-    const flagged = encodeOutputRecord(EXIT);
+    const flagged = publishedOutputRecord(EXIT, CLEAR);
     flagged[0] = RecordKind.exit | RECORD_ZERO_KEY_BIT;
-    expect(() => decodeOutputRecord(flagged)).toThrow();
-    const unflagged = encodeOutputRecord({ ...EXIT, key: ZERO_RECORD_KEY });
+    expect(() => decodeOutputRecord(flagged, CLEAR)).toThrow();
+    const unflagged = publishedOutputRecord({ ...EXIT, key: ZERO_RECORD_KEY }, CLEAR);
     unflagged[0] = RecordKind.exit;
-    expect(() => decodeOutputRecord(unflagged)).toThrow();
+    expect(() => decodeOutputRecord(unflagged, CLEAR)).toThrow();
   });
 
   it("keeps the merge record's key and bit, the full form then the seed", () => {
-    for (const record of [ZERO_KEY, { ...RECORD, key: EXIT.key }]) {
+    const { dataHash: _dataHash, ringDataHash: _ringDataHash, ...head } = RECORD;
+    const records: readonly MergeOutputRecord[] = [
+      { ...head, key: ZERO_RECORD_KEY },
+      { ...head, key: EXIT.key },
+    ];
+    for (const record of records) {
       const merge = { record, seed: filled(0x66) };
       const encoded = encodeMergeRecord(merge);
       expect(encoded).toHaveLength(MERGE_RECORD_LEN);
       expect(decodeMergeRecord(encoded)).toEqual(merge);
     }
-    const flipped = encodeMergeRecord({ record: ZERO_KEY, seed: filled(0x66) });
+    const flipped = encodeMergeRecord({ record: records[0]!, seed: filled(0x66) });
     flipped[0] = RecordKind.ring;
     expect(() => decodeMergeRecord(flipped)).toThrow();
   });
@@ -175,56 +245,89 @@ describe("output record codec", () => {
 
 describe("output slot body", () => {
   it("publishes a ring record without its key and an exit with it", () => {
-    const sealed = sealOutputSlot(SECRET, { record: RECORD });
+    const sealed = sealOutputSlot(SECRET, { record: RECORD, form: CLEAR });
     expect(sealed).toHaveLength(RING_RECORD_LEN);
-    expect(openOutputSlot(SECRET, sealed)).toEqual({ record: RECORD, payload: ABSENT_PAYLOAD });
-    expect(() => openOutputSlot(OTHER_SECRET, sealed)).toThrow();
-    const exit = sealOutputSlot(SECRET, { record: EXIT });
+    expect(openOutputSlot(SECRET, sealed, CLEAR)).toEqual({
+      record: RECORD,
+      payload: ABSENT_PAYLOAD,
+    });
+    expect(() => openOutputSlot(OTHER_SECRET, sealed, CLEAR)).toThrow();
+    const exit = sealOutputSlot(SECRET, { record: EXIT, form: CLEAR });
     expect(exit).toHaveLength(EXIT_RECORD_LEN);
-    expect(openExitRecord(SECRET, exit)).toEqual(EXIT);
+    expect(openExitRecord(SECRET, exit, CLEAR)).toEqual(EXIT);
   });
 
-  it("continues the payload at the ring record's end of one stream", () => {
-    const payloadLength = encodeRecipientPayload(EMPTY_PAYLOAD).length;
-    const sealed = sealOutputSlot(SECRET, {
-      record: RECORD,
-      payload: EMPTY_PAYLOAD,
-      payloadLength,
-    });
-    expect(sealed).toHaveLength(RING_RECORD_LEN + payloadLength);
-    expect(sealed.subarray(0, RING_RECORD_LEN)).toEqual(sealOutputSlot(SECRET, { record: RECORD }));
-    expect(openOutputSlot(SECRET, sealed)).toEqual({
-      record: RECORD,
-      payload: { kind: "opened", payload: EMPTY_PAYLOAD },
-    });
+  it("continues the payload at the record's end of one stream under every data form", () => {
+    const payload = { data: Uint8Array.of(1, 2, 3) };
+    for (const form of FORMS.filter(({ data }) => data)) {
+      const record = hashed(RECORD, form);
+      const recordLength = publishedRecordLen(form, RecordKind.ring);
+      const sealed = sealOutputSlot(SECRET, { record, form, payload, payloadLength: 9 });
+      expect(sealed).toHaveLength(recordLength + 9);
+      expect(sealed.subarray(0, recordLength)).toEqual(sealOutputSlot(SECRET, { record, form }));
+      expect(openOutputSlot(SECRET, sealed, form)).toEqual({
+        record,
+        payload: { kind: "opened", payload },
+      });
+    }
+    expect(encodeRecipientPayload(EMPTY_PAYLOAD)).toEqual(Uint8Array.of(0, 0));
+  });
+
+  it("opens an exit record at the one length its form publishes", () => {
+    const form = { data: true, ringData: true };
+    const record = hashed(EXIT, form);
+    const sealed = sealOutputSlot(SECRET, { record, form });
+    expect(sealed).toHaveLength(EXIT_RECORD_LEN + 32);
+    expect(openExitRecord(SECRET, sealed, form)).toEqual(record);
+    expect(() => openExitRecord(SECRET, sealed, CLEAR)).toThrow();
+    expect(() => openExitRecord(SECRET, sealed.subarray(0, EXIT_RECORD_LEN), form)).toThrow();
+  });
+
+  it("admits the forms a body length can hold and no other", () => {
+    expect(recipientBodyForms(RING_RECORD_LEN)).toEqual([CLEAR]);
+    expect(recipientBodyForms(RING_RECORD_LEN + 32)).toEqual([{ data: false, ringData: true }]);
+    expect(recipientBodyForms(RING_RECORD_LEN + 32 + 2)).toEqual([{ data: true, ringData: false }]);
+    expect(recipientBodyForms(RING_RECORD_LEN + 64 + 2)).toEqual([
+      { data: true, ringData: false },
+      { data: true, ringData: true },
+    ]);
+    expect(recipientBodyForms(RING_RECORD_LEN - 1)).toEqual([]);
+    expect(recipientBodyForms(RING_RECORD_LEN + 1)).toEqual([]);
   });
 
   it("refuses a body shorter than a record, an exit in a ring body and a ring record as an exit, and keeps a record past a malformed payload", () => {
-    const sealed = sealOutputSlot(SECRET, { record: RECORD });
-    expect(() => openOutputSlot(SECRET, sealed.subarray(1))).toThrow();
+    const sealed = sealOutputSlot(SECRET, { record: RECORD, form: CLEAR });
+    expect(() => openOutputSlot(SECRET, sealed.subarray(1), CLEAR)).toThrow();
     // A payload byte past a record reads a length it cannot hold, the record stands without it.
-    expect(openOutputSlot(SECRET, Uint8Array.of(...sealed, 0))).toEqual({
+    expect(openOutputSlot(SECRET, Uint8Array.of(...sealed, 0), CLEAR)).toEqual({
       record: RECORD,
       payload: { kind: "malformed" },
     });
-    expect(openOutputSlot(SECRET, sealOutputSlot(SECRET, { record: DUMMY_RECORD }))).toEqual({
-      record: DUMMY_RECORD,
-      payload: ABSENT_PAYLOAD,
-    });
-    expect(() => openOutputSlot(SECRET, sealOutputSlot(SECRET, { record: EXIT }))).toThrow();
-    expect(() =>
-      openExitRecord(SECRET, sealOutputSlot(SECRET, { record: EXIT }).subarray(0, RING_RECORD_LEN)),
-    ).toThrow();
+    expect(
+      openOutputSlot(SECRET, sealOutputSlot(SECRET, { record: DUMMY_RECORD, form: CLEAR }), CLEAR),
+    ).toEqual({ record: DUMMY_RECORD, payload: ABSENT_PAYLOAD });
+    const exit = sealOutputSlot(SECRET, { record: EXIT, form: CLEAR });
+    expect(() => openOutputSlot(SECRET, exit, CLEAR)).toThrow();
+    expect(() => openExitRecord(SECRET, exit.subarray(0, RING_RECORD_LEN), CLEAR)).toThrow();
+    const form = { data: true, ringData: false };
     expect(() =>
       openExitRecord(
         SECRET,
-        sealOutputSlot(SECRET, { record: RECORD, payload: EMPTY_PAYLOAD, payloadLength: 32 }),
+        sealOutputSlot(SECRET, {
+          record: RECORD,
+          form,
+          payload: EMPTY_PAYLOAD,
+          payloadLength: 32,
+        }),
+        form,
       ),
     ).toThrow();
   });
 
   it("refuses an amount past u64 at sealing", () => {
-    expect(() => sealOutputSlot(SECRET, { record: { ...RECORD, amount: 1n << 64n } })).toThrow();
+    expect(() =>
+      sealOutputSlot(SECRET, { record: { ...RECORD, amount: 1n << 64n }, form: CLEAR }),
+    ).toThrow();
   });
 });
 
@@ -356,8 +459,8 @@ describe("delivery streams", () => {
       Buffer.from(keystream(label, RING_RECORD_LEN)).toString("hex"),
     );
     expect(new Set(streams).size).toBe(3);
-    expect(Buffer.from(sealOutputSlot(SECRET, { record: DUMMY_RECORD })).toString("hex")).toBe(
-      streams[0],
-    );
+    expect(
+      Buffer.from(sealOutputSlot(SECRET, { record: DUMMY_RECORD, form: CLEAR })).toString("hex"),
+    ).toBe(streams[0]);
   });
 });

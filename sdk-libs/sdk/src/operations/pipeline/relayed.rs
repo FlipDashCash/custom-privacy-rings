@@ -15,8 +15,8 @@ use super::{
     audit::PresealedAudit,
     delegate::DelegateSigner,
     public_owners::check_zero_key_inputs,
-    sealed, shape_keyed, ApprovalDisclosure, CoOwner, CoOwnerKey, DeliveredRail, Rail, RailKind,
-    RingTransfer, SealRow, Spend, Staged, TransferAuthority,
+    sealed, shape_keyed, ApprovalDisclosure, CoOwner, CoOwnerKey, DeliveredRail, OwnerKey,
+    OwnerSource, Rail, RailKind, RingTransfer, SealRow, Spend, Staged, TransferAuthority,
 };
 use crate::{CustomRing, CustomRingConfig, RingError};
 
@@ -55,8 +55,10 @@ impl<'a> RingTransfer<Relayed<'a>> {
                 owner_signature: None,
             },
             list_salts: Vec::new(),
+            ring_salt: None,
             approval: ApprovalDisclosure::None,
             seal_row: None,
+            program: None,
         }
     }
 
@@ -151,10 +153,10 @@ impl Relayed<'_> {
                 let exits = exits.owners(client).await?;
                 let spend = AnonymousSpend {
                     token_owner: exits.token_owner,
-                    signer: OwnerAuthorization::Prepared {
+                    signer: OwnerSource::Ready(OwnerAuthorization::Prepared {
                         owner: sender.signing_pubkey,
                         signature,
-                    },
+                    }),
                 };
                 (
                     rail(RingDelivery::Anonymous(plan.clone())),
@@ -213,7 +215,7 @@ impl Relayed<'_> {
                             rail: RingRail::Confidential,
                         }
                         .delivery()?;
-                        (rail(delivery), Vec::new(), Spend::Owner)
+                        (rail(delivery), Vec::new(), Spend::Owner(None))
                     }
                     (RingMode::Anonymous, None) => return Err(RingError::AnonymousDepositUntagged),
                     (RingMode::Confidential, Some(_)) => return Err(RingError::NotAnonymousRing),
@@ -259,7 +261,7 @@ impl Relayed<'_> {
             rail,
             sender,
             authority: TransferAuthority {
-                owner: Some(relayed.nullifier_key.clone()),
+                owner: Some(OwnerKey::Held(&relayed.nullifier_key)),
                 co_owners: relayed
                     .co_owners
                     .iter()

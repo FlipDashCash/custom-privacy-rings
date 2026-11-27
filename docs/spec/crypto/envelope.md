@@ -55,7 +55,7 @@ No line has an authentication tag. Integrity comes from the statement, or for a 
 | Use | Schedule | Plaintext | Statement binds |
 |---|---|---|---|
 | Auditor stream | `CRING/adt` | the envelope and recipient keys of [Disclosure](disclosure.md#stream-regions) | `pack_be` of `tx_viewing_pk` and of the auditor key, the salt, `Poseidon(digest(envelope_ct), digest(keys_ct))` |
-| Output record | `CRING/rcp`, slot secret | the 137-byte [record](disclosure.md#records) | `HashChain4(hash_bytes(record_ct_i))` zero filled to `N` |
+| Output record | `CRING/rcp`, slot secret | the 169-byte [record](disclosure.md#records), published as a prefix | `HashChain4(Poseidon(exit_i, hash_bytes(record_ct_i)))` zero filled to `N` |
 | Payload | `CRING/rcp`, slot secret, past the record | the [payload](disclosure.md#slot-body) | no statement, SPP's external data hash binds the bytes |
 | Reply metadata | `CRING/rpl`, slot secret | the [reply](disclosure.md#reply-metadata) | no statement, SPP's external data hash binds the bytes |
 | Sender bundle | `CRING/snd`, slot secret | the [sender bundle](disclosure.md#sender-bundle) | no statement, SPP's external data hash binds the bytes |

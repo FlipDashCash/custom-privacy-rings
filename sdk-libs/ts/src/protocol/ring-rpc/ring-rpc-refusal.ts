@@ -41,6 +41,7 @@ export const RingRpcRefusal = Object.freeze({
   walletSnapshotCapacity: -32173,
   customRefused: -32174,
   listSubject: -32175,
+  approvedCallNotOnce: -32176,
   enrollmentNotServed: -32180,
   enrollmentRingMissing: -32181,
   invalidEnrollmentWrite: -32182,
@@ -48,6 +49,7 @@ export const RingRpcRefusal = Object.freeze({
   enrollmentsFull: -32184,
   enrollmentBudget: -32185,
   enrollmentRingsFull: -32186,
+  enrollmentInFlight: -32187,
   wrongCluster: -32190,
   // -32193, -32243 and -32275 never reach clients as codes, only as refused status text.
   tokenAccountSetup: -32200,
@@ -84,6 +86,8 @@ export const RingRpcRefusal = Object.freeze({
   invalidLimits: -32276,
   limitsWithoutRecord: -32277,
   addressNotAuthorized: -32278,
+  ringSaltNotCommitted: -32279,
+  unregisteredOwnerUnmatched: -32280,
   unrecordedAsset: -32296,
 } as const);
 

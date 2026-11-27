@@ -4,7 +4,13 @@ use std::{
 };
 
 use http_body_util::BodyExt;
-use hyper::{body::Incoming, service::service_fn, Request, Response};
+use http_body_util::Full;
+use hyper::{
+    body::{Bytes, Incoming},
+    header::HeaderValue,
+    service::service_fn,
+    Request, Response,
+};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto::Builder,
@@ -22,6 +28,8 @@ struct Seen {
     method: Method,
     path: String,
     content_type: Option<String>,
+    api_key: Option<String>,
+    hops: Option<String>,
     body: Bytes,
 }
 
@@ -41,13 +49,16 @@ async fn upstream() -> (String, Arc<Mutex<Vec<Seen>>>) {
                     async move {
                         let (parts, body) = request.into_parts();
                         let path = parts.uri.path_and_query().unwrap().to_string();
+                        let header = |name: &str| {
+                            let value = parts.headers.get(name)?;
+                            Some(value.to_str().unwrap().to_owned())
+                        };
                         let seen = Seen {
+                            content_type: header("content-type"),
+                            api_key: header("x-api-key"),
+                            hops: header("x-spr-hops"),
                             method: parts.method,
                             path: path.clone(),
-                            content_type: parts
-                                .headers
-                                .get(CONTENT_TYPE)
-                                .map(|value| value.to_str().unwrap().to_owned()),
                             body: body.collect().await.unwrap().to_bytes(),
                         };
                         log.lock().unwrap().push(seen);
@@ -114,6 +125,7 @@ async fn every_photon_method_passes_through_unchanged() {
             let response = client
                 .post(format!("{url}{path}"))
                 .header(CONTENT_TYPE, "application/json")
+                .header("x-api-key", "header-key")
                 .body(body.clone())
                 .send()
                 .await
@@ -127,6 +139,8 @@ async fn every_photon_method_passes_through_unchanged() {
                     method: Method::POST,
                     path,
                     content_type: Some("application/json".into()),
+                    api_key: Some("header-key".into()),
+                    hops: Some("1".into()),
                     body: Bytes::from(body.clone()),
                 })
             );
@@ -206,16 +220,4 @@ async fn an_unreachable_photon_is_a_bad_gateway() {
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     handle.stop().unwrap();
     handle.stopped().await;
-}
-
-#[test]
-fn photon_urls_are_bases_without_query() {
-    assert_eq!(
-        "https://photon.example/v1/".parse::<PhotonUrl>().unwrap().0,
-        "https://photon.example/v1"
-    );
-    assert!("https://photon.example/?api-key=1"
-        .parse::<PhotonUrl>()
-        .is_err());
-    assert!("ftp://photon.example".parse::<PhotonUrl>().is_err());
 }

@@ -22,7 +22,8 @@ import {
 } from "@heliuslabs/spr/transaction";
 
 import { RecordKind } from "../../protocol/codec/audit-stream.js";
-import type { OpenedOutput } from "../audit/ring-disclosure.js";
+import { recipientBodyForms } from "../../protocol/codec/ring-disclosure-layout.js";
+import { openOutputSlot, type OpenedOutput } from "../audit/ring-disclosure.js";
 import { domainHash, RingDomain } from "./ring-domain.js";
 import { packedSecret } from "./ring-stream.js";
 import { withOutputFields } from "../../protocol/proof/proof-output.js";
@@ -123,28 +124,50 @@ export interface OpenedRingNote {
 }
 
 /**
- * `undefined` unless the record rebuilds the published commitment under the reader's own key, or
- * the zero key when its bit is set, Rust `AnonymousOutput::open_body`. No registry names the key, so
- * a payment to an unregistered address opens at once. The cipher authenticates nothing, the
- * commitment match alone proves the opening.
+ * Rust `AnonymousOutput::open`, each form the body length admits tried against the commitment, a
+ * form whose payload decodes first.
+ */
+export function openRecipientBody(
+  reader: RingOutputReader,
+  slotSecret: Bytes32,
+  body: Uint8Array,
+): OpenedRingNote | undefined {
+  let withoutData: OpenedRingNote | undefined;
+  for (const form of recipientBodyForms(body.length)) {
+    let opened: OpenedOutput;
+    try {
+      opened = openOutputSlot(slotSecret, body, form);
+    } catch {
+      continue;
+    }
+    const note = openRecipientNote(reader, opened);
+    if (note === undefined) continue;
+    if (opened.payload.kind !== "malformed") return note;
+    withoutData ??= note;
+  }
+  return withoutData;
+}
+
+/**
+ * `undefined` unless the record rebuilds the published commitment from its proven hashes under the
+ * reader's own key, or the zero key when its bit is set, Rust `AnonymousOutput::open_body`. No
+ * registry names the key, so a payment to an unregistered address opens at once. The cipher
+ * authenticates nothing, the commitment match alone proves the opening.
  */
 export function openRecipientNote(
   reader: RingOutputReader,
   opened: OpenedOutput,
 ): OpenedRingNote | undefined {
-  const { record } = opened;
+  const { record, payload } = opened;
   if (record.kind !== RecordKind.ring) return undefined;
-  // A malformed payload leaves the data hashes the commitment reads unknown.
-  if (opened.payload.kind === "malformed") return undefined;
-  const { data, ringDataHash } =
-    opened.payload.kind === "opened" ? opened.payload.payload : { data: new Uint8Array() };
-  // A nonempty data field leads with the hash the commitment reads.
-  if (data.length > 0 && data.length < 32) return undefined;
   if (!isCanonicalField(record.blinding)) return undefined;
-  const dataHash = data.length === 0 ? undefined : (data.slice(0, 32) as Bytes32);
-  // The commitment reads a zero hash as no data, bytes under it bind to nothing and a reader would store them as the note's.
-  if (dataHash !== undefined && isZero(dataHash)) return undefined;
-  const appData = data.subarray(32);
+  const dataHash = isZero(record.dataHash) ? undefined : record.dataHash;
+  const ringDataHash = isZero(record.ringDataHash) ? undefined : record.ringDataHash;
+  // Data under a zero hash binds to no commitment, a lost payload leaves the note without it.
+  const data =
+    payload.kind === "opened" && dataHash !== undefined
+      ? new Data([{ kind: "utxoData", bytes: payload.payload.data }])
+      : new Data();
   const { signingPublicKey, nullifierPublicKey } = reader.owner;
   const candidate =
     record.key.kind === "zero" ? (ZERO_NULLIFIER_PK as Bytes32) : nullifierPublicKey;
@@ -154,7 +177,7 @@ export function openRecipientNote(
     asset: record.mint,
     amount: record.amount,
     blinding: record.blinding,
-    data: appData.length === 0 ? new Data() : new Data([{ kind: "utxoData", bytes: appData }]),
+    data,
     ringProgramId: reader.ring,
   });
   const utxoHash = utxo.hash(candidate, reader.treeId, dataHash, ringDataHash);

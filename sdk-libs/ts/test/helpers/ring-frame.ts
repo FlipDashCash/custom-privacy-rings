@@ -4,7 +4,6 @@ import { clampViewingSecret } from "@heliuslabs/spr/internal";
 
 import { CUSTOM_RING_PROOF_LENGTH } from "../../src/protocol/proof/custom-ring-proof.js";
 import {
-  RING_RECORD_LEN,
   PAYLOAD_LENGTH_LEN,
   envelopeRegion,
   recipientKeysLen,
@@ -18,6 +17,7 @@ import {
   PLAIN_GROTH16_PROOF_LENGTH,
   ringStreamLayout,
   RingTransactData,
+  slotRecordLen,
   type RingOutput,
   type RingRail,
 } from "../../src/protocol/transaction/transact.js";
@@ -40,13 +40,16 @@ export function ringFrame(
     outputs: number;
     entry?: boolean;
     hasData?: boolean;
+    ringData?: boolean;
     publicOwners?: boolean;
     wideOwners?: boolean;
+    vouched?: boolean;
   }>,
 ): RingTransactData {
   const { rail, inputs, outputs } = input;
   const entry = input.entry ?? false;
   const hasData = input.hasData ?? false;
+  const records = { data: hasData, ringData: input.ringData ?? false };
   const publicOwners = input.publicOwners ?? false;
   const keyed = isDelegateRail(rail) ? RING_AUTHORITY_SHAPES : SPP_SUPPORTED_SHAPES;
   const shape = keyed.find((entry_) => entry_.inputs >= inputs && entry_.outputs === outputs);
@@ -59,6 +62,8 @@ export function ringFrame(
     outputs,
     entry,
     publicOwners,
+    vouched: input.vouched ?? false,
+    records,
   });
   const anonymous = isAnonymousFrame(rail);
   const slot = (index: number): RingOutput => {
@@ -66,7 +71,7 @@ export function ringFrame(
     return {
       hash: field(10 + index),
       ownerTag: change ? (new Uint8Array(32) as Bytes32) : field(40 + index),
-      record: new Uint8Array(RING_RECORD_LEN).fill(index + 1),
+      record: new Uint8Array(slotRecordLen({ kind: "recipient" }, records)).fill(index + 1),
       body: {
         kind: "recipient",
         payload: new Uint8Array(hasData ? PAYLOAD_LENGTH_LEN : 0).fill(index + 101),
@@ -79,6 +84,7 @@ export function ringFrame(
     nIn: shape.inputs,
     nOut: shape.outputs,
     proof: new Uint8Array(CUSTOM_RING_PROOF_LENGTH),
+    ringData: records.ringData,
     trackingRevision: 7n,
     ...(delegate ? {} : { ownRevision: 1n }),
     splWithdrawalOwners: [],
@@ -93,6 +99,7 @@ export function ringFrame(
     hasData,
     entry,
     wideOwners: input.wideOwners ?? false,
+    vouched: input.vouched ?? false,
     outputs: Array.from({ length: outputs }, (_, index) => slot(index)),
     ...(anonymous ? { sender: { tag: field(1), body: new Uint8Array(SENDER_BUNDLE_LEN) } } : {}),
     envelope: new Uint8Array(envelopeRegion(layout).length).fill(3),

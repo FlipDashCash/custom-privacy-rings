@@ -4,13 +4,14 @@ use async_trait::async_trait;
 use clap::ValueEnum;
 use custom_ring_interface::CoSignScope;
 use jsonrpsee::types::ErrorObjectOwned;
+use sha2::{Digest, Sha256};
 use solana_address::Address;
 use solana_message::VersionedMessage;
 use solana_signature::Signature;
 use thiserror::Error;
 use zolana_ring_policy::Member;
 
-use crate::error::RingRpcError;
+use crate::{cosigner::ApprovedCall, error::RingRpcError};
 
 /// One class of the five a ring's `CoSigner` records hold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -30,6 +31,14 @@ pub struct CoSignRequest {
     pub ring: Address,
     pub message: VersionedMessage,
     pub flows: CoSignFlows,
+    /// The call a program makes under the message's `ApproveTransfer`.
+    pub approved_transfer: Option<ApprovedCall>,
+}
+
+#[derive(Clone, Copy)]
+pub struct FrameSource<'a> {
+    pub message: &'a VersionedMessage,
+    pub approved_transfer: Option<&'a ApprovedCall>,
 }
 
 /// A caller names no transfer debit, the co-signer reads each from the frame it signs.
@@ -107,14 +116,20 @@ pub enum CoSignError {
     CustomRefused = -32174,
     #[error("the list entry names no usable subject")]
     ListSubject = -32175,
+    #[error("the simulation does not make the approved transfer call exactly once")]
+    ApprovedCallNotOnce = -32176,
     #[error("the co-sign request names an asset with no record")]
     UnrecordedAsset = -32296,
 }
 
+/// The digest of the co-signer and its serialized message, a reservation key no signer call derives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Ticket([u8; 32]);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoSignSettlement {
-    Confirmed(Signature),
-    Failed(Signature),
+    Confirmed(Ticket),
+    Failed(Ticket),
 }
 
 impl ApproveClass {
@@ -138,6 +153,22 @@ impl CoSignerApproval {
         self.0
             .iter()
             .fold(CoSignScope::NONE, |scope, class| scope | class.scope())
+    }
+}
+
+impl Ticket {
+    pub fn of(signer: &Address, message: &VersionedMessage) -> Self {
+        Self(
+            Sha256::new()
+                .chain_update(signer)
+                .chain_update(message.serialize())
+                .finalize()
+                .into(),
+        )
+    }
+
+    pub(crate) const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
     }
 }
 
@@ -215,6 +246,7 @@ mod tests {
             (NotAllowed, -32169),
             (CustomRefused, -32174),
             (ListSubject, -32175),
+            (ApprovedCallNotOnce, -32176),
             (UnrecordedAsset, -32296),
         ] {
             assert_eq!(ErrorObjectOwned::from(error).code(), code);

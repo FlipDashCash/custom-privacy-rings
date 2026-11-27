@@ -81,6 +81,7 @@ func (b Built) Rehash(t testing.TB) {
 func (b Built) Rebind(t testing.TB) {
 	t.Helper()
 	b.Circuit.WithdrawalHash = withdrawalHash(t, &b.Circuit.Policy)
+	b.Circuit.Voucher = b.Audit.VoucherWires(t, ringtest.AsBigInt(b.Circuit.PrivateTxHash), ringtest.AsBigInt(b.Circuit.WithdrawalHash))
 	b.Circuit.PublicInputHash = spptest.MustHashChain4(t, b.Statement(t))
 }
 

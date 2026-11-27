@@ -153,6 +153,22 @@ pub enum RingError {
     PublicSpendWalletMismatch { named: Address, sender: Address },
     #[error("a public spend signs the transaction, it cannot prove its owner in the proof")]
     PublicSpendInProofOwner,
+    #[error("a program commitment needs a rail whose owners all sign the transaction")]
+    ProgramRailUnsupported,
+    #[error("the staged private transaction hash differs from the program commitment")]
+    ProgramCommitmentMismatch {
+        committed: [u8; 32],
+        staged: [u8; 32],
+    },
+    #[error(
+        "the staged transaction hash over the public transfers differs from the program commitment"
+    )]
+    ProgramTransactionHashMismatch {
+        committed: [u8; 32],
+        staged: [u8; 32],
+    },
+    #[error("only a transfer committed to a program takes a transfer approval")]
+    ApprovalOutsideProgram,
     #[error(transparent)]
     AddressCeiling(#[from] crate::AddressCeilingError),
     #[error(transparent)]
@@ -181,6 +197,8 @@ pub enum RingError {
     DepositUnkeyed,
     #[error("a salted list reads enrolled owner {member:?} and no list salt is known")]
     ListSaltUnknown { member: [u8; 32] },
+    #[error("a salted list reads under the ring salt and no salt opens the ring list tag")]
+    RingSaltUnknown,
     #[error("no known list salt of owner {member:?} opens its tracking leaf's list tag")]
     ListSaltMismatch { member: [u8; 32] },
     #[error(
@@ -250,10 +268,18 @@ pub enum RingError {
     AnonymousSignerMismatch,
     #[error("the in-proof owner does not match the sender")]
     InProofOwnerMismatch,
+    #[error("the voucher's signature does not verify over the transfer's vouch digest")]
+    VoucherSignatureMismatch,
+    #[error("a relayed transfer takes no voucher")]
+    VouchedRelay,
+    #[error("a transfer no rule table screens takes no voucher")]
+    VoucherUnscreened,
     #[error("input {index} is a default-ring note the in-proof owner rail cannot spend")]
     InProofDefaultRingInput { index: usize },
     #[error("the confidential relay carries no owner signature")]
     MissingInProofOwnerSignature,
+    #[error("core authorized no in-proof owner for the payment")]
+    OwnerUnauthorized,
     #[error("public transaction signers must differ from the hidden owner")]
     AnonymousPublicSignerLinksOwner,
     #[error("withdrawal destination {0} names the hidden owner")]
@@ -320,6 +346,11 @@ pub enum RingError {
         signature: Signature,
         error: solana_transaction_error::TransactionError,
     },
+    #[error("{signature} is unresolved after {error}")]
+    Unsettled {
+        signature: Signature,
+        error: Box<RingError>,
+    },
     #[error("{owner} is enrolled under another nullifier key, the first key is final")]
     AlreadyEnrolled { owner: Address },
     #[error(
@@ -329,12 +360,18 @@ pub enum RingError {
     EnrollmentBatchSize { writes: u64 },
     #[error("the enrollment of {owner} takes the owner's own signature")]
     EnrollmentSigner { owner: Address },
+    #[error("the vault manager {manager} must be a wallet key other than the enrollment writer")]
+    VaultManager { manager: Address },
+    #[error("ring rpc answered with a signature the enrollment writer {writer} did not make")]
+    WriterSignature { writer: Address },
     #[error(transparent)]
     EnrollmentRequest(#[from] EnrollmentRequestError),
     #[error("ring rpc failed the relay with {reason}")]
     RelayFailed { reason: String },
     #[error("the submission sends only an attempt its charged outflows were read from")]
     SubmissionUnproved,
+    #[error("the signers returned signatures the submission's message does not verify")]
+    SubmissionSignatures,
     #[error("{owner} holds no tracking leaf, enroll before a rotation")]
     RotationUnenrolled { owner: Address },
     #[error("the viewing history's current key differs from the key holder's")]
@@ -343,6 +380,8 @@ pub enum RingError {
     ViewingKeyNotHeld { owner: Address },
     #[error("the owner of write {write_index} holds no applied tracking row")]
     WriteOwnerNotEnrolled { write_index: u8 },
+    #[error("the salt of write {write_index} opens no ring list tag the policy commits")]
+    RingSaltUncommitted { write_index: u8 },
     #[error("write {write_index} is not the list key of its owner under the salt")]
     ListKeyMismatch { write_index: u8 },
     #[error("the salted owners name other write positions than the private writes")]

@@ -8,7 +8,7 @@ repository = "https://github.com/helius-labs/zolana"
 publish = false
 
 [features]
-test-fixtures = []
+test-fixtures = ["zolana-operator-custody/test-fixtures"]
 # Reads Surfpool's local history, opted in at runtime by `ZOLANA_RING_SURFPOOL_FIXTURE=1`.
 surfpool-fixture = []
 
@@ -35,6 +35,7 @@ reqwest = { workspace = true }
 sea-orm = { workspace = true }
 sea-orm-migration = { workspace = true, features = ["sqlx-sqlite"] }
 base64 = { workspace = true }
+bs58 = { workspace = true }
 bytemuck = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -42,15 +43,14 @@ sha2 = { workspace = true }
 solana-address = { workspace = true, features = ["curve25519"] }
 solana-account = { workspace = true }
 solana-hash = { workspace = true }
-solana-keypair = { workspace = true }
 solana-loader-v3-interface = { workspace = true }
 solana-message = { workspace = true }
-solana-signer = { workspace = true }
 solana-commitment-config = { workspace = true }
 solana-rpc-client = { workspace = true }
 solana-rpc-client-api = { workspace = true }
 solana-signature = { workspace = true, features = ["verify"] }
 solana-instruction = { workspace = true }
+solana-sdk-ids = { workspace = true }
 spl-token-2022-interface = { workspace = true }
 solana-transaction = { workspace = true }
 solana-transaction-error = { workspace = true }
@@ -71,7 +71,7 @@ spr-rpc-http = { workspace = true }
 spr-instruction = { workspace = true }
 spr-interface = { workspace = true }
 spr-keypair = { workspace = true }
-zolana-secret-file = { workspace = true }
+zolana-operator-custody = { workspace = true }
 zolana-ring-client = { workspace = true, features = ["rpc", "solana-rpc"] }
 zolana-ring-indexer = { workspace = true }
 zolana-ring-member-registry = { workspace = true }
@@ -80,6 +80,8 @@ zolana-ring-transaction = { workspace = true }
 spr-transaction = { workspace = true }
 
 [dev-dependencies]
+solana-keypair = { workspace = true }
+solana-signer = { workspace = true }
 zolana-ring-rpc = { path = ".", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
 spr-event-parser = { workspace = true }

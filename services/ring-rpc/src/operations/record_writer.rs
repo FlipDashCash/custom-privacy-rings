@@ -18,8 +18,7 @@ use custom_ring_interface::{
     storage::Revision,
     storage::StorageRegistry,
     storage_instruction::{RecordWriteClassification, StorageUpdateIxData},
-    ApplyRecordsIxData, CustomRingError, RecordWrite, RecordWriteData, RingAccount, RingPolicy,
-    PROOF_UNITS,
+    ApplyRecordsIxData, CustomRingError, RecordWrite, RecordWriteData, RingPolicy, PROOF_UNITS,
 };
 use custom_ring_sdk::{
     CustomRing, InitializeStorage, PrivateStorageWrite, ProvenPrivateWrite, RingError,
@@ -28,10 +27,9 @@ use custom_ring_sdk::{
 use log::warn;
 use sea_orm::DbErr;
 use solana_address::Address;
-use solana_keypair::Keypair;
-use solana_signer::Signer;
-use spr_client::{compile_message, sign_transaction, ComputeBudgetConfig};
+use spr_client::{compile_message, ComputeBudgetConfig};
 use spr_indexer_api::Hash;
+use zolana_operator_custody::{signed_transaction, SigningIdentity};
 use zolana_ring_client::{
     rpc::{
         GetPendingListApprovalsRequest, GetPendingListApprovalsResponse,
@@ -54,7 +52,7 @@ use crate::{
         limits_within_bounds, ApplyInputsCheck, CheckedUpdate, ListApproval, QueuedCheck,
         QueuedState, QueuedUpdate, RecordUpdateCheck, RecordUpdateRefusal, UpdateContext,
     },
-    storage_chain::StorageChain,
+    storage_chain::{ring_policy, storage_registry, StorageChain},
     update_queue::{
         ApprovalCandidates, ApprovalScope, BatchOutcome, NewBatch, NewUpdate, OpenBatch,
         PendingApprovalPage, UpdateQueue,
@@ -84,6 +82,8 @@ pub trait PrivateWrites: Send + Sync {
         written_key: [u8; 32],
     ) -> Result<Option<SaltedOwner>, RingRpcError>;
 
+    async fn ring_salt(&self, ring: Address) -> Result<[u8; 32], RingRpcError>;
+
     async fn prove(&self, write: PrivateStorageWrite<'_>) -> Result<ProvenPrivateWrite, RingError>;
 }
 
@@ -91,7 +91,7 @@ pub trait PrivateWrites: Send + Sync {
 pub struct RecordWriter {
     store: Store,
     chain: Arc<dyn StorageChain>,
-    authority: Keypair,
+    authority: SigningIdentity,
     genesis_hash: [u8; 32],
     reader_grants: ReaderGrantStore,
     /// Holds the queue check and the insert of one update together.
@@ -110,7 +110,7 @@ enum BatchProof {
 pub(crate) struct WriterParts {
     pub store: Store,
     pub chain: Arc<dyn StorageChain>,
-    pub authority: Keypair,
+    pub authority: SigningIdentity,
     pub genesis_hash: [u8; 32],
     pub reader_grants: ReaderGrantStore,
 }
@@ -132,7 +132,7 @@ impl WriterParts {
 
 impl RecordWriter {
     pub fn authority(&self) -> Address {
-        self.authority.pubkey()
+        self.authority.address()
     }
 
     /// Set once, a second source is returned.
@@ -158,7 +158,7 @@ impl RecordWriter {
             latest.blockhash,
             ComputeBudgetConfig::new(CREATE_COMPUTE_UNITS),
         )?;
-        let transaction = sign_transaction(message, &[&self.authority])?;
+        let transaction = signed_transaction(&message, &[self.authority.as_ref()]).await?;
         let attempt = Attempt {
             signature: transaction.signatures[0],
             last_valid_block_height: latest.last_valid_block_height,
@@ -217,6 +217,8 @@ impl RecordWriter {
             },
         }
         .check()?;
+        self.check_unregistered_owners(&request, &update, &policy)
+            .await?;
         let records = StorageTip::newest(policy.records, &registry);
         self.check_limited_assets(&update, &records).await?;
         let _queueing = self.submits.lock().await;
@@ -445,9 +447,19 @@ impl RecordWriter {
             .first()
             .map(|update| update.ring)
             .ok_or(DbErr::Custom("a planned batch holds no update".to_owned()))?;
-        let proof = self
-            .prove_batch(ring, &checked.inputs, &state, &entries)
-            .await?;
+        let unregistered: Vec<_> = batch
+            .iter()
+            .flat_map(|update| update.unregistered.iter().copied())
+            .collect();
+        let proof = BatchWrites {
+            ring,
+            inputs: &checked.inputs,
+            registry: &state,
+            entries: &entries,
+            unregistered: &unregistered,
+        }
+        .prove(self)
+        .await?;
         // 3. The storage update is the transaction's one instruction.
         let data = StorageUpdateIxData {
             revision: checked.revision,
@@ -471,6 +483,8 @@ impl RecordWriter {
             latest.blockhash,
             ComputeBudgetConfig::new(PROOF_UNITS),
         )?;
+        // Signed ahead of the checks, a slow signer never ages the slot they read.
+        let transaction = signed_transaction(&message, &[self.authority.as_ref()]).await?;
         let policies = self.queued_authorities(batch.iter()).await?;
         let slot = self.chain.slot().await?;
         let mut rejected = false;
@@ -493,7 +507,6 @@ impl RecordWriter {
         if rejected {
             return Ok(());
         }
-        let transaction = sign_transaction(message, &[&self.authority])?;
         // 4. The batch is durable before it is sent, a restart settles it by its signature.
         self.queue()
             .record_batch(NewBatch {
@@ -527,57 +540,6 @@ impl RecordWriter {
         Ok(authorities)
     }
 
-    async fn prove_batch(
-        &self,
-        ring: Address,
-        inputs: &ApplyProofInputs,
-        registry: &StorageRegistry,
-        entries: &[RecordWrite],
-    ) -> Result<BatchProof, RingRpcError> {
-        let storage = |error: RingError| RingRpcError::StorageUpdate(Box::new(error));
-        // 1. Storage derives the private writes from the masks, the writer reads them the same way.
-        let private_writes = RecordWriteClassification {
-            entries: entries.iter().map(|entry| Ok::<_, CustomRingError>(*entry)),
-            asset_writes: &[],
-        }
-        .private_writes()
-        .map_err(|error| storage(error.into()))?;
-        if private_writes == 0 {
-            let apply = self.chain.prove_apply(inputs, registry).await?;
-            return Ok(BatchProof::Public(Box::new(apply)));
-        }
-        let source = self
-            .private_writes
-            .get()
-            .ok_or(RecordUpdateRefusal::Disabled)?;
-        // 2. Each salted key names its owner through an enrollment the auditor key opens.
-        let mut owners = Vec::new();
-        for (write_index, entry) in (0u8..).zip(entries) {
-            if private_writes & (1 << write_index) == 0 {
-                continue;
-            }
-            let owner = source
-                .salted_owner(ring, entry.member)
-                .await?
-                .ok_or_else(|| storage(RingError::WriteOwnerNotEnrolled { write_index }))?;
-            owners.push(SaltedOwnerWrite {
-                write_index,
-                owner: owner.owner,
-                list_salt: owner.list_salt,
-            });
-        }
-        // 3. The proof and the floor raise travel together in one update.
-        let write = PrivateStorageWrite {
-            ring: CustomRing::new(ring),
-            inputs,
-            registry,
-            asset_writes: &[],
-            owners: &owners,
-        };
-        let proven = source.prove(write).await.map_err(storage)?;
-        Ok(BatchProof::Private(Box::new(proven)))
-    }
-
     async fn settle(&self, batch: OpenBatch) -> Result<(), RingRpcError> {
         let outcome = match batch.attempt.landing(self.chain.as_ref()).await? {
             Landing::Pending => return Ok(()),
@@ -587,6 +549,42 @@ impl RecordWriter {
             }
         };
         Ok(self.queue().settle(batch.id, outcome).await?)
+    }
+
+    /// Unsigned hint, admitted only on a key match under the committed ring salt.
+    async fn check_unregistered_owners(
+        &self,
+        request: &SubmitRecordUpdateRequest,
+        update: &CheckedUpdate,
+        policy: &RingPolicy,
+    ) -> Result<(), RingRpcError> {
+        if request.unregistered_owners.is_empty() {
+            return Ok(());
+        }
+        let source = self
+            .private_writes
+            .get()
+            .ok_or(RecordUpdateRefusal::Disabled)?;
+        let salt = source.ring_salt(request.update.ring.0).await?;
+        RecordUpdateRefusal::unless_committed(&salt, &policy.ring_list_tag)?;
+        let owners: Vec<_> = request
+            .unregistered_owners
+            .iter()
+            .map(|owner| owner.0)
+            .collect();
+        let ring_salted = RingSalted {
+            owners: &owners,
+            salt,
+        };
+        let matched = owners.iter().all(|owner| {
+            ring_salted
+                .key(owner)
+                .is_ok_and(|key| update.entries.iter().any(|entry| entry.member == key))
+        });
+        match matched {
+            true => Ok(()),
+            false => Err(RecordUpdateRefusal::UnregisteredOwnerUnmatched.into()),
+        }
     }
 
     async fn check_limited_assets(
@@ -628,23 +626,113 @@ impl RecordWriter {
     }
 
     async fn ring_policy(&self, ring: Address) -> Result<Option<RingPolicy>, RingRpcError> {
-        let account = self
-            .chain
-            .account(CustomRing::new(ring).policy_pda())
-            .await?;
-        Ok(account.and_then(|account| RingPolicy::decode(&account.owner, &ring, &account.data)))
+        ring_policy(self.chain.as_ref(), ring).await
     }
 
     async fn registry(&self, address: Address) -> Result<Option<StorageRegistry>, RingRpcError> {
-        Ok(self
-            .chain
-            .account(address)
-            .await?
-            .and_then(|account| StorageRegistry::decode(&account.owner, &account.data)))
+        storage_registry(self.chain.as_ref(), address).await
     }
 
     fn queue(&self) -> UpdateQueue<'_> {
         UpdateQueue::new(self.store.connection())
+    }
+}
+
+#[must_use]
+struct BatchWrites<'a> {
+    ring: Address,
+    inputs: &'a ApplyProofInputs,
+    registry: &'a StorageRegistry,
+    entries: &'a [RecordWrite],
+    unregistered: &'a [Address],
+}
+
+impl BatchWrites<'_> {
+    async fn prove(self, writer: &RecordWriter) -> Result<BatchProof, RingRpcError> {
+        let Self {
+            ring,
+            inputs,
+            registry,
+            entries,
+            unregistered,
+        } = self;
+        let storage = |error: RingError| RingRpcError::StorageUpdate(Box::new(error));
+        // 1. Storage derives the private writes from the masks, the writer reads them the same way.
+        let private_writes = RecordWriteClassification {
+            entries: entries.iter().map(|entry| Ok::<_, CustomRingError>(*entry)),
+            asset_writes: &[],
+        }
+        .private_writes()
+        .map_err(|error| storage(error.into()))?;
+        if private_writes == 0 {
+            let apply = writer.chain.prove_apply(inputs, registry).await?;
+            return Ok(BatchProof::Public(Box::new(apply)));
+        }
+        let source = writer
+            .private_writes
+            .get()
+            .ok_or(RecordUpdateRefusal::Disabled)?;
+        // 2. Each salted key names its owner through an enrollment the auditor key opens, or an
+        //    owner the submit matched under the ring salt.
+        let ring_salted = match unregistered.is_empty() {
+            true => RingSalted::default(),
+            false => RingSalted {
+                owners: unregistered,
+                salt: source.ring_salt(ring).await?,
+            },
+        };
+        let mut owners = Vec::new();
+        for (write_index, entry) in (0u8..).zip(entries) {
+            if private_writes & (1 << write_index) == 0 {
+                continue;
+            }
+            let owner = match source.salted_owner(ring, entry.member).await? {
+                Some(owner) => Some(owner),
+                None => ring_salted.owner_of(&entry.member),
+            }
+            .ok_or_else(|| storage(RingError::WriteOwnerNotEnrolled { write_index }))?;
+            owners.push(SaltedOwnerWrite {
+                write_index,
+                owner: owner.owner,
+                list_salt: owner.list_salt,
+            });
+        }
+        // 3. The proof and the floor raise travel together in one update.
+        let write = PrivateStorageWrite {
+            ring: CustomRing::new(ring),
+            inputs,
+            registry,
+            asset_writes: &[],
+            owners: &owners,
+        };
+        let proven = source.prove(write).await.map_err(storage)?;
+        Ok(BatchProof::Private(Box::new(proven)))
+    }
+}
+
+#[derive(Default)]
+struct RingSalted<'a> {
+    owners: &'a [Address],
+    salt: [u8; 32],
+}
+
+impl RingSalted<'_> {
+    fn owner_of(&self, written_key: &[u8; 32]) -> Option<SaltedOwner> {
+        self.owners
+            .iter()
+            .find(|owner| self.key(owner).is_ok_and(|key| key == *written_key))
+            .map(|owner| SaltedOwner {
+                owner: *owner,
+                list_salt: self.salt,
+            })
+    }
+
+    fn key(&self, owner: &Address) -> Result<[u8; 32], zolana_ring_policy::MemberError> {
+        let key = zolana_ring_policy::Member::ring_salted(
+            &zolana_ring_policy::Member::owner_tag(owner.as_array())?,
+            &self.salt,
+        )?;
+        Ok(*key.as_bytes())
     }
 }
 

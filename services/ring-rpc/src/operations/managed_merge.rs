@@ -569,6 +569,8 @@ pub(crate) mod tests {
 
     pub(crate) struct EscrowRingSource {
         config: RingConfiguration,
+        /// Zero until a test commits one.
+        pub(crate) ring_list_tag: Mutex<[u8; 32]>,
         pub(crate) origins: Mutex<HashMap<Signature, RingOrigin>>,
         pub(crate) tracking: TrackingLedger,
     }
@@ -653,7 +655,10 @@ pub(crate) mod tests {
             &self,
             _ring: Address,
         ) -> Result<Option<RingConfiguration>, ClientError> {
-            Ok(Some(self.config))
+            Ok(Some(RingConfiguration {
+                ring_list_tag: *self.ring_list_tag.lock().unwrap(),
+                ..self.config
+            }))
         }
 
         async fn ring_chain_status(&self, _ring: Address) -> Result<RingChainStatus, ClientError> {
@@ -754,7 +759,7 @@ pub(crate) mod tests {
             &self,
             _message: &solana_message::VersionedMessage,
         ) -> Result<crate::landing::Simulation, RingRpcError> {
-            Ok(crate::landing::Simulation::Passed)
+            Ok(crate::landing::Simulation::Passed { calls: Vec::new() })
         }
 
         async fn account_data(
@@ -859,7 +864,7 @@ pub(crate) mod tests {
             let parts = RelayParts {
                 store,
                 prover: Arc::new(UnusedProver),
-                fee_payer: fee_payer(),
+                fee_payer: Arc::new(fee_payer()),
                 chain: chain.clone(),
             };
             Self {
@@ -880,7 +885,9 @@ pub(crate) mod tests {
                     },
                     mode: RingMode::Confidential,
                     delegate,
+                    ring_list_tag: [0; 32],
                 },
+                ring_list_tag: Mutex::default(),
                 origins: Mutex::default(),
                 tracking: TrackingLedger::default(),
             };
@@ -890,11 +897,11 @@ pub(crate) mod tests {
             };
             let identity = ServiceIdentity {
                 genesis_hash: GENESIS,
-                service: Keypair::new(),
+                service: Arc::new(Keypair::new()),
             };
             let mut builder = Hub::builder(source, identity)
                 .with_store(store)
-                .with_co_signer(Keypair::new())
+                .with_co_signer(Arc::new(Keypair::new()))
                 .with_co_signer_approval(crate::cosign::CoSignerApproval::new([
                     crate::cosign::ApproveClass::Transfers,
                 ]));
