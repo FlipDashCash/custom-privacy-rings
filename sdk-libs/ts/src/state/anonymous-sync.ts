@@ -16,7 +16,6 @@ import {
   PAGE_LIMIT,
   treeAddress,
   ZERO_NULLIFIER_PK,
-  type SolanaRpc,
 } from "@heliuslabs/spr/internal";
 import type { Address, Bytes16, Bytes32, RequestContext } from "@heliuslabs/spr/interface";
 import {
@@ -67,7 +66,6 @@ import { claimOf, openRingMerges } from "./ring-sync.js";
 import type { RingKeys, RingTagFrame } from "./ring-keys.js";
 import { RingError } from "../protocol/error.js";
 import { ViewingHistory, type ViewingKeyEntry } from "./viewing-history.js";
-import { actualOutputCandidate, openFinalizedActualOutput } from "./actual-output-recovery.js";
 
 /** The indexer's cap on the tags or nullifiers one request names. */
 export const TAGS_PER_REQUEST = Number(PAGE_LIMIT);
@@ -76,7 +74,6 @@ export const TAGS_PER_REQUEST = Number(PAGE_LIMIT);
 export type AnonymousStream =
   /** A transfer's slot or bundle whose tag matched. */
   | Readonly<{ kind: "tagHint" }>
-  | Readonly<{ kind: "actualOutput" }>
   | Readonly<{ kind: "merge"; firstNullifier: Bytes32 }>
   /** Tried with no use of its tag. */
   | Readonly<{ kind: "fullScan" }>;
@@ -187,8 +184,7 @@ export type AnonymousSyncClient = Pick<
   | "getShieldedTransactionsByTags"
   | "getEncryptedUtxosByTags"
   | "getShieldedTransactionsByNullifiers"
-> &
-  Readonly<{ solanaRpc?: SolanaRpc }>;
+>;
 
 type SyncKeys = ShieldedKeys & RingKeys;
 
@@ -943,7 +939,6 @@ class Scan {
     viewingPublicKey: X25519PublicKey,
     rows: readonly IndexedShieldedTransaction[],
   ): Promise<void> {
-    await this.#actualOutputs(viewingPublicKey, rows);
     const candidates = rows
       .map((tx) => sitesOf(tx).flatMap((site) => bodyAt(tx, site, TAG_HINT) ?? []))
       .filter((bodies) => bodies.length > 0);
@@ -999,7 +994,6 @@ class Scan {
     viewingPublicKey: X25519PublicKey,
     rows: readonly IndexedShieldedTransaction[],
   ): Promise<void> {
-    await this.#actualOutputs(viewingPublicKey, rows);
     const bodies = rows.flatMap((tx) =>
       sitesOf(tx).flatMap((site) => bodyAt(tx, site, FULL_SCAN) ?? []),
     );
@@ -1007,49 +1001,6 @@ class Scan {
       viewingPublicKey,
       await bodySecrets(this.#sync.keys, viewingPublicKey, bodies, this.#context),
     );
-  }
-
-  /** Canonical deposits enter the same nullifier ledger and spend reconciliation as stock ring notes. */
-  async #actualOutputs(
-    viewingPublicKey: X25519PublicKey,
-    rows: readonly IndexedShieldedTransaction[],
-  ): Promise<void> {
-    for (const tx of rows) {
-      const candidate = actualOutputCandidate(tx);
-      if (candidate === undefined) continue;
-      const step = this.#workOffset++;
-      if (this.#page !== undefined && step < this.#page.workOffset) continue;
-      const { slot } = candidate;
-      if (!this.#ledger.isFound(slot.outputContext.hash)) {
-        const opened = await openFinalizedActualOutput(
-          candidate,
-          {
-            keys: this.#sync.keys,
-            assets: this.#sync.assets,
-            viewingPublicKey,
-            solanaRpc: this.#client.solanaRpc,
-          },
-          this.#context,
-        );
-        if (opened !== undefined) {
-          if (!opened.registered) this.#ledger.unknownMint(opened.utxo.asset);
-          this.#ledger.keep(
-            {
-              utxo: opened.utxo,
-              nullifierPublicKey: opened.nullifierPublicKey,
-              ...(opened.dataHash === undefined ? {} : { dataHash: opened.dataHash }),
-              ...(opened.ringDataHash === undefined ? {} : { ringDataHash: opened.ringDataHash }),
-              pending: !opened.registered,
-              outputContext: walletContext(slot),
-              order: publication(tx, 0),
-            },
-            viewingPublicKey,
-            Object.freeze({ kind: "actualOutput" }),
-          );
-        }
-      }
-      if (this.#page !== undefined) this.#page.workOffset = step + 1;
-    }
   }
 
   async #read(

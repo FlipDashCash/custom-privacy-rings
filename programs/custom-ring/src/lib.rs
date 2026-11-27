@@ -27,11 +27,8 @@
 //! 4. The public slots fold legs and mints in SPP's order, over the settlement accounts SPP settles.
 //! 5. The ring statement binds the output hashes and the auditor message bytes, SPP's external data hash covers the same bytes.
 //!
-//! A normal ring deposit is a transfer that spends no note, its public leg funds the outputs.
-//! `SettleActualOutput` verifies a stock amount-one, no-input audited descriptor, links its output
-//! hash without executing a synthetic transfer, and signs canonical SPP `ring_deposit` for the
-//! measured amount. Its permanent one-use receipt prevents duplicate owner/blinding commitments.
-//! A merge pairs SPP's merge proof with a ring proof over the
+//! A ring deposit is a transfer that spends no note, its public leg funds the outputs. No ring path
+//! signs SPP's proofless `ring_deposit`. A merge pairs SPP's merge proof with a ring proof over the
 //! auditor's record, see `instructions/settlement/merge.rs`.
 //!
 //! # Instruction data
@@ -94,9 +91,6 @@ pub fn process_instruction(
         InstructionTag::SetDelegate => process_set_delegate_ix(program_id, accounts, ix_data),
         InstructionTag::ApproveTransfer => {
             process_approve_transfer_ix(program_id, accounts, ix_data)
-        }
-        InstructionTag::SettleActualOutput => {
-            process_actual_output_ix(program_id, accounts, ix_data)
         }
         InstructionTag::EnrollBatch => process_enroll_batch_ix(program_id, accounts, ix_data),
     }

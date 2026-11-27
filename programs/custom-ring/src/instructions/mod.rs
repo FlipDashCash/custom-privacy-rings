@@ -2,8 +2,6 @@
 //!
 //! Read after `lib.rs`. Read before `instructions/transfer/processor.rs`.
 
-#[path = "settlement/actual_output.rs"]
-mod actual_output;
 #[path = "tracking/enroll_batch.rs"]
 mod enroll_batch;
 #[path = "configuration/setup/initialize.rs"]
@@ -25,7 +23,6 @@ mod set_delegate;
 #[path = "configuration/access/set_paused.rs"]
 mod set_paused;
 mod transfer;
-pub(crate) use actual_output::process_actual_output_ix;
 #[path = "configuration/access/update_authority.rs"]
 mod update_authority;
 #[path = "configuration/policy/update_policy.rs"]

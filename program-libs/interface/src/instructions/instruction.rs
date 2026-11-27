@@ -57,8 +57,6 @@ pub const PROOF_UNITS: u32 = 1_400_000;
 
 instruction_tags! {
     Transfer = TRANSFER: 55 => PROOF_UNITS,
-    /// Audited, actual-amount canonical SPP deposit after an external composition.
-    SettleActualOutput = SETTLE_ACTUAL_OUTPUT: 67 => PROOF_UNITS,
     Merge = MERGE: 57 => PROOF_UNITS,
     UpdateAuthority = UPDATE_AUTHORITY: 6 => ACCOUNT_UNITS,
     SetPaused = SET_PAUSED: 11 => ACCOUNT_UNITS,

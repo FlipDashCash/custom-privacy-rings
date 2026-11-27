@@ -114,8 +114,6 @@ export function storageRegistryAccount(
   roots: readonly StorageRegistryRoot[],
   authority: Address = ZERO_ADDRESS,
   source: Readonly<{
-    nextIndex?: bigint;
-    ringId?: Bytes32;
     trackingRegistry?: Address;
     trackingFloor?: bigint;
   }> = {},
@@ -124,8 +122,8 @@ export function storageRegistryAccount(
     .u8(STORAGE_REGISTRY_DISCRIMINATOR, "discriminator")
     .bytes(addressBytes(authority))
     .u64(0n, "graceSlots")
-    .u64(source.nextIndex ?? 1n, "nextIndex")
-    .bytes(source.ringId ?? new Uint8Array(32), 32, "ringId")
+    .u64(1n, "nextIndex")
+    .bytes(new Uint8Array(32), 32, "ringId")
     .bytes(addressBytes(source.trackingRegistry ?? ZERO_ADDRESS))
     .u64(source.trackingFloor ?? 0n, "trackingFloor");
   for (let slot = 0; slot < ROOT_HISTORY; slot += 1) {

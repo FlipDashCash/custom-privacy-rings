@@ -62,7 +62,6 @@ export function ringComputeUnitLimit(tag: RingInstructionTag): number {
     case RingInstructionTag.updatePolicy:
       return POLICY_UNITS;
     case RingInstructionTag.transfer:
-    case RingInstructionTag.settleActualOutput:
     case RingInstructionTag.merge:
     case RingInstructionTag.authorityTransfer:
     case RingInstructionTag.enrollBatch:
