@@ -34,7 +34,7 @@ use super::accounts::TransactAccounts;
 use crate::instructions::verifier::{ring_key, RingProof};
 
 #[must_use]
-pub(crate) struct RingStatements<'a> {
+pub(in crate::instructions) struct RingStatements<'a> {
     pub program_id: &'a Address,
     pub ring: &'a RingPolicy,
     pub transfer: &'a ParsedTransact<'a>,

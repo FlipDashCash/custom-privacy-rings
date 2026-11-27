@@ -27,6 +27,7 @@ import { RingError } from "../protocol/error.js";
 import { RingInstructionTag } from "../protocol/transaction/instruction-tag.js";
 import {
   confirmedInstructionGroups,
+  originSlot,
   readOriginTransaction,
   ringEventIn,
 } from "../protocol/transaction/origin.js";
@@ -72,26 +73,29 @@ export function actualOutputCandidate(
 export async function openFinalizedActualOutput(
   candidate: ActualOutputCandidate,
   input: Readonly<{
-    solanaRpc: SolanaRpc | undefined;
+    solanaRpc?: SolanaRpc | undefined;
     keys: RingKeys;
     assets: AssetRegistry;
-    viewingPublicKey: X25519PublicKey;
+    viewingPublicKeys: readonly X25519PublicKey[];
   }>,
   context?: RequestContext,
 ): Promise<OpenedRingNote | undefined> {
   const { event, slot } = candidate;
-  const opened = await openActualOutputForRecipient({
-    event,
-    treeId: slot.outputContext.treeId,
-    commitment: slot.outputContext.hash,
-    keys: input.keys,
-    assets: input.assets,
-    viewingPublicKey: input.viewingPublicKey,
-    ...(context === undefined ? {} : { context }),
-  });
-  if (opened === undefined) return undefined;
-  await verifyFinalizedOrigin(candidate, input.solanaRpc, context);
-  return opened;
+  for (const viewingPublicKey of input.viewingPublicKeys) {
+    const opened = await openActualOutputForRecipient({
+      event,
+      treeId: slot.outputContext.treeId,
+      commitment: slot.outputContext.hash,
+      keys: input.keys,
+      assets: input.assets,
+      viewingPublicKey,
+      ...(context === undefined ? {} : { context }),
+    });
+    if (opened === undefined) continue;
+    await verifyFinalizedOrigin(candidate, input.solanaRpc, context);
+    return opened;
+  }
+  return undefined;
 }
 
 /** Opens a measured deposit for the configured auditor after binding its row to finalized Solana history. */
@@ -125,7 +129,7 @@ async function verifyFinalizedOrigin(
     "finalized",
     context,
   );
-  if (canonical["slot"] !== transaction.slot) throw invalid();
+  if (originSlot(canonical) !== transaction.slot) throw invalid();
   const found = ringEventIn(confirmedInstructionGroups(canonical), eventIndex, event.ringProgramId);
   const auth = await ringAuthAddress(event.ringProgramId);
   if (

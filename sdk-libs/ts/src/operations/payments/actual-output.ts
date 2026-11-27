@@ -3,8 +3,8 @@ import { getProgramDerivedAddress, type Instruction } from "@solana/kit";
 import { initializePoseidon } from "@heliuslabs/spr";
 import {
   Writer,
-  Reader,
   readOutputFrame,
+  decodeRingDepositOutput,
   EncryptedScheme,
   meta,
   ZERO_32,
@@ -14,7 +14,7 @@ import {
   concatBytes,
   ringAuthAddress,
   splInterfaceWithBump,
-  encodeBase58,
+  type RingDepositOutput,
 } from "@heliuslabs/spr/internal";
 import {
   SHIELDED_POOL_PROGRAM_ID,
@@ -22,11 +22,8 @@ import {
   SPL_TOKEN_2022_PROGRAM_ID,
   SPL_TOKEN_PROGRAM_ID,
   type Address,
-  type Bytes16,
   type Bytes32,
-  type Bytes33,
   type RequestContext,
-  type EncryptedRingDepositData,
 } from "@heliuslabs/spr/interface";
 import { X25519PublicKey, ViewingKey, type X25519Keypair } from "@heliuslabs/spr/keypair";
 import {
@@ -50,7 +47,6 @@ import { openRecipientNote, type OpenedRingNote } from "../../crypto/derivation/
 import { ringIdField, txKeySlotSecret } from "../../crypto/derivation/ring-stream.js";
 import { RecordKind, type OutputRecord } from "../../protocol/codec/audit-stream.js";
 import { RingError } from "../../protocol/error.js";
-import { takeActualOutputDescriptorBlinding } from "../workflow/pipeline.js";
 import {
   PreparedRingDeposit,
   type RingDepositParams,
@@ -58,9 +54,8 @@ import {
 } from "./deposit.js";
 import type { RingKeys } from "../../state/ring-keys.js";
 
-export const ACTUAL_OUTPUT_VERSION = 1;
+const ACTUAL_OUTPUT_VERSION = 1;
 export const ACTUAL_OUTPUT_MAGIC = new TextEncoder().encode("CRADv001");
-export const ACTUAL_OUTPUT_MINIMUM_OFFSET = 3;
 const DESCRIPTOR_SLOT = 1;
 
 /** Public, proof-authenticated ownership descriptor. Never substitute a real spend as a certificate. */
@@ -104,47 +99,69 @@ export async function prepareActualOutputDescriptor(
       throw invalid();
   }
   const prepared = await PreparedRingDeposit.prepare({ ...params, amount: 1n }, context);
-  const proven = await prepared.proveTransfer(params.client, context);
-  const privateTxBlinding = takeActualOutputDescriptorBlinding(proven);
-  if (
-    privateTxBlinding === undefined ||
-    proven.accounts.registries.length !== registries.length ||
-    proven.accounts.registries.some((address, index) => address !== registries[index])
-  )
-    throw invalid();
-  const published = proven.outputs.filter((output) => !output.isCompact());
-  const [change, output] = published;
-  const asset = params.asset ?? SOL_MINT;
-  // Stock anonymous deposits name a participant via a live zero-SOL change slot.
-  if (
-    published.length !== 2 ||
-    change === undefined ||
-    change.isDummy() ||
-    change.asset !== SOL_MINT ||
-    change.amount !== 0n ||
-    change.ringProgramId !== params.ringProgramId ||
-    output === undefined ||
-    output.isDummy() ||
-    output.asset !== asset ||
-    output.amount !== 1n ||
-    output.ringProgramId !== params.ringProgramId
-  )
-    throw invalid();
-  const instruction = await proven.instruction();
-  const certificate = Uint8Array.from(instruction.data ?? []);
-  const frame = RingTransactData.parse(certificate.subarray(1), "anonymous");
-  if (frame.ownRevision !== ownRevision || frame.approval !== 0) throw invalid();
-  return Object.freeze({
-    ringProgramId: params.ringProgramId,
-    asset,
-    outputTree: proven.accounts.outputTree,
-    registries: proven.accounts.registries,
-    slot: DESCRIPTOR_SLOT,
-    ownerUtxoHash: ownerUtxoHash(output.ownerHash(), output.blinding),
-    privateTxBlinding,
-    zeroChangeOwnerUtxoHash: ownerUtxoHash(change.ownerHash(), change.blinding),
-    certificate,
-  });
+  let privateTxBlinding: Bytes32 | undefined;
+  try {
+    const proven = await prepared.proveTransfer(params.client, context, {
+      transaction: {},
+      approve({ proofInputs }) {
+        // Only this synthetic deposit publishes its transaction blinding.
+        if (!proofInputs.inputUtxos.every((slot) => slot.isDummy())) throw invalid();
+        privateTxBlinding = proofInputs.privateTxBlinding();
+        return Promise.resolve();
+      },
+    });
+    const { data, accounts } = proven;
+    if (
+      privateTxBlinding === undefined ||
+      data.rail !== "anonymous" ||
+      !data.noSpend ||
+      !data.publicOwners ||
+      data.hasData ||
+      data.ringData ||
+      data.entry ||
+      data.vouched ||
+      data.ownRevision !== ownRevision ||
+      data.approval !== 0 ||
+      accounts.registries.length !== registries.length ||
+      accounts.registries.some((address, index) => address !== registries[index])
+    )
+      throw invalid();
+    const published = proven.outputs.filter((output) => !output.isCompact());
+    const [change, output] = published;
+    const asset = params.asset ?? SOL_MINT;
+    // Stock anonymous deposits name a participant via a live zero-SOL change slot.
+    if (
+      published.length !== 2 ||
+      change === undefined ||
+      change.isDummy() ||
+      change.asset !== SOL_MINT ||
+      change.amount !== 0n ||
+      change.ringProgramId !== params.ringProgramId ||
+      output === undefined ||
+      output.isDummy() ||
+      output.asset !== asset ||
+      output.amount !== 1n ||
+      output.ringProgramId !== params.ringProgramId
+    )
+      throw invalid();
+    return Object.freeze({
+      ringProgramId: params.ringProgramId,
+      asset,
+      outputTree: accounts.outputTree,
+      registries: accounts.registries,
+      slot: DESCRIPTOR_SLOT,
+      ownerUtxoHash: ownerUtxoHash(output.ownerHash(), output.blinding),
+      privateTxBlinding,
+      zeroChangeOwnerUtxoHash: ownerUtxoHash(change.ownerHash(), change.blinding),
+      certificate: concatBytes(
+        Uint8Array.of(RingInstructionTag.transfer),
+        RingTransactData.encode(data),
+      ),
+    });
+  } catch (cause) {
+    privateTxBlinding?.fill(0);
+    throw cause;
+  }
 }
 
 export interface ActualOutputSettlementParams {
@@ -158,44 +175,38 @@ export interface ActualOutputSettlementParams {
   readonly tokenProgram?: Address;
 }
 
-export async function actualOutputReceiptAddress(ring: Address, owner: Bytes32): Promise<Address> {
-  return (
-    await getProgramDerivedAddress({
-      programAddress: ring,
-      seeds: [new TextEncoder().encode("actual_output"), owner],
-    })
-  )[0];
-}
-
 /** No dispatch/signing. Compose after the stock private withdrawal and reviewed venue instructions. */
 export async function buildSettleActualOutputInstruction(
   params: ActualOutputSettlementParams,
 ): Promise<Instruction> {
-  const { descriptor: d } = params;
+  const { descriptor, minimumOutput, keepLamports = 0n } = params;
   if (
-    params.minimumOutput <= 0n ||
-    (params.keepLamports ?? 0n) < 0n ||
-    d.slot !== DESCRIPTOR_SLOT ||
-    (d.registries.length !== 1 && d.registries.length !== 2)
+    minimumOutput <= 0n ||
+    keepLamports < 0n ||
+    descriptor.slot !== DESCRIPTOR_SLOT ||
+    (descriptor.registries.length !== 1 && descriptor.registries.length !== 2)
   )
     throw invalid();
-  const [ring, ringAuth, receipt] = await Promise.all([
-    ringPolicyAddress(d.ringProgramId),
-    ringAuthAddress(d.ringProgramId),
-    actualOutputReceiptAddress(d.ringProgramId, d.ownerUtxoHash),
+  const [ring, ringAuth, [receipt]] = await Promise.all([
+    ringPolicyAddress(descriptor.ringProgramId),
+    ringAuthAddress(descriptor.ringProgramId),
+    getProgramDerivedAddress({
+      programAddress: descriptor.ringProgramId,
+      seeds: ["actual_output", descriptor.ownerUtxoHash],
+    }),
   ]);
   const out = new Writer()
     .u8(RingInstructionTag.settleActualOutput, "tag")
     .u8(ACTUAL_OUTPUT_VERSION, "version")
-    .u8(d.slot, "slot")
-    .u64(params.minimumOutput, "minimumOutput")
-    .u64(params.keepLamports ?? 0n, "keepLamports")
-    .bytes(d.ownerUtxoHash, 32)
+    .u8(descriptor.slot, "slot")
+    .u64(minimumOutput, "minimumOutput")
+    .u64(keepLamports, "keepLamports")
+    .bytes(descriptor.ownerUtxoHash, 32)
     .bytes(ZERO_32, 32)
-    .bytes(d.privateTxBlinding, 32)
-    .bytes(d.zeroChangeOwnerUtxoHash, 32);
+    .bytes(descriptor.privateTxBlinding, 32)
+    .bytes(descriptor.zeroChangeOwnerUtxoHash, 32);
   const group = [];
-  if (d.asset === SOL_MINT) {
+  if (descriptor.asset === SOL_MINT) {
     if (params.sourceTokenAccount !== undefined || params.tokenProgram !== undefined)
       throw invalid();
     out.u8(0, "asset");
@@ -205,28 +216,28 @@ export async function buildSettleActualOutputInstruction(
       params.sourceTokenAccount === undefined ||
       (params.tokenProgram !== SPL_TOKEN_PROGRAM_ID &&
         params.tokenProgram !== SPL_TOKEN_2022_PROGRAM_ID) ||
-      (params.keepLamports ?? 0n) !== 0n
+      keepLamports !== 0n
     )
       throw invalid();
-    const [splInterface, bump] = await splInterfaceWithBump(d.asset);
+    const [splInterface, bump] = await splInterfaceWithBump(descriptor.asset);
     out.u8(1, "asset").u8(bump, "splInterfaceBump");
     group.push(
       meta(params.tokenProgram, false, false),
-      meta(d.asset, false, false),
+      meta(descriptor.asset, false, false),
       meta(params.sourceTokenAccount, false, true),
       meta(splInterface, false, true),
     );
   }
-  out.u16(d.certificate.length, "certificate.length").bytes(d.certificate);
+  out.u16(descriptor.certificate.length, "certificate.length").bytes(descriptor.certificate);
   return Object.freeze({
-    programAddress: d.ringProgramId,
+    programAddress: descriptor.ringProgramId,
     accounts: [
       meta(ring, false, false),
-      ...d.registries.map((address) => meta(address, false, false)),
+      ...descriptor.registries.map((address) => meta(address, false, false)),
       meta(receipt, false, true),
       meta(params.receiptPayer, true, true),
       meta(SYSTEM_PROGRAM, false, false),
-      meta(d.outputTree, false, true),
+      meta(descriptor.outputTree, false, true),
       meta(params.authority, true, true),
       meta(ringAuth, false, false),
       meta(SHIELDED_POOL_PROGRAM_ID, false, false),
@@ -237,40 +248,17 @@ export async function buildSettleActualOutputInstruction(
 }
 
 /** Decoded fields of a measured Ring deposit payload. These fields alone have no chain provenance. */
-export interface ActualOutputEvent {
-  readonly ownerUtxoHash: Bytes32;
-  readonly asset: Address;
-  readonly amount: bigint;
-  readonly ringProgramId: Address;
-  readonly ringDataHash: Bytes32;
-  readonly encrypted: EncryptedRingDepositData;
-}
+export type ActualOutputEvent = Omit<RingDepositOutput, "dataHash">;
 
 /** Decodes the SPP output payload. This does not verify its origin, commitment, or finality. */
 export function decodeActualOutputEvent(payload: Uint8Array): ActualOutputEvent | undefined {
   if (payload[0] !== 1 || payload[5] !== EncryptedScheme.ringDeposit) return undefined;
   const { body } = readOutputFrame(payload);
-  const framing = new Reader(body);
-  const ownerUtxoHash = framing.bytes(32, "ownerUtxoHash") as Bytes32;
-  const asset = encodeBase58(framing.bytes(32, "asset"));
-  const amount = framing.u64("amount");
-  const dataHash = framing.option("dataHash", (reader) => reader.bytes(32, "dataHash"));
-  const ringProgramId = encodeBase58(framing.bytes(32, "ringProgramId"));
-  const ringDataHash = framing.bytes(32, "ringDataHash") as Bytes32;
-  const txViewingPublicKey = framing.bytes(33, "txViewingPublicKey") as Bytes33;
-  const salt = framing.bytes(16, "salt") as Bytes16;
-  const ciphertext = framing.bytes(framing.u32("ciphertext.length"), "ciphertext");
-  framing.done();
-  if (!equalBytes(ciphertext.subarray(0, 8), ACTUAL_OUTPUT_MAGIC)) return undefined;
-  if (dataHash !== undefined || !isZero(ringDataHash) || amount <= 0n) throw invalid();
-  return Object.freeze({
-    ownerUtxoHash,
-    asset,
-    amount,
-    ringProgramId,
-    ringDataHash,
-    encrypted: { txViewingPublicKey, salt, ciphertext },
-  });
+  const event = decodeRingDepositOutput(body);
+  if (!equalBytes(event.encrypted.ciphertext.subarray(0, 8), ACTUAL_OUTPUT_MAGIC)) return undefined;
+  if (event.dataHash !== undefined || !isZero(event.ringDataHash) || event.amount <= 0n)
+    throw invalid();
+  return event;
 }
 
 function descriptorOf(event: ActualOutputEvent) {

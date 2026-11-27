@@ -739,15 +739,9 @@ export { RECOVERY_DIAGNOSTIC_SAMPLES } from "../state/recovery-session.js";
 export type { RecoveryCoverage, RecoveryWallet } from "../state/recovery-session.js";
 
 export {
-  ACTUAL_OUTPUT_VERSION,
-  ACTUAL_OUTPUT_MINIMUM_OFFSET,
-  prepareActualOutputDescriptor,
   buildSettleActualOutputInstruction,
-  decodeActualOutputEvent,
-} from "../operations/payments/actual-output.js";
-export type {
-  ActualOutputDescriptor,
-  ActualOutputSettlementParams,
-  ActualOutputEvent,
+  prepareActualOutputDescriptor,
+  type ActualOutputDescriptor,
+  type ActualOutputSettlementParams,
 } from "../operations/payments/actual-output.js";
 export { openActualOutputForAuditor } from "../state/actual-output-recovery.js";

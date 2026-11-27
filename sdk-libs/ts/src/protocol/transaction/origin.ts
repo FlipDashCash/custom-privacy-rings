@@ -459,6 +459,14 @@ export class RpcTransactionOrigin implements TransactionOrigin {
   }
 }
 
+/** Solana Kit promotes u64 values to bigint. Raw JSON can use a safe number or decimal string. */
+export function originSlot(transaction: unknown): bigint {
+  const raw = record(transaction, "transaction")["slot"];
+  const slot = typeof raw === "bigint" ? raw : integer(raw, "slot");
+  if (slot < 0n || slot > 0xffff_ffff_ffff_ffffn) throw invalid("slot");
+  return slot;
+}
+
 /** @internal Fetches the requested transaction at the origin check's commitment. */
 export async function readOriginTransaction(
   rpc: SolanaRpc,
@@ -581,10 +589,7 @@ function bindConfirmedTransaction(
     const data = readConfirmedEvent(found.source, found.event);
     if (data === undefined) return undefined;
     const { outputTree, firstLeaf } = data;
-    const rawSlot = record(confirmed, "transaction")["slot"];
-    // Solana Kit promotes RPC u64 values to bigint. Raw JSON fixtures use number/string.
-    const slot = typeof rawSlot === "bigint" ? rawSlot : integer(rawSlot, "slot");
-    if (slot < 0n || slot > 0xffff_ffff_ffff_ffffn) throw invalid("slot");
+    const slot = originSlot(confirmed);
     if (
       indexed.slot !== slot ||
       indexed.proofless ||

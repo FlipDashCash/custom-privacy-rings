@@ -78,6 +78,7 @@ import {
   CustomRingTransfer,
   type CustomRingTransferInput,
   type PublicOwnerTransfer,
+  type RingTransferApproval,
 } from "./transfer-rails.js";
 import { assetLabel, type RingTransferClient } from "./transfer.js";
 
@@ -270,10 +271,16 @@ export class PreparedRingDeposit {
   }
 
   /** @internal A second proof is refused, a retry prepares a new frame. */
-  proveTransfer(client: RingDepositClient, context?: RequestContext): Promise<ProvenRingTransfer> {
+  proveTransfer(
+    client: RingDepositClient,
+    context?: RequestContext,
+    approval?: RingTransferApproval,
+  ): Promise<ProvenRingTransfer> {
     if (this.#proved) throw new RingError("RING_DEPOSIT_FRAME_REUSED");
     this.#proved = true;
-    return this.#rail.prove(client, context);
+    return approval === undefined
+      ? this.#rail.prove(client, context)
+      : this.#rail.proveApproved(client, approval, context);
   }
 
   /** @internal */

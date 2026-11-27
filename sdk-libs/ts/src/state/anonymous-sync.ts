@@ -1026,25 +1026,23 @@ class Scan {
           {
             keys: this.#sync.keys,
             assets: this.#sync.assets,
-            viewingPublicKey,
+            viewingPublicKeys: [viewingPublicKey],
             solanaRpc: this.#client.solanaRpc,
           },
           this.#context,
         );
         if (opened !== undefined) {
-          if (!opened.registered) this.#ledger.unknownMint(opened.utxo.asset);
+          const { registered, utxoHash: _hash, ...note } = opened;
+          if (!registered) this.#ledger.unknownMint(note.utxo.asset);
           this.#ledger.keep(
             {
-              utxo: opened.utxo,
-              nullifierPublicKey: opened.nullifierPublicKey,
-              ...(opened.dataHash === undefined ? {} : { dataHash: opened.dataHash }),
-              ...(opened.ringDataHash === undefined ? {} : { ringDataHash: opened.ringDataHash }),
-              pending: !opened.registered,
+              ...note,
+              pending: !registered,
               outputContext: walletContext(slot),
               order: publication(tx, 0),
             },
             viewingPublicKey,
-            Object.freeze({ kind: "actualOutput" }),
+            ACTUAL_OUTPUT,
           );
         }
       }
@@ -1699,6 +1697,7 @@ function outputIndex(body: Body): number {
   return body.site.kind === "output" ? body.site.position : body.tx.outputSlots.length;
 }
 
+const ACTUAL_OUTPUT: AnonymousStream = Object.freeze({ kind: "actualOutput" });
 const FULL_SCAN: AnonymousStream = Object.freeze({ kind: "fullScan" });
 const TAG_HINT: AnonymousStream = Object.freeze({ kind: "tagHint" });
 const base58 = getBase58Encoder();

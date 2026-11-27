@@ -1,4 +1,4 @@
-import { AccountRole } from "@solana/kit";
+import { AccountRole, getProgramDerivedAddress } from "@solana/kit";
 import { describe, expect, it } from "vitest";
 
 import { SHIELDED_POOL_PROGRAM_ID, SPL_TOKEN_2022_PROGRAM_ID } from "@heliuslabs/spr/interface";
@@ -6,8 +6,6 @@ import { SYSTEM_PROGRAM, splInterfaceWithBump } from "@heliuslabs/spr/internal";
 import { SOL_MINT } from "@heliuslabs/spr/transaction";
 
 import {
-  ACTUAL_OUTPUT_MINIMUM_OFFSET,
-  actualOutputReceiptAddress,
   buildSettleActualOutputInstruction,
   type ActualOutputDescriptor,
 } from "../../../src/operations/payments/actual-output.js";
@@ -36,17 +34,18 @@ const request = {
 describe("runtime amount deposits", () => {
   it("matches the canonical SPL wire and separates the source authority from the receipt payer", async () => {
     const [vault, bump] = await splInterfaceWithBump(descriptor.asset);
+    const [receipt] = await getProgramDerivedAddress({
+      programAddress: descriptor.ringProgramId,
+      seeds: ["actual_output", descriptor.ownerUtxoHash],
+    });
     const { data, accounts } = await buildSettleActualOutputInstruction(request);
     expect(data?.subarray(0, 3)).toEqual(Uint8Array.of(67, 1, 1));
-    expect(
-      data &&
-        new DataView(Uint8Array.from(data).buffer).getBigUint64(ACTUAL_OUTPUT_MINIMUM_OFFSET, true),
-    ).toBe(request.minimumOutput);
+    expect(data && new DataView(Uint8Array.from(data).buffer).getBigUint64(3, true)).toBe(
+      request.minimumOutput,
+    );
     expect(data?.slice(115, 147)).toEqual(descriptor.zeroChangeOwnerUtxoHash);
     expect(data?.subarray(147)).toEqual(Uint8Array.of(1, bump, 3, 0, 4, 5, 6));
-    expect(accounts?.[2]?.address).toBe(
-      await actualOutputReceiptAddress(descriptor.ringProgramId, descriptor.ownerUtxoHash),
-    );
+    expect(accounts?.[2]?.address).toBe(receipt);
     expect(accounts?.[3]).toEqual({
       address: request.receiptPayer,
       role: AccountRole.WRITABLE_SIGNER,

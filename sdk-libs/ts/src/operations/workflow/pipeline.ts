@@ -306,17 +306,6 @@ export class ProvenRingTransfer {
   }
 }
 
-const descriptorBlindings = new WeakMap<ProvenRingTransfer, Bytes32>();
-
-/** @internal Only the measured deposit builder consumes this synthetic certificate opening. */
-export function takeActualOutputDescriptorBlinding(
-  transfer: ProvenRingTransfer,
-): Bytes32 | undefined {
-  const blinding = descriptorBlindings.get(transfer);
-  descriptorBlindings.delete(transfer);
-  return blinding;
-}
-
 /** What a staged transfer's proofs read, valid inside the `assembleStagedTransfer` callback. */
 interface AssembledTransfer {
   readonly sealed: SealedAudit;
@@ -845,7 +834,7 @@ async function proveAssembled(
     publishedInputs: inputs.length,
     proof,
   });
-  const proven = new ProvenRingTransfer({
+  return new ProvenRingTransfer({
     ringProgramId,
     data,
     accounts: assembled.accounts,
@@ -859,18 +848,6 @@ async function proveAssembled(
     ...(assembled.approval === undefined ? {} : { approvalOpening: assembled.approval.opening }),
     chargedOutflows: policy.chargedOutflows,
   });
-  if (
-    data.rail === "anonymous" &&
-    data.noSpend &&
-    data.publicOwners &&
-    !data.hasData &&
-    !data.ringData &&
-    !data.entry &&
-    !data.vouched &&
-    proofInputs.inputUtxos.every((slot) => slot.isDummy())
-  )
-    descriptorBlindings.set(proven, proofInputs.privateTxBlinding());
-  return proven;
 }
 
 /** The ring prefix, then SPP's own accounts, the data's tag by its rail, Rust `TransactAccounts::instruction`. */

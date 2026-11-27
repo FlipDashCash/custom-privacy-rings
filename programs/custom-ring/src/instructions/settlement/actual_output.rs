@@ -1,7 +1,7 @@
 //! Sweep a signing execution account into a canonical SPP ring deposit. Stock Ring cryptography
-//! certifies ownership and auditor access at a fixed synthetic amount; SPP settles the actual amount.
-//! This instruction authorizes no withdrawal and never signs for the execution authority. That
-//! authority must sign the complete reviewed transaction containing its predecessor withdrawal.
+//! certifies ownership and auditor access at a fixed synthetic amount. SPP settles the measured
+//! amount. The execution authority signs the complete transaction, and this instruction signs
+//! only for the ring's SPP authority.
 use custom_ring_interface::{
     actual_output::{
         descriptor_hash, descriptor_transaction_hash, pristine_records, sweep_amount,
@@ -25,13 +25,14 @@ use spr_interface::{
         tag::RING_DEPOSIT, DepositAssetKind, EncryptedRingDepositData, InterfaceTransfer,
         RingDepositEntry, RingDepositIxData,
     },
-    SHIELDED_POOL_PROGRAM_ID, SOL_ASSET_FIELD,
+    SOL_ASSET_FIELD,
 };
 use spr_tree::TreeAccount;
+use zolana_ring_policy::ring_id_field;
 
 use crate::instructions::{
     instruction_runtime::{check_system_program, Pda, PdaAllocation, RingAuth},
-    loader::{load_policy, RegistrySlots},
+    loader::{load_policy, validate_spp_program, RegistrySlots},
     transfer::{accounts::TransactAccounts, verify::RingStatements},
 };
 
@@ -48,10 +49,9 @@ pub fn process_actual_output_ix(
     }
     let (policy_account, rest) = accounts.split_at_mut(1);
     let ring = load_policy(program_id, &policy_account[0])?;
-    // Amount-one screening cannot certify unknown final-amount limits. A registry is
-    // accepted only at its authoritative, never-written sentinel root.
+    // The proof certifies amount one. Admit audit-only rings and require the authoritative,
+    // never-written sentinel for any own records registry.
     if ring.mode()? != custom_ring_interface::RingMode::Anonymous
-        || ring.policy_hash != [0; 32]
         || ring.co_signers.covered().is_some()
         || request.ring_data_hash != [0; 32]
     {
@@ -70,7 +70,7 @@ pub fn process_actual_output_ix(
     let registries = RegistrySlots { ring: &ring, read }
         .load(|| after_ring.next().ok_or(ProgramError::NotEnoughAccountKeys))?;
     let roots = registries.roots(clock.slot);
-    let ring_id = hash_bytes(program_id.as_array()).map_err(CustomRingError::from)?;
+    let ring_id = ring_id_field(program_id.as_array()).map_err(CustomRingError::from)?;
     if roots
         .own
         .is_some_and(|registry| !pristine_records(registry, &ring_id, &ring.tracking))
@@ -85,10 +85,8 @@ pub fn process_actual_output_ix(
         return Err(invalid.into());
     }
     let ring_auth = RingAuth::derive(program_id)?.check_slot(spp, 2)?;
-    let spp_id = Address::new_from_array(SHIELDED_POOL_PROGRAM_ID);
-    if spp[3].address() != &spp_id || !spp[3].executable() {
-        return Err(CustomRingError::InvalidShieldedPoolProgram.into());
-    }
+    validate_spp_program(core::slice::from_ref(&spp[3]))?;
+    let spp_id = *spp[3].address();
     let tree_id = TreeAccount::from_account_view_mut(
         &mut spp[0],
         &spp_id,
@@ -149,24 +147,25 @@ pub fn process_actual_output_ix(
             let mint_bytes = spp[5].try_borrow()?;
             let mint_state =
                 PodStateWithExtensions::<PodMint>::unpack(&mint_bytes).map_err(|_| invalid)?;
-            if !bool::from(mint_state.base.is_initialized)
-                || !mint_state
-                    .get_extension_types()
-                    .map_err(|_| invalid)?
-                    .iter()
-                    .all(|extension| {
-                        matches!(
-                            extension,
-                            ExtensionType::MetadataPointer
-                                | ExtensionType::TokenMetadata
-                                | ExtensionType::GroupPointer
-                                | ExtensionType::TokenGroup
-                                | ExtensionType::GroupMemberPointer
-                                | ExtensionType::TokenGroupMember
-                                | ExtensionType::InterestBearingConfig
-                                | ExtensionType::ScaledUiAmount
-                        )
-                    })
+            // The measured rail has its own extension policy. SPP's interface creation
+            // supports additional extensions, and RingDeposit checks the actual vault credit.
+            if !mint_state
+                .get_extension_types()
+                .map_err(|_| invalid)?
+                .iter()
+                .all(|extension| {
+                    matches!(
+                        extension,
+                        ExtensionType::MetadataPointer
+                            | ExtensionType::TokenMetadata
+                            | ExtensionType::GroupPointer
+                            | ExtensionType::TokenGroup
+                            | ExtensionType::GroupMemberPointer
+                            | ExtensionType::TokenGroupMember
+                            | ExtensionType::InterestBearingConfig
+                            | ExtensionType::ScaledUiAmount
+                    )
+                })
             {
                 return Err(invalid.into());
             }
@@ -298,7 +297,7 @@ pub fn process_actual_output_ix(
             .serialize()
             .map_err(|_| CustomRingError::InvalidInstructionData)?,
     );
-    // SPP validates real mint/program ownership, canonical interfaces, token extension policy and
-    // exact vault credit. A refused/fee-bearing transfer rolls back the whole composition.
+    // SPP checks its active ring config, the canonical interface and exact SPL vault credit.
+    // A failed CPI rolls back settlement and the receipt with the rest of the transaction.
     validated.ring_auth.invoke(spp, &forwarded)
 }

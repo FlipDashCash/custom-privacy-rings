@@ -7,16 +7,20 @@ import {
   hashBytes,
   poseidon,
   ringAuthAddress,
+  splAssetRegistryAddress,
   Writer,
   ZERO_32,
 } from "@heliuslabs/spr/internal";
 import {
   InstructionTag,
   SHIELDED_POOL_PROGRAM_ID,
+  StateDiscriminator,
+  type Address,
   treeIdField,
   UTXO_DOMAIN,
 } from "@heliuslabs/spr/interface";
 import {
+  assetField,
   AssetRegistry,
   SOL_MINT,
   Wallet,
@@ -40,6 +44,7 @@ import { ownedAccount, ringPolicyData } from "../helpers/ring-accounts.js";
 import {
   itemAt,
   PROOF_SERVICE,
+  randomAddress,
   ringFixture,
   small,
   TREE,
@@ -61,7 +66,7 @@ function keysFor(seed: number): LocalRingKeys {
   }
 }
 
-async function fixture() {
+async function fixture(asset: Address = SOL_MINT) {
   const original = keysFor(39);
   const ring = await ringFixture({ mode: "anonymous" });
   const ringProgramId = ring.ringProgramId;
@@ -79,6 +84,18 @@ async function fixture() {
       }),
     ),
   );
+  if (asset !== SOL_MINT) {
+    const data = new Writer()
+      .u8(StateDiscriminator.splAssetRegistry, "discriminator")
+      .bytes(new Uint8Array(7))
+      .bytes(addressBytes(asset))
+      .u64(2n, "asset id")
+      .finish();
+    ring.accounts.set(
+      await splAssetRegistryAddress(asset),
+      ownedAccount(SHIELDED_POOL_PROGRAM_ID, data),
+    );
+  }
   ring.enroll(original.address());
   const deposit = await prepareActualOutputDescriptor({
     client: {
@@ -88,6 +105,7 @@ async function fixture() {
       getLatestBlockhash: async () => BLOCKHASH,
     },
     ringProgramId,
+    asset,
     feePayer: ring.authority,
     recipient: {
       kind: "anonymous",
@@ -99,12 +117,11 @@ async function fixture() {
   const data = RingTransactData.parse(deposit.certificate.subarray(1), "anonymous");
   const value = new Uint8Array(32);
   new DataView(value.buffer).setBigUint64(24, ACTUAL_AMOUNT);
-  const mint = hashBytes(addressBytes(SOL_MINT));
   const ringHash = poseidon([ZERO_32, hashBytes(addressBytes(ringProgramId))]);
   const hash = poseidon([
     small(UTXO_DOMAIN),
     treeIdField(TREE_ID),
-    mint,
+    assetField(asset),
     value,
     ZERO_32,
     ringHash,
@@ -118,7 +135,7 @@ async function fixture() {
   const body = new Writer()
     .u8(8, "scheme")
     .bytes(deposit.ownerUtxoHash)
-    .bytes(addressBytes(SOL_MINT))
+    .bytes(addressBytes(asset))
     .u64(ACTUAL_AMOUNT, "amount")
     .u8(0, "data hash")
     .bytes(addressBytes(ringProgramId))
@@ -167,9 +184,14 @@ async function fixture() {
     .u32(1, "settlement legs")
     .u8(1, "deposit")
     .u64(ACTUAL_AMOUNT, "amount")
-    .u8(0, "SOL")
-    .finish();
-  const emit = { programIdIndex: 0, accounts: [], data: base58.decode(event), stackHeight: 3 };
+    .u8(asset === SOL_MINT ? 0 : 1, "mint option");
+  if (asset !== SOL_MINT) event.bytes(addressBytes(asset));
+  const emit = {
+    programIdIndex: 0,
+    accounts: [],
+    data: base58.decode(event.finish()),
+    stackHeight: 3,
+  };
   const canonical = {
     slot: row.slot,
     transaction: {
@@ -216,7 +238,16 @@ function recoveryClient(row: IndexedShieldedTransaction, canonical: unknown) {
   const indexer = new ScanIndexer();
   indexer.publish(row);
   const getTransaction = vi.fn(() => ({ send: async () => canonical }));
-  const client = { ...indexer.client(), solanaRpc: solanaRpcReads({ getTransaction }) };
+  const reads = indexer.client();
+  const client = {
+    ...reads,
+    solanaRpc: solanaRpcReads({ getTransaction }),
+    getEncryptedUtxosByTags: async (...args: Parameters<typeof reads.getEncryptedUtxosByTags>) => {
+      const reply = await reads.getEncryptedUtxosByTags(...args);
+      const slot = indexer.transactions.reduce((high, tx) => (tx.slot > high ? tx.slot : high), 0n);
+      return { ...reply, context: { ...reply.context, slot } };
+    },
+  };
   return { client, indexer, getTransaction };
 }
 
@@ -276,6 +307,79 @@ describe("canonical actual-output recovery", () => {
         auditor: ring.auditor,
       }),
     ).resolves.toMatchObject({ amount: ACTUAL_AMOUNT });
+  });
+
+  it("retries an unavailable finalized transaction without advancing the wallet", async () => {
+    const { row, canonical, ring } = await fixture();
+    const { client, getTransaction } = recoveryClient(row, null);
+    const keys = keysFor(39);
+    const scanWallet = wallet(keys, row);
+    const coreWallet = wallet(keys, row);
+    const initialHistory = coreWallet.history().toJson();
+    const scan = AnonymousSync.create(keys, scanWallet.wallet.registry);
+    const fullScan = () => scan.fullScanWallet(client, scanWallet, ring.ringProgramId);
+    const coreSync = () => syncRingWallet({ wallet: coreWallet, keys, client });
+
+    for (const read of [fullScan, coreSync])
+      await expect(read()).rejects.toMatchObject({ code: "RING_ORIGIN_UNAVAILABLE" });
+    for (const document of [scanWallet, coreWallet]) {
+      expect(document.history().toJson()).toEqual(initialHistory);
+      expect(document.notes()).toEqual([]);
+      expect(document.pendingOpenings()).toEqual([]);
+    }
+
+    getTransaction.mockReturnValue({
+      send: async () => ({ ...canonical, slot: String(row.slot) }),
+    });
+    await scanWallet.absorb(await fullScan());
+    await coreSync();
+    for (const document of [scanWallet, coreWallet])
+      expect(document.notes().map((note) => note.utxo.amount)).toEqual([ACTUAL_AMOUNT]);
+  });
+
+  it("keeps a measured SPL opening pending and promotes its spent note without inflating balance", async () => {
+    const asset = randomAddress();
+    const { row, canonical } = await fixture(asset);
+    const { client, indexer, getTransaction } = recoveryClient(row, canonical);
+    const keys = keysFor(39);
+    const scanWallet = wallet(keys, row);
+    const coreWallet = wallet(keys, row);
+    const scan = AnonymousSync.create(keys, scanWallet.wallet.registry);
+
+    const recovered = await scan.fetchWallet(client, scanWallet);
+    expect(recovered.unknownMints).toEqual([asset]);
+    await scanWallet.absorb(recovered);
+    const report = await syncRingWallet({ wallet: coreWallet, keys, client });
+    expect(report.unknownAssetFields).toEqual([assetField(asset)]);
+
+    const nullifier = itemAt(scanWallet.pendingOpenings(), 0).nullifier;
+    for (const document of [scanWallet, coreWallet]) {
+      expect(document.notes()).toEqual([]);
+      expect(document.pendingOpenings()).toMatchObject([
+        { nullifier, spent: false, utxo: { asset, amount: ACTUAL_AMOUNT } },
+      ]);
+    }
+
+    indexer.publish({
+      ...row,
+      txSignature: signature(40n),
+      slot: 10n,
+      proofless: false,
+      eventIndex: 0,
+      outputSlots: [],
+      nullifiers: [nullifier],
+    });
+    getTransaction.mockClear();
+    scanWallet.wallet.ensureAsset(2n, asset);
+    coreWallet.wallet.ensureAsset(2n, asset);
+    await scanWallet.absorb(await scan.fetchWallet(client, scanWallet));
+    await syncRingWallet({ wallet: coreWallet, keys, client });
+    expect(getTransaction).not.toHaveBeenCalled();
+    for (const document of [scanWallet, coreWallet]) {
+      expect(document.pendingOpenings()).toEqual([]);
+      expect(document.notes()).toMatchObject([{ nullifier, spent: true }]);
+      expect(document.wallet.balance(asset).amount).toBe(0n);
+    }
   });
 
   it("refuses unavailable finality, a different leaf, or an event emitted by the wrong caller", async () => {

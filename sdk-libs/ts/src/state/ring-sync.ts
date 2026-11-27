@@ -37,7 +37,7 @@ import {
   SENDER_BUNDLE_LEN,
   type ReplyClaim,
 } from "../protocol/codec/anonymous-delivery.js";
-import { openRecipientBody } from "../crypto/derivation/blinding.js";
+import { openRecipientBody, type OpenedRingNote } from "../crypto/derivation/blinding.js";
 import { spendingTransactions } from "../operations/workflow/recover.js";
 import { outputTreeId } from "../protocol/membership/trees.js";
 import {
@@ -76,32 +76,12 @@ function claimingCodec(input: RingNoteCodecInput, claims: SenderClaim[]): RingCo
     open: async (event, context) => {
       const candidate = actualOutputCandidate(event);
       if (candidate !== undefined) {
-        for (const viewingPublicKey of input.keys.viewingPublicKeys()) {
-          const opened = await openFinalizedActualOutput(
-            candidate,
-            {
-              keys: input.keys,
-              assets: input.assets,
-              viewingPublicKey,
-              solanaRpc: input.solanaRpc,
-            },
-            context,
-          );
-          if (opened === undefined) continue;
-          return [
-            {
-              slotIndex: 0,
-              nullifierPublicKey: opened.nullifierPublicKey,
-              mint: opened.utxo.asset,
-              amount: opened.utxo.amount,
-              blinding: opened.utxo.blinding,
-              data: opened.utxo.data,
-              ...(opened.dataHash === undefined ? {} : { dataHash: opened.dataHash }),
-              ...(opened.ringDataHash === undefined ? {} : { ringDataHash: opened.ringDataHash }),
-            },
-          ];
-        }
-        return [];
+        const opened = await openFinalizedActualOutput(
+          candidate,
+          { ...input, viewingPublicKeys: input.keys.viewingPublicKeys() },
+          context,
+        );
+        return opened === undefined ? [] : [ringOpening(0, opened)];
       }
       const sites = [...sitesOf(event)].filter((site) => ringBodyOutput(site.slot.payload));
       const [first] = sites;
@@ -186,19 +166,23 @@ async function openedFrames(
     const site = sites.find((candidate) => candidate.slotIndex === slotIndex);
     const note = site === undefined ? undefined : openedNote(input, site, secret);
     if (note === undefined) continue;
-    const { utxo, nullifierPublicKey, dataHash, ringDataHash } = note;
-    openings.push({
-      slotIndex,
-      nullifierPublicKey,
-      mint: utxo.asset,
-      amount: utxo.amount,
-      blinding: utxo.blinding,
-      data: utxo.data,
-      ...(dataHash === undefined ? {} : { dataHash }),
-      ...(ringDataHash === undefined ? {} : { ringDataHash }),
-    });
+    openings.push(ringOpening(slotIndex, note));
   }
   return openings;
+}
+
+function ringOpening(slotIndex: number, note: OpenedRingNote): RingOpening {
+  const { utxo, nullifierPublicKey, dataHash, ringDataHash } = note;
+  return {
+    slotIndex,
+    nullifierPublicKey,
+    mint: utxo.asset,
+    amount: utxo.amount,
+    blinding: utxo.blinding,
+    data: utxo.data,
+    ...(dataHash === undefined ? {} : { dataHash }),
+    ...(ringDataHash === undefined ? {} : { ringDataHash }),
+  };
 }
 
 function replyClaims(
