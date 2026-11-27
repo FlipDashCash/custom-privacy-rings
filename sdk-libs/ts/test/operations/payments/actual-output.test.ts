@@ -37,13 +37,13 @@ describe("runtime amount deposits", () => {
   it("matches the canonical SPL wire and separates the source authority from the receipt payer", async () => {
     const [vault, bump] = await splInterfaceWithBump(descriptor.asset);
     const { data, accounts } = await buildSettleActualOutputInstruction(request);
-    expect(data && [...data.slice(0, 3)]).toEqual([67, 1, 1]);
+    expect(data?.subarray(0, 3)).toEqual(Uint8Array.of(67, 1, 1));
     expect(
       data &&
         new DataView(Uint8Array.from(data).buffer).getBigUint64(ACTUAL_OUTPUT_MINIMUM_OFFSET, true),
     ).toBe(request.minimumOutput);
     expect(data?.slice(115, 147)).toEqual(descriptor.zeroChangeOwnerUtxoHash);
-    expect(data && [...data.slice(147)]).toEqual([1, bump, 3, 0, 4, 5, 6]);
+    expect(data?.subarray(147)).toEqual(Uint8Array.of(1, bump, 3, 0, 4, 5, 6));
     expect(accounts?.[2]?.address).toBe(
       await actualOutputReceiptAddress(descriptor.ringProgramId, descriptor.ownerUtxoHash),
     );
