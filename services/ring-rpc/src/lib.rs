@@ -155,8 +155,8 @@ pub use record_update::{
 };
 pub use record_writer::{PrivateWrites, RecordWriter, SaltedOwner, RECORD_FLUSH_INTERVAL};
 pub use relay::{
-    Relay, RelayError, RelayParts, RelayPayload, ServedRings, ABANDONED_AFTER_SLOTS, QUOTE_SLOTS,
-    RELAY_TRACK_INTERVAL,
+    CompositionPolicy, CompositionReview, Relay, RelayError, RelayParts, RelayPayload, ServedRings,
+    ABANDONED_AFTER_SLOTS, QUOTE_SLOTS, RELAY_TRACK_INTERVAL,
 };
 pub use relay_prover::{
     DelegateSeal, ProvenRelay, RelayParties, RelayProofRequest, RelayProver, SdkRelayProver,

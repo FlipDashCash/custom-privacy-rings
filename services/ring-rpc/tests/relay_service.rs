@@ -2,6 +2,8 @@
 
 #[path = "relay_service/attempts.rs"]
 mod attempts;
+#[path = "relay_service/composition.rs"]
+mod composition;
 #[path = "common/relay.rs"]
 mod relay_fixture;
 #[path = "common/store.rs"]
