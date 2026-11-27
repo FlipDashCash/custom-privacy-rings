@@ -737,3 +737,17 @@ export {
 export { noteNullifierPublicKey, ringProofInput } from "../operations/workflow/selection.js";
 export { RECOVERY_DIAGNOSTIC_SAMPLES } from "../state/recovery-session.js";
 export type { RecoveryCoverage, RecoveryWallet } from "../state/recovery-session.js";
+
+export {
+  ACTUAL_OUTPUT_VERSION,
+  ACTUAL_OUTPUT_MINIMUM_OFFSET,
+  prepareActualOutputDescriptor,
+  buildSettleActualOutputInstruction,
+  decodeActualOutputEvent,
+  openActualOutputForAuditor,
+} from "../operations/payments/actual-output.js";
+export type {
+  ActualOutputDescriptor,
+  ActualOutputSettlementParams,
+  ActualOutputEvent,
+} from "../operations/payments/actual-output.js";

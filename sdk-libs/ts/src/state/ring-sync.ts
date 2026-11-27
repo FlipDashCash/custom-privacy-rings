@@ -14,6 +14,7 @@ import {
   isZero,
   type CheckpointStream,
   type SyncCheckpointAdvances,
+  type SolanaRpc,
 } from "@heliuslabs/spr/internal";
 import { confidentialSlotTag } from "../crypto/derivation/ring-stream.js";
 import type { Address, Bytes32, RequestContext } from "@heliuslabs/spr/interface";
@@ -54,11 +55,13 @@ import type { SenderClaim } from "./anonymous-sync.js";
 import type { AnonymousWallet, SyncCommit } from "./anonymous-wallet.js";
 import type { RingRead, ViewingHistory } from "./viewing-history.js";
 import { RingError } from "../protocol/error.js";
+import { actualOutputCandidate, openFinalizedActualOutput } from "./actual-output-recovery.js";
 
 export type RingNoteCodecInput = Readonly<{
   ringProgramId: Address;
   keys: RingKeys;
   assets: AssetRegistry;
+  solanaRpc?: SolanaRpc;
 }>;
 
 /** Rust `RingNoteCodec`, one holder read per event and one more for an own event's change. */
@@ -71,6 +74,35 @@ function claimingCodec(input: RingNoteCodecInput, claims: SenderClaim[]): RingCo
   return {
     ringProgramId: input.ringProgramId,
     open: async (event, context) => {
+      const candidate = actualOutputCandidate(event);
+      if (candidate !== undefined) {
+        for (const viewingPublicKey of input.keys.viewingPublicKeys()) {
+          const opened = await openFinalizedActualOutput(
+            candidate,
+            {
+              keys: input.keys,
+              assets: input.assets,
+              viewingPublicKey,
+              solanaRpc: input.solanaRpc,
+            },
+            context,
+          );
+          if (opened === undefined) continue;
+          return [
+            {
+              slotIndex: 0,
+              nullifierPublicKey: opened.nullifierPublicKey,
+              mint: opened.utxo.asset,
+              amount: opened.utxo.amount,
+              blinding: opened.utxo.blinding,
+              data: opened.utxo.data,
+              ...(opened.dataHash === undefined ? {} : { dataHash: opened.dataHash }),
+              ...(opened.ringDataHash === undefined ? {} : { ringDataHash: opened.ringDataHash }),
+            },
+          ];
+        }
+        return [];
+      }
       const sites = [...sitesOf(event)].filter((site) => ringBodyOutput(site.slot.payload));
       const [first] = sites;
       const firstNullifier = event.nullifiers[0];
@@ -566,7 +598,14 @@ class RingReads {
             assets: this.#staging.registry,
             transactions: events.filter((row) => row.ringProgramId === ringProgramId),
             ring: claimingCodec(
-              { ringProgramId, keys, assets: this.#staging.registry },
+              {
+                ringProgramId,
+                keys,
+                assets: this.#staging.registry,
+                ...(this.client.solanaRpc === undefined
+                  ? {}
+                  : { solanaRpc: this.client.solanaRpc }),
+              },
               this.claims,
             ),
           },

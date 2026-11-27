@@ -170,7 +170,7 @@ interface TrustedEvent {
   readonly wrapper: OriginInstruction | undefined;
 }
 
-function ringEventIn(
+export function ringEventIn(
   groups: readonly OriginInstructionGroup[],
   eventIndex: number,
   ring: Address,
