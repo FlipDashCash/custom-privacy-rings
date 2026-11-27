@@ -5,7 +5,7 @@ import {
   getBase64Encoder,
   type Address,
 } from "@solana/kit";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import { initializePoseidon } from "@heliuslabs/spr";
 import type { Bytes32, Bytes64 } from "@heliuslabs/spr/interface";
@@ -120,46 +120,6 @@ describe("ring deposit", () => {
     await expect(prepared.prove(client)).rejects.toMatchObject({
       causeCode: "RING_DEPOSIT_FRAME_REUSED",
     });
-  });
-
-  it.each([false, true])("reviews the proven deposit exactly once (reject=%s)", async (reject) => {
-    const fixture = await ringFixture();
-    const recipient = ShieldedKeypair.generate().shieldedAddress();
-    fixture.enroll(recipient);
-    const client = depositClient(fixture);
-    const prepared = await PreparedRingDeposit.prepare({
-      client,
-      ringProgramId: fixture.ringProgramId,
-      feePayer: fixture.authority,
-      recipient: { kind: "confidential", address: recipient },
-      amount: 25n,
-    });
-    const refusal = new Error("review refused");
-    const review = vi.fn(() => {
-      if (reject) throw refusal;
-    });
-
-    await expect(
-      prepared.proveForComposition(depositClient(fixture, "client"), review),
-    ).rejects.toMatchObject({ code: "RING_DEPOSIT_PROOF_DATA_SOURCE" });
-    expect(review).not.toHaveBeenCalled();
-    expect(fixture.sppCalls).toHaveLength(0);
-
-    const result = prepared.proveForComposition(client, review);
-    if (reject) {
-      await expect(result).rejects.toBe(refusal);
-    } else {
-      const original = await result;
-      expect(review).toHaveBeenCalledWith(original);
-      expect((await original.instruction()).data?.[0]).toBe(RingInstructionTag.transfer);
-    }
-    expect(review).toHaveBeenCalledTimes(1);
-    expect(review.mock.calls[0]).toHaveLength(1);
-    expect(fixture.sppCalls).toHaveLength(1);
-    await expect(prepared.proveForComposition(client, review)).rejects.toMatchObject({
-      code: "RING_DEPOSIT_FRAME_REUSED",
-    });
-    expect(review).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a client that assembles proof data itself before any proof", async () => {

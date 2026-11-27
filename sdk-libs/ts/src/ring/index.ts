@@ -744,10 +744,10 @@ export {
   prepareActualOutputDescriptor,
   buildSettleActualOutputInstruction,
   decodeActualOutputEvent,
-  openActualOutputForAuditor,
 } from "../operations/payments/actual-output.js";
 export type {
   ActualOutputDescriptor,
   ActualOutputSettlementParams,
   ActualOutputEvent,
 } from "../operations/payments/actual-output.js";
+export { openActualOutputForAuditor } from "../state/actual-output-recovery.js";

@@ -259,8 +259,6 @@ export class ProvenRingTransfer {
   readonly approvalOpening?: ApprovalOpening;
   /** Per owner and asset, a composed payment can charge an owner whose funds return to it. */
   readonly chargedOutflows: readonly OwnerDebit[];
-  /** Only for a no-input synthetic descriptor. Never present on a real private spend. */
-  readonly descriptorBlinding?: Bytes32;
 
   /** @internal */
   constructor(
@@ -276,8 +274,6 @@ export class ProvenRingTransfer {
     if (fields.policy !== undefined) this.policy = fields.policy;
     if (fields.approvalOpening !== undefined) this.approvalOpening = fields.approvalOpening;
     this.chargedOutflows = fields.chargedOutflows;
-    if (fields.descriptorBlinding !== undefined)
-      this.descriptorBlinding = fields.descriptorBlinding;
     Object.freeze(this);
   }
 
@@ -308,6 +304,17 @@ export class ProvenRingTransfer {
       throw new RingError("RING_APPROVAL_OUTSIDE_PROGRAM");
     return this.instruction();
   }
+}
+
+const descriptorBlindings = new WeakMap<ProvenRingTransfer, Bytes32>();
+
+/** @internal Only the measured deposit builder consumes this synthetic certificate opening. */
+export function takeActualOutputDescriptorBlinding(
+  transfer: ProvenRingTransfer,
+): Bytes32 | undefined {
+  const blinding = descriptorBlindings.get(transfer);
+  descriptorBlindings.delete(transfer);
+  return blinding;
 }
 
 /** What a staged transfer's proofs read, valid inside the `assembleStagedTransfer` callback. */
@@ -838,7 +845,7 @@ async function proveAssembled(
     publishedInputs: inputs.length,
     proof,
   });
-  return new ProvenRingTransfer({
+  const proven = new ProvenRingTransfer({
     ringProgramId,
     data,
     accounts: assembled.accounts,
@@ -851,10 +858,19 @@ async function proveAssembled(
       : {}),
     ...(assembled.approval === undefined ? {} : { approvalOpening: assembled.approval.opening }),
     chargedOutflows: policy.chargedOutflows,
-    ...(data.noSpend && proofInputs.inputUtxos.every((slot) => slot.isDummy())
-      ? { descriptorBlinding: proofInputs.privateTxBlinding() }
-      : {}),
   });
+  if (
+    data.rail === "anonymous" &&
+    data.noSpend &&
+    data.publicOwners &&
+    !data.hasData &&
+    !data.ringData &&
+    !data.entry &&
+    !data.vouched &&
+    proofInputs.inputUtxos.every((slot) => slot.isDummy())
+  )
+    descriptorBlindings.set(proven, proofInputs.privateTxBlinding());
+  return proven;
 }
 
 /** The ring prefix, then SPP's own accounts, the data's tag by its rail, Rust `TransactAccounts::instruction`. */

@@ -455,29 +455,39 @@ export class RpcTransactionOrigin implements TransactionOrigin {
   }
 
   async #fetch(signature: Signature, context?: RequestContext): Promise<unknown> {
-    let transaction: unknown;
-    try {
-      transaction = await runKitRpc("getTransaction", context, (abortSignal) =>
-        this.#rpc.getTransaction(signature, ORIGIN_TRANSACTION_CONFIG).send({ abortSignal }),
-      );
-    } catch (cause) {
-      throw new RingError("RING_ORIGIN_UNAVAILABLE", {
-        details: { transactionId: signature },
-        cause,
-      });
-    }
-    if (transaction === null || transaction === undefined)
-      throw new RingError("RING_ORIGIN_UNAVAILABLE", {
-        details: { transactionId: signature },
-      });
-    const wire = record(transaction, "transaction");
-    const encoded = record(wire["transaction"], "transaction.transaction");
-    if (list(encoded["signatures"], "signatures")[0] !== signature)
-      throw new RingError("RING_ORIGIN_UNAVAILABLE", {
-        details: { transactionId: signature, reason: "another transaction" },
-      });
-    return transaction;
+    return readOriginTransaction(this.#rpc, signature, "confirmed", context);
   }
+}
+
+/** @internal Fetches the requested transaction at the origin check's commitment. */
+export async function readOriginTransaction(
+  rpc: SolanaRpc,
+  signature: Signature,
+  commitment: "confirmed" | "finalized",
+  context?: RequestContext,
+): Promise<Record<string, unknown>> {
+  let transaction: unknown;
+  try {
+    transaction = await runKitRpc("getTransaction", context, (abortSignal) =>
+      rpc
+        .getTransaction(signature, { ...ORIGIN_TRANSACTION_CONFIG, commitment })
+        .send({ abortSignal }),
+    );
+  } catch (cause) {
+    throw new RingError("RING_ORIGIN_UNAVAILABLE", {
+      details: { transactionId: signature },
+      cause,
+    });
+  }
+  if (transaction === null || transaction === undefined)
+    throw new RingError("RING_ORIGIN_UNAVAILABLE", { details: { transactionId: signature } });
+  const wire = record(transaction, "transaction");
+  const encoded = record(wire["transaction"], "transaction.transaction");
+  if (list(encoded["signatures"], "signatures")[0] !== signature)
+    throw new RingError("RING_ORIGIN_UNAVAILABLE", {
+      details: { transactionId: signature, reason: "another transaction" },
+    });
+  return wire;
 }
 
 interface ConfirmedEventData extends Pick<

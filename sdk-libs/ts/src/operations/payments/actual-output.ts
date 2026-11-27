@@ -50,6 +50,7 @@ import { openRecipientNote, type OpenedRingNote } from "../../crypto/derivation/
 import { ringIdField, txKeySlotSecret } from "../../crypto/derivation/ring-stream.js";
 import { RecordKind, type OutputRecord } from "../../protocol/codec/audit-stream.js";
 import { RingError } from "../../protocol/error.js";
+import { takeActualOutputDescriptorBlinding } from "../workflow/pipeline.js";
 import {
   PreparedRingDeposit,
   type RingDepositParams,
@@ -103,9 +104,10 @@ export async function prepareActualOutputDescriptor(
       throw invalid();
   }
   const prepared = await PreparedRingDeposit.prepare({ ...params, amount: 1n }, context);
-  const proven = await prepared.proveForComposition(params.client, () => {}, context);
+  const proven = await prepared.proveTransfer(params.client, context);
+  const privateTxBlinding = takeActualOutputDescriptorBlinding(proven);
   if (
-    proven.descriptorBlinding === undefined ||
+    privateTxBlinding === undefined ||
     proven.accounts.registries.length !== registries.length ||
     proven.accounts.registries.some((address, index) => address !== registries[index])
   )
@@ -139,7 +141,7 @@ export async function prepareActualOutputDescriptor(
     registries: proven.accounts.registries,
     slot: DESCRIPTOR_SLOT,
     ownerUtxoHash: ownerUtxoHash(output.ownerHash(), output.blinding),
-    privateTxBlinding: proven.descriptorBlinding.slice() as Bytes32,
+    privateTxBlinding,
     zeroChangeOwnerUtxoHash: ownerUtxoHash(change.ownerHash(), change.blinding),
     certificate,
   });
@@ -234,7 +236,7 @@ export async function buildSettleActualOutputInstruction(
   });
 }
 
-/** The encrypted Ring deposit fields published in a canonical SPP event. */
+/** Decoded fields of a measured Ring deposit payload. These fields alone have no chain provenance. */
 export interface ActualOutputEvent {
   readonly ownerUtxoHash: Bytes32;
   readonly asset: Address;
@@ -244,7 +246,7 @@ export interface ActualOutputEvent {
   readonly encrypted: EncryptedRingDepositData;
 }
 
-/** Decodes the full canonical SPP output payload: Encrypted(scheme8, Borsh RingDepositOutput). */
+/** Decodes the SPP output payload. This does not verify its origin, commitment, or finality. */
 export function decodeActualOutputEvent(payload: Uint8Array): ActualOutputEvent | undefined {
   if (payload[0] !== 1 || payload[5] !== EncryptedScheme.ringDeposit) return undefined;
   const { body } = readOutputFrame(payload);
@@ -378,8 +380,8 @@ export async function openActualOutputForRecipient(
   }
 }
 
-/** The same unchanged audited descriptor opens to the configured auditor; runtime amount stays public. */
-export function openActualOutputForAuditor(
+/** @internal Opens the descriptor after the caller has authenticated the finalized output. */
+export function openActualOutputDisclosure(
   event: ActualOutputEvent,
   auditor: X25519Keypair,
 ): OutputRecord {

@@ -55,10 +55,6 @@ use crate::{
     transfer_debits::deposit_flows,
 };
 
-#[path = "relay_composition.rs"]
-mod composition;
-pub use composition::{CompositionPolicy, CompositionReview};
-
 pub const QUOTE_SLOTS: u64 = LEASE_SLOTS;
 pub const RELAY_TRACK_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_CONCURRENT_PROOFS: usize = 4;

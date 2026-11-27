@@ -24,10 +24,9 @@ import {
 } from "@heliuslabs/spr/transaction";
 import {
   ACTUAL_OUTPUT_MAGIC,
-  decodeActualOutputEvent,
-  openActualOutputForAuditor,
   prepareActualOutputDescriptor,
 } from "../../src/operations/payments/actual-output.js";
+import { openActualOutputForAuditor } from "../../src/state/actual-output-recovery.js";
 import { RingInstructionTag } from "../../src/protocol/transaction/instruction-tag.js";
 import { RingTransactData } from "../../src/protocol/transaction/transact.js";
 import { ringPolicyPda } from "../../src/protocol/pda/index.js";
@@ -270,15 +269,17 @@ describe("canonical actual-output recovery", () => {
     await document.absorb(spent);
     expect(document.notes().every((note) => note.spent)).toBe(true);
 
-    const event = decodeActualOutputEvent(slot.payload);
-    if (event === undefined) throw new Error("missing actual-output event");
-    expect(openActualOutputForAuditor(event, ring.auditor)).toMatchObject({
-      amount: ACTUAL_AMOUNT,
-    });
+    await expect(
+      openActualOutputForAuditor({
+        transaction: row,
+        solanaRpc: client.solanaRpc,
+        auditor: ring.auditor,
+      }),
+    ).resolves.toMatchObject({ amount: ACTUAL_AMOUNT });
   });
 
   it("refuses unavailable finality, a different leaf, or an event emitted by the wrong caller", async () => {
-    const { row, slot, canonical } = await fixture();
+    const { row, slot, canonical, ring } = await fixture();
     const keys = keysFor(39);
     const document = wallet(keys, row);
     const scan = AnonymousSync.create(keys, new AssetRegistry());
@@ -310,6 +311,13 @@ describe("canonical actual-output recovery", () => {
       Uint8Array.of(RingInstructionTag.transfer),
     );
     await expect(read(row, wrong)).rejects.toMatchObject({ code: "RING_ORIGIN_DECODE" });
+    await expect(
+      openActualOutputForAuditor({
+        transaction: row,
+        solanaRpc: recoveryClient(row, wrong).client.solanaRpc,
+        auditor: ring.auditor,
+      }),
+    ).rejects.toMatchObject({ code: "RING_ORIGIN_DECODE" });
 
     const stranger = keysFor(40);
     const unrelated = recoveryClient(row, null);

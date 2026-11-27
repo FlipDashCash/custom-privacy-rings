@@ -45,8 +45,7 @@ Breaking
 
 Added
 
-- `PreparedRingDeposit.proveForComposition` lets an integrator review a locally proven deposit without receiving the sender's transaction viewing key or nullifier key. A rejected review consumes that proof attempt.
-- Use `prepareActualOutputDescriptor` and `buildSettleActualOutputInstruction` to credit the measured output of an atomic composition. The wallet recovers the resulting note from finalized chain history.
+- Use `prepareActualOutputDescriptor` and `buildSettleActualOutputInstruction` to credit the measured output of an atomic composition. Wallet sync recovers the resulting note from finalized Solana history, and `openActualOutputForAuditor` verifies the same origin before opening the configured auditor's disclosure.
 - `signRegisterEnrollmentRingRequest` signs a ring's registration with the enrollment writer `RingRpc.health` names, `RingRpc.registerEnrollmentRing` sends it under the ring's policy authority so Ring RPC writes the ring's enrollments, and `RingRpcRefusal` names `enrollmentRingsFull` at -32186.
 - `RingRpcRefusal` names `enrollmentInFlight` at -32187, the refusal of a vault enrollment while the ring has a transaction in flight.
 - `updateRingPolicyInstruction` takes a `ringListTag` update that commits a ring salt and `RingPolicy.ringListTag` reads it, so a private list reads every owner under that salt beside the owner's own, an entry written before an enrollment stays in force after it, and the transfer builders take the salt as `ringSalt`, which a proof made without Ring RPC needs on a ring that commits one and reads a private list.

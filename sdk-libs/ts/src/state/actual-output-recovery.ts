@@ -4,12 +4,11 @@ import {
   addressBytes,
   equalBytes,
   ringAuthAddress,
-  runKitRpc,
   treeAddress,
   type SolanaRpc,
 } from "@heliuslabs/spr/internal";
 import { InstructionTag, type RequestContext } from "@heliuslabs/spr/interface";
-import type { X25519PublicKey } from "@heliuslabs/spr/keypair";
+import type { X25519Keypair, X25519PublicKey } from "@heliuslabs/spr/keypair";
 import {
   SOL_MINT,
   type AssetRegistry,
@@ -18,15 +17,17 @@ import {
 } from "@heliuslabs/spr/transaction";
 import {
   decodeActualOutputEvent,
+  openActualOutputDisclosure,
   openActualOutputForRecipient,
   type ActualOutputEvent,
 } from "../operations/payments/actual-output.js";
 import type { OpenedRingNote } from "../crypto/derivation/blinding.js";
+import type { OutputRecord } from "../protocol/codec/audit-stream.js";
 import { RingError } from "../protocol/error.js";
 import { RingInstructionTag } from "../protocol/transaction/instruction-tag.js";
 import {
   confirmedInstructionGroups,
-  ORIGIN_TRANSACTION_CONFIG,
+  readOriginTransaction,
   ringEventIn,
 } from "../protocol/transaction/origin.js";
 import type { RingKeys } from "./ring-keys.js";
@@ -93,41 +94,38 @@ export async function openFinalizedActualOutput(
   return opened;
 }
 
+/** Opens a measured deposit for the configured auditor after binding its row to finalized Solana history. */
+export async function openActualOutputForAuditor(
+  input: Readonly<{
+    transaction: IndexedShieldedTransaction;
+    solanaRpc: SolanaRpc;
+    auditor: X25519Keypair;
+  }>,
+  context?: RequestContext,
+): Promise<OutputRecord | undefined> {
+  const candidate = actualOutputCandidate(input.transaction);
+  if (candidate === undefined) return undefined;
+  await verifyFinalizedOrigin(candidate, input.solanaRpc, context);
+  return openActualOutputDisclosure(candidate.event, input.auditor);
+}
+
 async function verifyFinalizedOrigin(
   candidate: ActualOutputCandidate,
   solanaRpc: SolanaRpc | undefined,
   context?: RequestContext,
 ): Promise<void> {
   const { transaction, slot, event, eventIndex } = candidate;
-  const { txSignature } = transaction;
   if (solanaRpc === undefined)
     throw new RingError("RING_ORIGIN_UNAVAILABLE", {
       details: { reason: "runtime-amount recovery requires finalized Solana RPC history" },
     });
-  let canonical: unknown;
-  try {
-    canonical = await runKitRpc("getTransaction", context, (abortSignal) =>
-      solanaRpc
-        .getTransaction(txSignature, {
-          ...ORIGIN_TRANSACTION_CONFIG,
-          commitment: "finalized",
-        })
-        .send({ abortSignal }),
-    );
-  } catch (cause) {
-    throw new RingError("RING_ORIGIN_UNAVAILABLE", {
-      details: { transactionId: txSignature },
-      cause,
-    });
-  }
-  if (canonical === null || canonical === undefined)
-    throw new RingError("RING_ORIGIN_UNAVAILABLE", { details: { transactionId: txSignature } });
-  const wire = canonical as unknown as {
-    slot?: unknown;
-    transaction?: { signatures?: readonly unknown[] };
-  };
-  if (wire.transaction?.signatures?.[0] !== txSignature || wire.slot !== transaction.slot)
-    throw invalid();
+  const canonical = await readOriginTransaction(
+    solanaRpc,
+    transaction.txSignature,
+    "finalized",
+    context,
+  );
+  if (canonical["slot"] !== transaction.slot) throw invalid();
   const found = ringEventIn(confirmedInstructionGroups(canonical), eventIndex, event.ringProgramId);
   const auth = await ringAuthAddress(event.ringProgramId);
   if (

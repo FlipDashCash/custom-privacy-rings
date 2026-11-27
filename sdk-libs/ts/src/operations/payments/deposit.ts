@@ -269,25 +269,6 @@ export class PreparedRingDeposit {
     }
   }
 
-  /**
-   * Review the exact proven original before composing its instruction.
-   * Neither the sender's transaction viewing key nor its nullifier key is lent.
-   * A review rejection consumes this one-use attempt.
-   */
-  async proveForComposition(
-    client: RingDepositClient,
-    review: (proven: ProvenRingTransfer) => Promise<void> | void,
-    context?: RequestContext,
-  ): Promise<ProvenRingTransfer> {
-    if (client.proofDataSource !== "prover")
-      throw new RingError("RING_DEPOSIT_PROOF_DATA_SOURCE", {
-        details: { proofDataSource: client.proofDataSource },
-      });
-    const proven = await this.proveTransfer(client, context);
-    await review(proven);
-    return proven;
-  }
-
   /** @internal A second proof is refused, a retry prepares a new frame. */
   proveTransfer(client: RingDepositClient, context?: RequestContext): Promise<ProvenRingTransfer> {
     if (this.#proved) throw new RingError("RING_DEPOSIT_FRAME_REUSED");
