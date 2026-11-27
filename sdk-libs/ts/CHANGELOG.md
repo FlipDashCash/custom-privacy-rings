@@ -43,6 +43,8 @@ Breaking
 
 Added
 
+- Prepare one publicly funded SOL or classic SPL ring deposit using the indexed prover and review the exact proven operation with `PreparedRingDeposit.proveForComposition`. Relay, Token-2022 and multi-leg deposits are out of scope.
+- Compose a reviewed classic SPL exit with `PlannedSplExit` and a caller-supplied consumer. The existing ring checks and signing boundaries still apply.
 - `signRegisterEnrollmentRingRequest` signs a ring's registration with the enrollment writer `RingRpc.health` names, `RingRpc.registerEnrollmentRing` sends it under the ring's policy authority so Ring RPC writes the ring's enrollments, and `RingRpcRefusal` names `enrollmentRingsFull` at -32186.
 - The main entry exports `STORAGE_PROGRAM_ID`, the Storage program that holds each ring's records and tracking registry.
 - The `advanced` entry exports `nullifierKeyMergeSealer`, `completeRingMerge` and `seededMergeOutputBlinding`, so a holder of the nullifier key seals and proves its own ring merge.

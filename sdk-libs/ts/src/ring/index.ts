@@ -709,3 +709,6 @@ export {
 export { noteNullifierPublicKey, ringProofInput } from "../operations/workflow/selection.js";
 export { RECOVERY_DIAGNOSTIC_SAMPLES } from "../state/recovery-session.js";
 export type { RecoveryCoverage, RecoveryWallet } from "../state/recovery-session.js";
+
+export { PlannedSplExit } from "../operations/payments/planned-spl-exit.js";
+export type { CompositionConsumer } from "../operations/payments/transfer-rails.js";
