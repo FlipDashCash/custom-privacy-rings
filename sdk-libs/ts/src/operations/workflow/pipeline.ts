@@ -259,6 +259,8 @@ export class ProvenRingTransfer {
   readonly approvalOpening?: ApprovalOpening;
   /** Per owner and asset, a composed payment can charge an owner whose funds return to it. */
   readonly chargedOutflows: readonly OwnerDebit[];
+  /** Only for a no-input synthetic descriptor. Never present on a real private spend. */
+  readonly descriptorBlinding?: Bytes32;
 
   /** @internal */
   constructor(
@@ -274,6 +276,8 @@ export class ProvenRingTransfer {
     if (fields.policy !== undefined) this.policy = fields.policy;
     if (fields.approvalOpening !== undefined) this.approvalOpening = fields.approvalOpening;
     this.chargedOutflows = fields.chargedOutflows;
+    if (fields.descriptorBlinding !== undefined)
+      this.descriptorBlinding = fields.descriptorBlinding;
     Object.freeze(this);
   }
 
@@ -847,6 +851,9 @@ async function proveAssembled(
       : {}),
     ...(assembled.approval === undefined ? {} : { approvalOpening: assembled.approval.opening }),
     chargedOutflows: policy.chargedOutflows,
+    ...(data.noSpend && proofInputs.inputUtxos.every((slot) => slot.isDummy())
+      ? { descriptorBlinding: proofInputs.privateTxBlinding() }
+      : {}),
   });
 }
 

@@ -56,7 +56,7 @@ import {
 } from "./anonymous.js";
 import { fetchRingPolicy } from "../../protocol/membership/config.js";
 import { RingError, wrapRingError } from "../../protocol/error.js";
-import type { ProvenRingTransfer } from "../workflow/pipeline.js";
+import { boundState, type RingBoundState, type ProvenRingTransfer } from "../workflow/pipeline.js";
 import type { SealRow } from "../workflow/transfer-plan.js";
 import {
   CustomRingTransfer,
@@ -332,6 +332,79 @@ export function createRingWithdrawalSubmission(
     },
     context,
   );
+}
+
+/** A reserved proof-bearing withdrawal for an atomic transaction assembled by the caller. */
+export interface PreparedRingWithdrawalComposition extends RingBoundState {
+  readonly proven: ProvenRingTransfer;
+  readonly instruction: Instruction;
+  readonly setupInstructions: readonly Instruction[];
+  readonly selected: readonly WalletUtxo[];
+  readonly intentHash: Bytes32;
+  readonly reservation: Readonly<{ id: string; utxoHashes: readonly Bytes32[] }>;
+  /** Check immediately before signing; the reservation has no automatic expiry. */
+  assertRetained(): void;
+  /** Release after canonical reconciliation or definitive unsent cancellation, never on timeout. */
+  release(): void;
+}
+
+/**
+ * Uses the normal selection, approval, proof and protected-change pipeline without compiling or
+ * dispatching a standalone transaction. `feePayer` is SPP's operation payer; the caller can compile
+ * the complete reviewed composition with a different transaction sponsor. Keep the operation
+ * payer's signing key in the wallet client, and sign only that complete message.
+ */
+export async function prepareRingWithdrawalForComposition(
+  input: RingWithdrawalTransactionParams & RingDirectRail,
+  context?: RequestContext,
+): Promise<PreparedRingWithdrawalComposition> {
+  const retry: RingSubmissionBuildState = { lifetime: "submission" };
+  try {
+    const staged = await stageRingSpend(
+      {
+        params: input,
+        feePayer: input.feePayer,
+        strategy: withdrawalStrategy(input),
+        retry,
+        route:
+          input.spendPublic !== undefined
+            ? "public"
+            : input.anonymous === undefined
+              ? "confidential"
+              : "anonymous",
+        ownerInProof: input.inProofOwner !== undefined,
+        ...(input.cosigners === undefined ? {} : { coSigners: input.cosigners.map(signerAddress) }),
+      },
+      context,
+    );
+    const { plan, owner } = staged;
+    const approval: RingTransferApproval = {
+      transaction:
+        plan.setupInstructions === undefined ? {} : { setupInstructions: plan.setupInstructions },
+      approve: ({ prepared }) =>
+        approveSpend({ params: input, feePayer: input.feePayer, plan, owner, prepared }),
+    };
+    const proven = await proveDirect(
+      { staged, client: input.client, rail: input, approval },
+      context,
+    );
+    const reservation = retry.reservation;
+    if (reservation === undefined) throw new RingError("RING_BUILD_WITHDRAWAL");
+    return Object.freeze({
+      proven,
+      instruction: await proven.instruction(),
+      setupInstructions: plan.setupInstructions ?? [],
+      selected: staged.selected,
+      intentHash: staged.planned,
+      reservation: Object.freeze({ id: reservation.id, utxoHashes: reservation.utxoHashes }),
+      ...boundState(proven),
+      assertRetained: () => checkRetainedEntries(input.wallet, staged.selected),
+      release: () => input.wallet._releaseReservation(reservation.id),
+    });
+  } catch (cause) {
+    if (retry.reservation !== undefined) input.wallet._releaseReservation(retry.reservation.id);
+    throw wrapRingError("RING_BUILD_WITHDRAWAL", cause);
+  }
 }
 
 /** Ring RPC reads the paths and records, proves and sends. */

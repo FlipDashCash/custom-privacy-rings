@@ -46,7 +46,7 @@ use crate::instructions::{
 
 const RING_INDEX: usize = 0;
 
-pub(super) struct TransactAccounts {
+pub(crate) struct TransactAccounts {
     pub roots: TransferRoots,
     /// The in-proof owner's identity, zero otherwise.
     pub sender: [u8; 32],

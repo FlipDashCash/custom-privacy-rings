@@ -1,6 +1,7 @@
 /** Rust `tag`, the first byte of the ring program's instruction data. */
 export const RingInstructionTag = Object.freeze({
   transfer: 55,
+  settleActualOutput: 67,
   merge: 57,
   updateAuthority: 6,
   setPaused: 11,
