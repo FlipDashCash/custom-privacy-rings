@@ -45,6 +45,7 @@ Breaking
 
 Added
 
+- Use `prepareActualOutputDescriptor` and `buildSettleActualOutputInstruction` to credit the measured output of an atomic composition. The compact instruction omits the certificate's 128 zero proof bytes and reserves a one-use address through SPP. Wallet sync recovers the measured note from finalized Solana history. `openActualOutputForAuditor` verifies the same history before opening the auditor's disclosure.
 - `signRegisterEnrollmentRingRequest` signs a ring's registration with the enrollment writer `RingRpc.health` names, `RingRpc.registerEnrollmentRing` sends it under the ring's policy authority so Ring RPC writes the ring's enrollments, and `RingRpcRefusal` names `enrollmentRingsFull` at -32186.
 - `RingRpcRefusal` names `enrollmentInFlight` at -32187, the refusal of a vault enrollment while the ring has a transaction in flight.
 - `updateRingPolicyInstruction` takes a `ringListTag` update that commits a ring salt and `RingPolicy.ringListTag` reads it, so a private list reads every owner under that salt beside the owner's own, an entry written before an enrollment stays in force after it, and the transfer builders take the salt as `ringSalt`, which a proof made without Ring RPC needs on a ring that commits one and reads a private list.

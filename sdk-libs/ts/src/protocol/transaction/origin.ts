@@ -170,7 +170,8 @@ interface TrustedEvent {
   readonly wrapper: OriginInstruction | undefined;
 }
 
-function ringEventIn(
+/** @internal Finds the SPP event at the indexed ordinal under the named Ring. */
+export function ringEventIn(
   groups: readonly OriginInstructionGroup[],
   eventIndex: number,
   ring: Address,
@@ -439,13 +440,15 @@ export class RpcTransactionOrigin implements TransactionOrigin {
   #transaction(signature: Signature, context?: RequestContext): Promise<unknown> {
     // A caller's cancellation or timeout must not govern another caller's read.
     if (context?.signal !== undefined || context?.timeoutMs !== undefined)
-      return this.#fetch(signature, context);
+      return readOriginTransaction(this.#rpc, signature, "confirmed", context);
     const known = this.#transactions.get(signature);
     if (known !== undefined) return known;
-    const pending = this.#fetch(signature, context).catch((error: unknown) => {
-      if (this.#transactions.get(signature) === pending) this.#transactions.delete(signature);
-      throw error;
-    });
+    const pending = readOriginTransaction(this.#rpc, signature, "confirmed", context).catch(
+      (error: unknown) => {
+        if (this.#transactions.get(signature) === pending) this.#transactions.delete(signature);
+        throw error;
+      },
+    );
     if (this.#transactions.size >= RpcTransactionOrigin.#MAX_TRANSACTIONS) {
       const oldest = this.#transactions.keys().next().value;
       if (oldest !== undefined) this.#transactions.delete(oldest);
@@ -453,31 +456,45 @@ export class RpcTransactionOrigin implements TransactionOrigin {
     this.#transactions.set(signature, pending);
     return pending;
   }
+}
 
-  async #fetch(signature: Signature, context?: RequestContext): Promise<unknown> {
-    let transaction: unknown;
-    try {
-      transaction = await runKitRpc("getTransaction", context, (abortSignal) =>
-        this.#rpc.getTransaction(signature, ORIGIN_TRANSACTION_CONFIG).send({ abortSignal }),
-      );
-    } catch (cause) {
-      throw new RingError("RING_ORIGIN_UNAVAILABLE", {
-        details: { transactionId: signature },
-        cause,
-      });
-    }
-    if (transaction === null || transaction === undefined)
-      throw new RingError("RING_ORIGIN_UNAVAILABLE", {
-        details: { transactionId: signature },
-      });
-    const wire = record(transaction, "transaction");
-    const encoded = record(wire["transaction"], "transaction.transaction");
-    if (list(encoded["signatures"], "signatures")[0] !== signature)
-      throw new RingError("RING_ORIGIN_UNAVAILABLE", {
-        details: { transactionId: signature, reason: "another transaction" },
-      });
-    return transaction;
+/** Solana Kit promotes u64 values to bigint. Raw JSON can use a safe number or decimal string. */
+export function originSlot(transaction: unknown): bigint {
+  const raw = record(transaction, "transaction")["slot"];
+  const slot = typeof raw === "bigint" ? raw : integer(raw, "slot");
+  if (slot < 0n || slot > 0xffff_ffff_ffff_ffffn) throw invalid("slot");
+  return slot;
+}
+
+/** @internal Fetches the requested transaction at the origin check's commitment. */
+export async function readOriginTransaction(
+  rpc: SolanaRpc,
+  signature: Signature,
+  commitment: "confirmed" | "finalized",
+  context?: RequestContext,
+): Promise<Record<string, unknown>> {
+  let transaction: unknown;
+  try {
+    transaction = await runKitRpc("getTransaction", context, (abortSignal) =>
+      rpc
+        .getTransaction(signature, { ...ORIGIN_TRANSACTION_CONFIG, commitment })
+        .send({ abortSignal }),
+    );
+  } catch (cause) {
+    throw new RingError("RING_ORIGIN_UNAVAILABLE", {
+      details: { transactionId: signature },
+      cause,
+    });
   }
+  if (transaction === null || transaction === undefined)
+    throw new RingError("RING_ORIGIN_UNAVAILABLE", { details: { transactionId: signature } });
+  const wire = record(transaction, "transaction");
+  const encoded = record(wire["transaction"], "transaction.transaction");
+  if (list(encoded["signatures"], "signatures")[0] !== signature)
+    throw new RingError("RING_ORIGIN_UNAVAILABLE", {
+      details: { transactionId: signature, reason: "another transaction" },
+    });
+  return wire;
 }
 
 interface ConfirmedEventData extends Pick<
@@ -571,10 +588,7 @@ function bindConfirmedTransaction(
     const data = readConfirmedEvent(found.source, found.event);
     if (data === undefined) return undefined;
     const { outputTree, firstLeaf } = data;
-    const rawSlot = record(confirmed, "transaction")["slot"];
-    // Solana Kit promotes RPC u64 values to bigint. Raw JSON fixtures use number/string.
-    const slot = typeof rawSlot === "bigint" ? rawSlot : integer(rawSlot, "slot");
-    if (slot < 0n || slot > 0xffff_ffff_ffff_ffffn) throw invalid("slot");
+    const slot = originSlot(confirmed);
     if (
       indexed.slot !== slot ||
       indexed.proofless ||

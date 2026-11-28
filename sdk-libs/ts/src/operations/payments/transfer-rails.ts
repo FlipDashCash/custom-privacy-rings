@@ -89,6 +89,7 @@ import { transferApprovalOf } from "../../proof/transfer-proof.js";
 import { isDefaultRingNote } from "../../proof/audit-proof.js";
 import { anonymousPartyIdentities } from "../../protocol/membership/parties.js";
 import {
+  measuredDepositCertificate,
   proveStagedTransfer,
   sealRelayedTransfer,
   sealedTransferTerms,
@@ -130,6 +131,7 @@ export interface ReadCache {
 /** @internal */
 export interface RingTransferApproval {
   readonly transaction: RingTransactionFrame;
+  readonly [measuredDepositCertificate]?: true;
   /** Runs once the transfer fits its transaction, before any proof. */
   approve(
     transfer: Readonly<{
@@ -1215,6 +1217,9 @@ export class PublicOwnerTransfer {
           ringProgramId,
           config,
           staged: { ...staged, spend: { ...spend, prove } },
+          ...(approval?.[measuredDepositCertificate] === true
+            ? { [measuredDepositCertificate]: true }
+            : {}),
           ...suppliedCoSigners(this.#owner.coSigners),
           listSalts: this.#owner.listSalts ?? [],
           ...suppliedVoucher(this.#owner),
