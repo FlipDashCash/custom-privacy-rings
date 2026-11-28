@@ -227,7 +227,12 @@ export async function readableRing(
 }
 
 /** A ring note spends only under an applied tracking row. */
-export async function enroll(input: Readonly<{ ring: ReadableRing; owner: Actor }>): Promise<void> {
+export async function enroll(
+  input: Readonly<{
+    ring: Pick<ReadableRing, "client" | "ringProgramId" | "ringRpc">;
+    owner: Actor;
+  }>,
+): Promise<void> {
   const { ring, owner } = input;
   const { client, ringProgramId, ringRpc } = ring;
   const { tracking: trackingRegistry } = await fetchRingPolicy(client, ringProgramId);
