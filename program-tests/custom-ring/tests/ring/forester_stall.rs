@@ -21,6 +21,7 @@ fn exhaust_dummy_input_headroom(env: &TestEnv) -> Result<()> {
             .map_err(|error| anyhow!("headroom {error:?}"))?
             == 0
     );
+    drop(tree);
     env.set_account_data(env.tree, &data)
 }
 
