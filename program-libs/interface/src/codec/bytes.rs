@@ -82,7 +82,7 @@ impl<'a> Bytes<'a> {
         <TreeContext as SchemaRead<'a, DefaultConfig>>::get(&mut self.data).map_err(|_| self.short)
     }
 
-    pub(crate) const fn rest(self) -> &'a [u8] {
+    pub(crate) const fn rest(&self) -> &'a [u8] {
         self.data
     }
 }

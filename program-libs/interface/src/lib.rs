@@ -72,6 +72,8 @@ pub mod stream;
 #[path = "accounts/tracking.rs"]
 pub mod tracking;
 pub use owner_grant::OwnerGrant;
+#[path = "instructions/actual_output.rs"]
+pub mod actual_output;
 #[path = "instructions/transact.rs"]
 pub mod transact;
 #[path = "instructions/transfer_approval.rs"]
