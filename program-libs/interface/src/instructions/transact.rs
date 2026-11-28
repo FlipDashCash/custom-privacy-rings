@@ -681,6 +681,21 @@ pub struct TransferBinding<'a> {
 impl<'a> RingTransactData<'a> {
     /// Every length fixed by the flags, the shape and the counts, trailing bytes refused.
     pub fn parse(data: &'a [u8], rail: RingRail) -> Result<ParsedTransact<'a>, CustomRingError> {
+        Self::parse_spp_slot(data, rail, false).map(|(parsed, _)| parsed)
+    }
+
+    /// The measured certificate has no SPP spend proof. Return the slot's byte offset for recovery.
+    pub(crate) fn parse_certificate(
+        data: &'a [u8],
+    ) -> Result<(ParsedTransact<'a>, usize), CustomRingError> {
+        Self::parse_spp_slot(data, RingRail::Anonymous, true)
+    }
+
+    fn parse_spp_slot(
+        data: &'a [u8],
+        rail: RingRail,
+        omit_spp_proof: bool,
+    ) -> Result<(ParsedTransact<'a>, usize), CustomRingError> {
         let mut bytes = Bytes::new(data, CustomRingError::RingTransactLength);
         // 1. The flags and the header admit the rail's sections and name the key, every later length follows from them.
         let flags = TransactFlags(bytes.byte()?);
@@ -711,7 +726,7 @@ impl<'a> RingTransactData<'a> {
         let salt = bytes.array()?;
         let extensions = match flags.has(transact_flag::EXTENSIONS) {
             false => FrameExtensions::default(),
-            true => FrameExtensions::read(&mut bytes, rail)?,
+            true => FrameExtensions::read(&mut bytes, rail, omit_spp_proof)?,
         };
         check_extensions(&extensions, rail)?;
         let shape = rail.key_shape(&header)?;
@@ -812,7 +827,16 @@ impl<'a> RingTransactData<'a> {
                 commitment_pok: bytes.array()?,
             }),
         };
-        let spp_proof = bytes.pod()?;
+        let spp_proof_offset = data.len() - bytes.rest().len();
+        let spp_proof = if omit_spp_proof {
+            &PlainGroth16Proof {
+                proof_a: [0; 32],
+                proof_b: [0; 64],
+                proof_c: [0; 32],
+            }
+        } else {
+            bytes.pod()?
+        };
         let nullifiers = bytes.fields(usize::from(input_count))?;
         let input_trees = match flags.has(transact_flag::SECOND_TREE) {
             false => InputTrees::One(bytes.tree_context()?),
@@ -862,7 +886,7 @@ impl<'a> RingTransactData<'a> {
             nullifiers,
             input_trees,
         };
-        ParsedTransact::new(data)
+        Ok((ParsedTransact::new(data)?, spp_proof_offset))
     }
 
     /// The bytes `parse` reads back, refusing what it refuses.
@@ -1335,9 +1359,13 @@ impl<'a> FrameExtensions<'a> {
         *self == Self::default()
     }
 
-    fn read(bytes: &mut Bytes<'a>, rail: RingRail) -> Result<Self, CustomRingError> {
+    fn read(
+        bytes: &mut Bytes<'a>,
+        rail: RingRail,
+        require_canonical: bool,
+    ) -> Result<Self, CustomRingError> {
         let flags = bytes.byte()?;
-        if flags & !extension_flag::KNOWN != 0 {
+        if flags & !extension_flag::KNOWN != 0 || (require_canonical && flags == 0) {
             return Err(CustomRingError::FlagNotAllowed);
         }
         let has = |bit: u8| flags & bit != 0;
@@ -1351,6 +1379,9 @@ impl<'a> FrameExtensions<'a> {
             false => Vec::new(),
             true => {
                 let count = usize::from(bytes.byte()?);
+                if require_canonical && count == 0 {
+                    return Err(CustomRingError::FlagNotAllowed);
+                }
                 check_message_count(count, rail)?;
                 // The bump allocator keeps every growth step, so the list takes its exact size once.
                 let mut messages = Vec::with_capacity(count);

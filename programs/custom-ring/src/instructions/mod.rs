@@ -36,6 +36,8 @@ pub(crate) use merge::process_merge_ix;
 pub(crate) use set_cosigner::{process_clear_cosigner_ix, process_set_cosigner_ix};
 pub(crate) use set_delegate::process_set_delegate_ix;
 pub(crate) use set_paused::process_set_paused_ix;
-pub(crate) use transfer::{process_approve_transfer_ix, process_transfer_ix};
+pub(crate) use transfer::{
+    process_actual_output_ix, process_approve_transfer_ix, process_transfer_ix,
+};
 pub(crate) use update_authority::process_update_authority_ix;
 pub(crate) use update_policy::process_update_policy_ix;
