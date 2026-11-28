@@ -6,12 +6,13 @@ mod ring_policy;
 use frames::{spp_b, Fixture, DATA_RING_RECORD_LEN};
 use ring_policy::config;
 
+use custom_ring_interface::actual_output::{ActualOutputIxData, ACTUAL_OUTPUT_FORMAT};
 use custom_ring_interface::{
     cosign::ApprovalMask, input_flag, key_catalog::RingCircuit, output_flag, shape_flag,
-    stream::slot_tag, transact_flag, AuditKey, AuditStreamLayout, AuditorMessage,
-    ConfidentialSender, CustomRingError, FramedSenderBundle, ParsedTransact, PlainGroth16Proof,
-    Replies, RingPolicy, RingRail, RingTransactData, Settlement, SignerSet, SlotBody,
-    TransferBinding, TransferFamily, TransferRoots, ANONYMOUS_PARTIES, APPROVAL_BYTE,
+    storage::Revision, stream::slot_tag, transact_flag, AuditKey, AuditStreamLayout,
+    AuditorMessage, ConfidentialSender, CustomRingError, FramedSenderBundle, ParsedTransact,
+    PlainGroth16Proof, Replies, RingPolicy, RingRail, RingTransactData, Settlement, SignerSet,
+    SlotBody, TransferBinding, TransferFamily, TransferRoots, ANONYMOUS_PARTIES, APPROVAL_BYTE,
 };
 use custom_ring_interface::{
     encode_ring_body_output, encode_ring_sender_bundle_output, ring_body_output,
@@ -25,7 +26,10 @@ use spr_event::{
 };
 use spr_hasher::primitives::solana_owner_identity;
 use spr_interface::{
-    instruction::{CircuitId, InterfaceTransfer, OwnerTag},
+    instruction::{
+        instruction_data::transact::TransactProof, CircuitId, DepositAssetKind, InterfaceTransfer,
+        OwnerTag,
+    },
     shape::{Shape, SPP_SUPPORTED_SHAPES},
 };
 
@@ -233,6 +237,91 @@ fn the_frames_are_the_shared_vector() {
         std::fs::read_to_string(FRAME_VECTOR).expect("vector file"),
         frame_lines()
     );
+}
+
+#[test]
+fn measured_transport_removes_only_the_zero_spp_slot_and_recovers_stock_bytes() {
+    use bytemuck::Zeroable;
+    use custom_ring_interface::{extension_flag, tag};
+
+    let fixture = Fixture::new();
+    let zero = PlainGroth16Proof::zeroed();
+    let marker = bytemuck::bytes_of(&fixture.spp_proof);
+    for (leg, asset, revision) in [
+        (
+            InterfaceTransfer::SolDeposit { amount: 1 },
+            DepositAssetKind::Sol,
+            None,
+        ),
+        (
+            InterfaceTransfer::SplDeposit {
+                amount: 1,
+                spl_interface_bump: 254,
+            },
+            DepositAssetKind::Spl {
+                spl_interface_bump: 254,
+            },
+            Some(Revision::from(0)),
+        ),
+    ] {
+        let mut frame = fixture.anonymous_public_owners();
+        frame.no_spend = true;
+        frame.own_revision = revision;
+        frame.interface_transfers = vec![leg];
+        let offset = 1 + frame
+            .encode()
+            .unwrap()
+            .windows(marker.len())
+            .position(|bytes| bytes == marker)
+            .unwrap();
+        frame.spp_proof = &zero;
+        let mut stock = vec![tag::TRANSFER];
+        stock.extend(frame.encode().unwrap());
+        assert_eq!(&stock[offset..offset + 128], &[0; 128]);
+        let mut certificate = stock.clone();
+        certificate.drain(offset..offset + 128);
+        let request = ActualOutputIxData {
+            format: ACTUAL_OUTPUT_FORMAT,
+            minimum_output: 1,
+            keep_lamports: 0,
+            owner_utxo_hash: [0; 32],
+            private_tx_blinding: [0; 32],
+            zero_change_owner_utxo_hash: [0; 32],
+            asset,
+            certificate,
+            nullifier_root_index: 15,
+            reservation_proof: TransactProof::zeroed(),
+        };
+        let wire = wincode::serialize(&request).unwrap();
+        let compact = ActualOutputIxData::parse(&wire).unwrap();
+        let result = compact.parse_certificate().unwrap();
+        assert_eq!(result.transact().data().encode().unwrap(), stock[1..]);
+        let expected = [&b"CRADv001\x01"[..], &stock].concat();
+        assert_eq!(result.recovery_body(), expected);
+        assert!(ActualOutputIxData {
+            certificate: stock,
+            ..compact.clone()
+        }
+        .parse_certificate()
+        .is_err());
+        let extension_at = compact
+            .certificate
+            .windows(frame.salt.len())
+            .position(|bytes| bytes == frame.salt)
+            .unwrap()
+            + frame.salt.len();
+        for redundant in [&[0][..], &[extension_flag::MESSAGES, 0]] {
+            let mut noncanonical = compact.clone();
+            noncanonical.certificate[1] |= transact_flag::EXTENSIONS;
+            noncanonical
+                .certificate
+                .splice(extension_at..extension_at, redundant.iter().copied());
+            assert_eq!(
+                noncanonical.parse_certificate().err(),
+                Some(CustomRingError::FlagNotAllowed)
+            );
+        }
+    }
 }
 
 #[test]

@@ -5,6 +5,7 @@ mod binary_rules;
 mod common;
 mod heap_rules;
 mod in_proof_owner_rules;
+mod measured_output_rules;
 mod merge_rules;
 mod operator_rules;
 mod program_owner_rules;
