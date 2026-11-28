@@ -350,6 +350,9 @@ export function fitBudget(
     : { priorityFeeLamports: frame.priorityFeeLamports };
 }
 
+/** Internal opt-in available only to preparation of a measured deposit certificate. */
+export const measuredDepositCertificate = Symbol("measuredDepositCertificate");
+
 export type StagedTransferInput = Readonly<{
   client: RingProvingClient;
   ringProgramId: Address;
@@ -363,6 +366,7 @@ export type StagedTransferInput = Readonly<{
   /** Every owner reads the private lists under it on a ring that commits its tag. */
   ringSalt?: Bytes32;
   transaction?: RingTransactionFrame;
+  [measuredDepositCertificate]?: true;
   approve?: (coSigners: readonly Address[], proofInputs: SppProofInputs) => Promise<void>;
 }>;
 
@@ -372,6 +376,7 @@ export function proveStagedTransfer(
   context?: RequestContext,
 ): Promise<ProvenRingTransfer> {
   return assembleStagedTransfer(input, context, async (assembled) => {
+    if (input[measuredDepositCertificate] === true) checkMeasuredDeposit(assembled);
     await input.approve?.(assembled.coSigners, assembled.proofInputs);
     return proveAssembled(input, assembled, context);
   });
@@ -783,6 +788,21 @@ async function assembleStagedTransfer<T>(
   }
 }
 
+function checkMeasuredDeposit({ preview, proofInputs }: AssembledTransfer): void {
+  if (
+    preview.rail !== "anonymous" ||
+    !preview.publicOwners ||
+    !preview.noSpend ||
+    proofInputs.inputUtxos.some((slot) => !slot.isDummy()) ||
+    preview.interfaceTransfers.length !== 1 ||
+    preview.interfaceTransfers[0]?.amount !== 1n ||
+    !proofInputs.externalData.interfaceTransfers[0]?.isDeposit
+  )
+    throw new RingError("RING_BUILD_DEPOSIT", {
+      details: { reason: "a measured deposit certificate requires an amount-one no-spend frame" },
+    });
+}
+
 async function proveAssembled(
   input: StagedTransferInput,
   assembled: AssembledTransfer,
@@ -791,6 +811,7 @@ async function proveAssembled(
   const { client, ringProgramId, config, staged } = input;
   const { rail, spend } = staged;
   const { proofInputs, policy, coSigners, privateTxHash, ringId, preview, inputs } = assembled;
+  const certificate = input[measuredDepositCertificate] === true;
   const request = transferProofRequest({
     rail,
     ringRail: spend.rail,
@@ -816,24 +837,29 @@ async function proveAssembled(
     signers: assembled.signers,
     ...(assembled.approval === undefined ? {} : { approval: assembled.approval }),
   });
-  let proofs: readonly [ProvenRingTransact | ProvenAnonymousRingTransact, Uint8Array];
+  let proofs: readonly [ProvenRingTransact | ProvenAnonymousRingTransact | undefined, Uint8Array];
   try {
     // Each request runs in its own async call, a synchronous throw never strands the other proof.
     proofs = await Promise.all([
-      (async () => spend.prove(proofInputs, context))(),
+      certificate ? undefined : (async () => spend.prove(proofInputs, context))(),
       (async () => client.proveRing(request, context))(),
     ]);
   } finally {
     wipeAuditRequest(request);
   }
   const [spp, proof] = proofs;
-  const data = provenData({
-    preview,
-    spp: spp.data,
-    privateTxHash,
-    publishedInputs: inputs.length,
-    proof,
-  });
+  if (spp === undefined && !certificate) throw new RingError("RING_SPP_PROOF_MISMATCH");
+  // Measured deposits use the Ring proof only. Keep the stock codec's zero SPP proof placeholder.
+  const data =
+    spp === undefined
+      ? Object.freeze({ ...preview, proof })
+      : provenData({
+          preview,
+          spp: spp.data,
+          privateTxHash,
+          publishedInputs: inputs.length,
+          proof,
+        });
   return new ProvenRingTransfer({
     ringProgramId,
     data,

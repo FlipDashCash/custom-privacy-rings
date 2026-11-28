@@ -4,6 +4,7 @@ import {
   Writer,
   concatBytes,
   equalBytes,
+  isZero,
   solanaOwnerIdentity,
 } from "@heliuslabs/spr/internal";
 import {
@@ -506,6 +507,42 @@ export const RingTransactData = Object.freeze({
   },
 });
 
+/** @internal Checks the stock transaction frame carried by a measured deposit. */
+export function parseMeasuredCertificate(certificate: Uint8Array): RingTransactData {
+  if (certificate[0] !== RingInstructionTag.transfer) throw invalid("InvalidInstructionData");
+  const frame = certificate.subarray(1);
+  const data = RingTransactData.parse(frame, "anonymous");
+  const leg = data.interfaceTransfers[0];
+  if (
+    !data.noSpend ||
+    !data.publicOwners ||
+    data.hasData ||
+    data.ringData ||
+    data.entry ||
+    data.vouched ||
+    data.policy !== undefined ||
+    (data.ownRevision !== undefined && data.ownRevision !== 0n) ||
+    data.approval !== 0 ||
+    data.interfaceTransfers.length !== 1 ||
+    (leg?.kind !== "solDeposit" && leg?.kind !== "splDeposit") ||
+    leg.amount !== 1n ||
+    data.outputs.length !== 2 ||
+    data.outputs.some((output) => output.body.kind !== "recipient") ||
+    !isZero(data.sppProof) ||
+    !equalBytes(frame, writeCompact(data))
+  )
+    throw invalid("InvalidInstructionData");
+  return data;
+}
+
+/** @internal The settlement wire omits the checked zero SPP proof from its certificate. */
+export function compactMeasuredCertificate(certificate: Uint8Array): Uint8Array {
+  return concatBytes(
+    certificate.subarray(0, 1),
+    writeCompact(parseMeasuredCertificate(certificate), true),
+  );
+}
+
 /** Byte 0 of the compact data, one bit per optional section, Rust `transact_flag`. */
 const Flag = Object.freeze({
   policy: 1 << 0,
@@ -890,7 +927,7 @@ function bitAt(bits: bigint, index: number): boolean {
   return ((bits >> BigInt(index)) & 1n) === 1n;
 }
 
-function writeCompact(data: RingTransactData): Uint8Array {
+function writeCompact(data: RingTransactData, omitSppProof = false): Uint8Array {
   const flags = compactFlags(data);
   checkFlags(flags, data.rail);
   const header = headerOf(data);
@@ -956,7 +993,7 @@ function writeCompact(data: RingTransactData): Uint8Array {
       .bytes(data.inProofOwner.owner, 32, "inProofOwner.owner")
       .bytes(data.inProofOwner.commitment, 32, "inProofOwner.commitment")
       .bytes(data.inProofOwner.commitmentPok, 32, "inProofOwner.commitmentPok");
-  out.bytes(data.sppProof, PLAIN_GROTH16_PROOF_LENGTH, "sppProof");
+  if (!omitSppProof) out.bytes(data.sppProof, PLAIN_GROTH16_PROOF_LENGTH, "sppProof");
   for (const nullifier of data.nullifiers) out.bytes(nullifier, 32, "nullifier");
   if (data.inputTrees.kind === "one") {
     writeTreeContext(out, data.inputTrees.context);
